@@ -1,0 +1,15 @@
+schema_version = "1"
+project_name = "ReactorBench-LM"
+run_name = "foundation-smoke"
+
+[paths]
+output_root = "runs"
+dataset_root = "data/generated"
+checkpoint_root = "checkpoints"
+artifact_root = "artifacts"
+
+[execution]
+seed = 1729
+deterministic = true
+device = "auto"
+max_workers = 1

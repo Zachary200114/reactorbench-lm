@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reactorbench-lm"
+version = "0.1.0"
+description = "A small Transformer trained from scratch on fictional Aster Station event sequences."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "pydantic>=2.10,<3",
+]
+
+[dependency-groups]
+dev = [
+  "build>=1.2,<2",
+  "hypothesis>=6.122,<7",
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/configs",
+  "/schemas",
+  "/src",
+  "/README.md",
+  "/SECURITY.md",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reactorbench"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"configs/default.toml" = "reactorbench/_data/configs/default.toml"
+"schemas/aster/v0" = "reactorbench/_data/schemas/aster/v0"
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+source = ["reactorbench"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 85
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["artifacts", "checkpoints", "data/generated", "runs"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["B", "C4", "DTZ", "E", "F", "I", "PIE", "PT", "RUF", "S", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+pretty = true
+files = ["src", "tests"]

@@ -1,0 +1,35 @@
+{
+  "frozen": false,
+  "root_exports": [
+    {
+      "filename": "latent-state.schema.json",
+      "model": "LatentPlantState"
+    },
+    {
+      "filename": "observation.schema.json",
+      "model": "ObservationFrame"
+    },
+    {
+      "filename": "canonical-event.schema.json",
+      "model": "CanonicalEvent"
+    },
+    {
+      "filename": "scenario.schema.json",
+      "model": "ScenarioDefinition"
+    },
+    {
+      "filename": "target.schema.json",
+      "model": "TaskTarget"
+    },
+    {
+      "filename": "provenance.schema.json",
+      "model": "ProvenanceRecord"
+    },
+    {
+      "filename": "structured-trajectory.schema.json",
+      "model": "StructuredTrajectory"
+    }
+  ],
+  "schema_version": "0.1.0",
+  "status": "developmental"
+}

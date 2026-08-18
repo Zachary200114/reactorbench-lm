@@ -1,0 +1,46 @@
+# Operating-system and editor metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Python caches, environments, and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.python-version.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+secrets/
+.secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Generated datasets and experiment output
+data/corpora/
+data/generated/
+runs/
+checkpoints/
+artifacts/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
