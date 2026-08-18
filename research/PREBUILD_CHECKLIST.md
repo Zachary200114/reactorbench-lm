@@ -7,7 +7,7 @@ foundation items are complete and which later gates remain open.
 
 - [x] Rename `AI-transformer ` to `AI-transformer` and verify the corrected path.
 - [x] Confirm `ReactorBench-LM` as the final project name.
-- [ ] Initialize Git only after confirming the correct folder.
+- [x] Initialize Git only after confirming the correct folder. Local repository initialized on `codex/foundation`; no remote is configured.
 - [x] Add a root README with the visible synthetic/non-operational disclaimer.
 - [ ] Choose initial code and data licenses. Deferred by D-041; nonblocking for local foundation and generator work, but required before distribution.
 

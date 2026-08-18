@@ -1,13 +1,13 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-18 16:40 EDT
-Current phase: Phase 1 complete — repository and contract foundation
-Checkpoint reason: verified Phase 1 boundary before local Git checkpoint and Phase 2 generator work
+Last updated: 2026-08-18 16:46 EDT
+Current phase: Phase 2 starting — deterministic Aster Station structured generator
+Checkpoint reason: Phase 1 was reverified and preserved in a local checkpoint commit before generator work
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Current objective
 
-Preserve the verified Phase 1 foundation in the intended local project, then begin Phase 2 with deterministic stable operation and one `SENSOR_DRIFT` scenario only. Do not render a dataset, train a tokenizer/model, build the UI, or expose a network service until the corresponding later phase gates pass.
+Implement Phase 2 with acceptance-test-first deterministic stable operation and one `SENSOR_DRIFT` scenario only. Prove seeded replay, latent/observation separation, bounded state evolution, causal event ordering, leakage resistance, and evidence-gated abstention before adding any other fault. Do not render a dataset, train a tokenizer/model, build the UI, or expose a network service until the corresponding later phase gates pass.
 
 ## Completed work
 
@@ -21,6 +21,7 @@ Preserve the verified Phase 1 foundation in the intended local project, then beg
 - Added package-resource access for the reviewed default configuration and schema snapshots. The wheel and sdist contents are checked, and a wheel-only no-network install/import check passes.
 - Added the root disclaimer, architecture, Phase 0 audit, threat model, security control map, residual-risk language, and private vulnerability-reporting policy.
 - Added unit, contract, and Hypothesis property tests. No dataset, tokenizer, model, checkpoint, measured model result, inference service, or web interface exists yet.
+- Reproduced the complete Phase 1 gate from the intended project path and preserved the verified foundation in local commit `0cfc98c`; no remote was added and nothing was pushed or published.
 
 ## Files created or changed
 
@@ -44,10 +45,11 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
   - Ruff format: 45 files already formatted.
   - Ruff lint: all checks passed.
   - Mypy strict mode: success across 22 source/test files reported by mypy.
-  - Pytest: 104 passed in 1.18 seconds.
+  - Pytest: 104 passed in 1.15 seconds on the final pre-commit rerun.
   - Branch coverage: 89.58%; required threshold 85%.
   - Build: `reactorbench_lm-0.1.0.tar.gz` and `reactorbench_lm-0.1.0-py3-none-any.whl` built successfully, with the wheel built from the sdist.
   - Artifact verifier: passed; wheel resources match reviewed roots, sdist omits incomplete tests, and the wheel installs/imports with `--no-deps --no-index` in an isolated target.
+- `git diff --cached --check`: exit 0 after whitespace-only repository-hygiene corrections.
 - `uv pip check` against the isolated Python 3.12 environment: exit 0; all 22 installed packages compatible.
 - Current schema snapshot hash: `50a6b8ce8a4118d7598ef0131b050475844a21a00529047fbdcb5995ba2bccbc`.
 
@@ -85,13 +87,13 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Uncommitted work and Git state
 
-- The verified tree is assembled in `/Users/zachary/Documents/ChatGPT/Projects/.reactorbench-worktree` and fully synchronized to the intended project path.
-- The complete `make check` gate was rerun successfully from the intended project after synchronization.
-- Local Git is initialized on `codex/foundation`; all understood foundation files are untracked until the checkpoint commit immediately following this status update.
+- The verified Phase 1 tree is assembled in `/Users/zachary/Documents/ChatGPT/Projects/.reactorbench-worktree` and fully synchronized to the intended project path.
+- The complete `make check` gate was rerun successfully from the intended project immediately before the foundation commit.
+- Local Git is initialized on `codex/foundation`; the Phase 1 source, contracts, tests, and documentation are committed.
 - Last known Git branch: `codex/foundation`.
-- Last known Git commit: not applicable.
+- Last known Git commit: `0cfc98cf6a30f27ce22e802e6cd0cf4dfb264ab0` (`chore: establish ReactorBench-LM foundation`).
 - Remote state: none; no remote will be created and no push is authorized.
-- All current changes are understood ReactorBench-LM foundation work; caches and `dist/` are excluded from the sync/checkpoint.
+- Uncommitted work after the local documentation checkpoint: none; Phase 2 source changes have not begun.
 
 ## Relevant paths
 
@@ -107,7 +109,7 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Immediate next step
 
-Create a non-destructive local Phase 1 checkpoint commit if identity/configuration permits, then begin Phase 2 stable-operation plus `SENSOR_DRIFT` generator implementation.
+Begin Phase 2 by freezing focused acceptance tests and the minimal Aster-A configuration for stable operation plus `SENSOR_DRIFT`. Implement no additional fault family until this gate passes.
 
 Exact recommended next command before implementation:
 
