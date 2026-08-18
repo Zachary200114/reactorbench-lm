@@ -1,6 +1,6 @@
 # ReactorBench-LM architecture
 
-Status: Phase 1 complete; first Phase 2 generator milestone locally integrated and verified on 2026-08-18
+Status: Phase 1 complete; two Phase 2 generator milestones locally integrated and verified on 2026-08-18
 
 ## Design objective
 
@@ -83,12 +83,18 @@ milestone, but they are not yet a frozen version 1 interface and no dataset exis
 
 ## Phase 2 simulator boundary
 
-`src/reactorbench/simulator/` currently implements only Aster-A stable operation and
-one observation-only `SENSOR_DRIFT` case. It uses deterministic local random streams,
-two fictional channels per normalized variable, constant bounded latent state for
-this first milestone, and explicit observation/event/target separation. A same-seed
+`src/reactorbench/simulator/` currently implements Aster-A stable operation, one
+observation-only `SENSOR_DRIFT` case, and a benign `LOAD_TRANSIENT`. It uses
+deterministic local random streams, two fictional channels per normalized variable,
+bounded latent updates, and explicit observation/event/target separation. A same-seed
 stable trace and drift trace have identical latent states; only the selected channel
 and aggregate observation status may diverge after the declared onset.
+
+The load transient changes demand, heat, flow, steam, and output through explicit
+fictional stage lags, then returns to `STABLE`. Transfer efficiency remains unchanged,
+both observation channels agree, and structured truth is `NO_FAULT`. Its behavior is
+fully derived from the validated driver, seed, duration, and generator version rather
+than from unrepresented caller input.
 
 The public visible payload contains observations and canonical events only. Scenario
 injections, latent truth, fault labels, and targets remain outside that payload.
@@ -138,13 +144,13 @@ The browser never selects paths, models, token limits, execution devices, or arb
 
 ## Current implementation boundary
 
-The Phase 1 foundation and first Phase 2 generator milestone are present. The recorded
-2026-08-18 Python 3.12 gate passed formatting, lint, strict typing, 146 tests, 91.46%
+The Phase 1 foundation and two Phase 2 generator milestones are present. The recorded
+2026-08-18 Python 3.12 gate passed formatting, lint, strict typing, 152 tests, 91.37%
 branch coverage, distribution builds, and isolated wheel verification. Phase 2 is not
-complete: benign load movement, remaining faults, variants, and broader generator
-gates still need implementation. Dataset generation, tokenizer training, model
-training, measured evaluation, inference serving, and UI construction remain later
-work. Refer to [the implementation status](IMPLEMENTATION_STATUS.md) for the exact
-evolving integration state rather than inferring completion from this architecture.
+complete: observation faults beyond drift, process faults, variants, and broader
+generator gates still need implementation. Dataset generation, tokenizer training,
+model training, measured evaluation, inference serving, and UI construction remain
+later work. Refer to [the implementation status](IMPLEMENTATION_STATUS.md) for the
+exact evolving integration state rather than inferring completion from this architecture.
 
 The current task prepares everything locally but excludes GitHub push and Vercel or inference-host deployment.

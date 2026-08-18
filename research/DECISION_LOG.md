@@ -45,6 +45,7 @@
 | D-039 | Treat compound fault labels semantically as a set and serialize them in documented enum order. | Deterministic ordering enables stable hashes and exact-match scoring without making label order meaningful. |
 | D-040 | Target Python 3.12 compatibility using `uv` and a PEP 621 package; allow local verification on compatible Python 3.13. | Python 3.12 matches the research compute plan while a bounded compatibility range permits the current machine to run foundation checks. |
 | D-041 | Defer code and dataset license selection until release preparation. | Licensing does not block local implementation, and no external publication is authorized in this phase. |
+| D-042 | Derive the developmental Aster-A benign load-transition schedule, direction, and magnitude only from validated driver, seed, duration, and generator version; stage steam and output after demand, heat, and flow. | This makes replay complete without hiding caller parameters in an identifier and enforces the fictional causal ordering required before sensor-stuck behavior. |
 
 ## Provisional decisions
 

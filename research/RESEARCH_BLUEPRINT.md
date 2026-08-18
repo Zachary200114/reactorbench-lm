@@ -240,8 +240,8 @@ Recommended compute sequence:
 - Parquet support for structured traces and JSONL for text/task examples.
 
 Foundation dependency versions are pinned in the present local `uv.lock`. Later
-dependency groups must be pinned when introduced. Until local Git is initialized,
-the lockfile's presence is a local integration checkpoint, not a commit claim.
+dependency groups must be pinned when introduced. The lockfile is preserved in
+local Git; no remote repository, push, publication, or deployment is authorized.
 
 ## 8. Safety, information, and portfolio boundaries
 

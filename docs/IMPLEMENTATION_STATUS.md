@@ -1,13 +1,13 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-18 17:27 EDT
-Current phase: Phase 2 in progress — first deterministic generator milestone complete
-Checkpoint reason: stable operation and `SENSOR_DRIFT` passed full integration and independent review, then were preserved in a local commit
+Last updated: 2026-08-18 17:47 EDT
+Current phase: Phase 2 in progress — benign load-transition prerequisite complete
+Checkpoint reason: staged `LOAD_TRANSIENT` behavior passed full integration and corrected independent review, then was preserved in a local commit
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Current objective
 
-Extend the verified Phase 2 generator with one benign `LOAD_TRANSIENT` milestone before adding another fault family. Prove bounded latent transitions, coordinated redundant observations, deterministic target/action behavior, and `NO_FAULT` truth for the benign driver. Do not render a dataset, train a tokenizer/model, build the UI, or expose a network service until the corresponding later phase gates pass.
+Implement the smallest coherent `SENSOR_STUCK` milestone as one Aster-A `LOAD_TRANSIENT` plus one frozen electrical-output channel. Prove that latent state exactly matches the benign transient, only the selected observation freezes, diagnosis follows genuine related movement, and the two documented actions occur in causal order. Do not add other fault families, render a dataset, train a tokenizer/model, build the UI, or expose a network service until their later gates pass.
 
 ## Completed work
 
@@ -27,6 +27,9 @@ Extend the verified Phase 2 generator with one benign `LOAD_TRANSIENT` milestone
 - Added early required abstention, later evidence-backed diagnosis, next-tick action application, causal event ordering, stable/drift latent equality, model-visible truth isolation, and conversion into the existing validated `StructuredTrajectory` contract.
 - Added a recursive Phase 2 prohibited-content guard with bounded redacted findings and tests for URL, contact, identifier, operating-value, real-plant, military/agency, and security-related pattern classes. It is explicitly non-exhaustive and does not replace later human sample review.
 - Received an independent `ship` review with no findings. The reviewer host exposed workspace-write rather than hard read-only isolation, so exact before/after hashes and Git state were compared and remained unchanged.
+- Added the canonical benign Aster-A `LOAD_TRANSIENT`, fully derived from driver, seed, duration, and generator version: demand/heat/flow begin at tick 2, steam at tick 3, output at tick 4, coordinated evidence at tick 6, and return to `STABLE` at tick 7.
+- Kept `transfer_efficiency` invariant as a capability proxy, preserved available components and agreeing `GOOD`/`NORMAL` redundant channels, supported rising and falling seed-derived cases, and resolved every benign case to empty fault labels with `NO_FAULT` and `CONTINUE_MONITORING`.
+- The first load draft failed independent review because downstream response began too early. It was corrected to explicit causal stage lags, retested, and independently re-reviewed against exact SHA-256 file hashes before integration; the final verdict was `ship` with no findings.
 
 ## Files created or changed
 
@@ -51,8 +54,8 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
   - Ruff format: 52 files already formatted.
   - Ruff lint: all checks passed.
   - Mypy strict mode: success across 29 source/test files reported by mypy.
-  - Pytest: 146 passed in 2.27 seconds on the final Phase 2 milestone rerun.
-  - Branch coverage: 91.46%; required threshold 85%.
+  - Pytest: 152 passed in 3.89 seconds on the final benign-load milestone rerun.
+  - Branch coverage: 91.37%; required threshold 85%.
   - Build: `reactorbench_lm-0.1.0.tar.gz` and `reactorbench_lm-0.1.0-py3-none-any.whl` built successfully, with the wheel built from the sdist.
   - Artifact verifier: passed; wheel resources match reviewed roots, sdist omits incomplete tests, and the wheel installs/imports with `--no-deps --no-index` in an isolated target.
 - `git diff --cached --check`: exit 0 after whitespace-only repository-hygiene corrections.
@@ -70,9 +73,10 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - `TaskTarget` is the public structured task root; legacy scenario decisions remain nested in `StructuredTrajectory`.
 - Code and dataset licenses remain `TBD` and must be selected before distribution, not before local generator work.
 - Browser and Computer Use are reserved for runnable local UI verification in Phase 7. Visualize is available for requested in-conversation design exploration; it does not replace repository-native UI work.
-- Generator `0.1.0` currently supports only Aster-A stable operation and a single primary-flow-channel `SENSOR_DRIFT`; supported trajectories are 8–64 fictional ticks.
+- Generator `0.1.0` currently supports Aster-A stable operation, a single primary-flow-channel `SENSOR_DRIFT`, and a benign staged `LOAD_TRANSIENT`; supported trajectories are 8–64 fictional ticks.
 - A decision is recorded at its decision tick, while any `ACTION_APPLIED` event occurs on the next tick. The suspect quality change follows the applied `FLAG_SENSOR_SUSPECT` action rather than preceding its evidence.
-- The next causal milestone is the benign `LOAD_TRANSIENT`, because it establishes bounded process-state movement needed before implementing `SENSOR_STUCK` against a genuinely changing signal.
+- `LOAD_TRANSIENT` direction and magnitude are deterministic functions of its seed; caller-selectable driver parameters remain deferred until they can be represented explicitly in validated scenario truth.
+- The next causal milestone is `SENSOR_STUCK` composed with the verified load transient, because a frozen channel is meaningful only against a genuinely changing latent signal.
 
 ## Assumptions
 
@@ -83,8 +87,8 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Known failures
 
-- No known Phase 1 or first-generator-milestone test, type, lint, formatting, build, snapshot, or artifact failure remains.
-- The generator intentionally rejects ASTER-B/C, `LOAD_TRANSIENT`, finite-duration drift, every other fault family, and compound faults until their own acceptance gates are implemented.
+- No known Phase 1 or completed Phase 2 milestone test, type, lint, formatting, build, snapshot, or artifact failure remains.
+- The generator intentionally rejects ASTER-B/C, finite-duration drift, every other fault family, and every driver/fault composition—including `LOAD_TRANSIENT` plus `SENSOR_STUCK`—until its own acceptance gate is implemented.
 - The prohibited-content guard is deliberately non-exhaustive. A reviewed real-facility denylist and stratified human sample-review procedure remain required before any dataset pilot or release.
 - A private public-reporting route cannot be configured until the owner creates the eventual public repository or names another private channel.
 - Production headers, rate limits, safe service errors, artifact-loader startup checks, browser behavior, and deployment isolation are later-phase controls and are not claimed as verified.
@@ -99,12 +103,12 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 ## Uncommitted work and Git state
 
 - The verified assembly tree is synchronized to the intended project path.
-- The complete `make check` gate was rerun successfully from the intended project immediately before the first Phase 2 generator commit.
-- Local Git is initialized on `codex/foundation`; Phase 1 and the first Phase 2 generator milestone are committed.
+- The complete `make check` gate was rerun successfully from the intended project immediately before the benign-load commit.
+- Local Git is initialized on `codex/foundation`; Phase 1 and both completed Phase 2 generator milestones are committed.
 - Last known Git branch: `codex/foundation`.
-- Last known Git commit: `9ea9740bfd8208872b3f668fb140cd6b85c55a87` (`feat: add deterministic Aster-A sensor-drift simulator`).
+- Last known Git commit: `ce74ebab1f0f26759a05678fe77fa4712d8d8f1b` (`feat: add benign Aster-A load transients`).
 - Remote state: none; no remote will be created and no push is authorized.
-- Uncommitted work after the local documentation checkpoint: none; benign-load-transition source work has not begun.
+- Uncommitted work after the local documentation checkpoint: none; `SENSOR_STUCK` source work has not begun.
 
 ## Relevant paths
 
@@ -121,7 +125,7 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Immediate next step
 
-Freeze acceptance tests for one benign Aster-A `LOAD_TRANSIENT`, then implement its bounded latent/observation transition and `NO_FAULT` targets. Do not add `SENSOR_STUCK` until this prerequisite gate passes.
+Freeze acceptance tests for one Aster-A `LOAD_TRANSIENT` plus one indefinite, low-severity `SENSOR_STUCK` on either electrical-output channel. Implement its observation-only freeze and two-action causal sequence without adding another fault or a generalized composition engine.
 
 Exact recommended next command before implementation:
 
