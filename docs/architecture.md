@@ -1,6 +1,6 @@
 # ReactorBench-LM architecture
 
-Status: Phase 1 foundation locally integrated and verified at the 2026-08-18 checkpoint; later phases are not complete
+Status: Phase 1 complete; first Phase 2 generator milestone locally integrated and verified on 2026-08-18
 
 ## Design objective
 
@@ -78,8 +78,26 @@ finite values in `[0, 1]`; identifiers and nonnegative integers have explicit bo
 The development interface is separately marked `frozen=false`, so reviewed contract
 changes remain allowed before version 1. Instance immutability must not be confused
 with interface freeze. Canonical JSON and a SHA-256 manifest provide deterministic
-snapshots for schema review. These are contract choices, not claims that the
-generator or dataset already exists.
+snapshots for schema review. These contracts now compose the first structured-generator
+milestone, but they are not yet a frozen version 1 interface and no dataset exists.
+
+## Phase 2 simulator boundary
+
+`src/reactorbench/simulator/` currently implements only Aster-A stable operation and
+one observation-only `SENSOR_DRIFT` case. It uses deterministic local random streams,
+two fictional channels per normalized variable, constant bounded latent state for
+this first milestone, and explicit observation/event/target separation. A same-seed
+stable trace and drift trace have identical latent states; only the selected channel
+and aggregate observation status may diverge after the declared onset.
+
+The public visible payload contains observations and canonical events only. Scenario
+injections, latent truth, fault labels, and targets remain outside that payload.
+Decision labels are recorded at their decision tick; any corresponding applied-action
+event occurs on the next tick so an action cannot precede its supporting evidence.
+
+The current prohibited-content guard is a deterministic, redacting structural gate.
+It is intentionally non-exhaustive and does not replace the reviewed denylist and
+human sample procedure required before dataset work.
 
 ## Artifact lineage
 
@@ -120,13 +138,13 @@ The browser never selects paths, models, token limits, execution devices, or arb
 
 ## Current implementation boundary
 
-The Phase 1 research specifications, package, configuration boundary, developmental
-contracts, local schema snapshots, and focused tests are present. The recorded
-2026-08-18 Python 3.12 checkpoint passed `make check` and `make build`; a separate
-coverage run measured 91.41%. Phase 2 is the structured generator. Dataset
-generation, tokenizer training, model training, measured evaluation, inference
-serving, and UI construction remain later work. Refer to [the implementation
-status](IMPLEMENTATION_STATUS.md) for the exact evolving integration state rather
-than inferring completion from this architecture.
+The Phase 1 foundation and first Phase 2 generator milestone are present. The recorded
+2026-08-18 Python 3.12 gate passed formatting, lint, strict typing, 146 tests, 91.46%
+branch coverage, distribution builds, and isolated wheel verification. Phase 2 is not
+complete: benign load movement, remaining faults, variants, and broader generator
+gates still need implementation. Dataset generation, tokenizer training, model
+training, measured evaluation, inference serving, and UI construction remain later
+work. Refer to [the implementation status](IMPLEMENTATION_STATUS.md) for the exact
+evolving integration state rather than inferring completion from this architecture.
 
 The current task prepares everything locally but excludes GitHub push and Vercel or inference-host deployment.

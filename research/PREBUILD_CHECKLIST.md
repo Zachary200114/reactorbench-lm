@@ -26,7 +26,7 @@ foundation items are complete and which later gates remain open.
 - [x] Define generator invariants before generating the pilot dataset.
 - [ ] Define split manifests before narrative rendering.
 - [ ] Create template-family IDs and component-alias families.
-- [ ] Create prohibited-content patterns and the real-facility denylist.
+- [ ] Create prohibited-content patterns and the real-facility denylist. A redacting, non-exhaustive Phase 2 pattern guard and fixtures now exist; complete the reviewed denylist and manual sample procedure before the dataset pilot.
 - [ ] Define duplicate and cross-split leakage tests.
 - [x] Define provenance fields and dataset-versioning rules.
 

@@ -1,13 +1,13 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-18 16:46 EDT
-Current phase: Phase 2 starting — deterministic Aster Station structured generator
-Checkpoint reason: Phase 1 was reverified and preserved in a local checkpoint commit before generator work
+Last updated: 2026-08-18 17:27 EDT
+Current phase: Phase 2 in progress — first deterministic generator milestone complete
+Checkpoint reason: stable operation and `SENSOR_DRIFT` passed full integration and independent review, then were preserved in a local commit
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Current objective
 
-Implement Phase 2 with acceptance-test-first deterministic stable operation and one `SENSOR_DRIFT` scenario only. Prove seeded replay, latent/observation separation, bounded state evolution, causal event ordering, leakage resistance, and evidence-gated abstention before adding any other fault. Do not render a dataset, train a tokenizer/model, build the UI, or expose a network service until the corresponding later phase gates pass.
+Extend the verified Phase 2 generator with one benign `LOAD_TRANSIENT` milestone before adding another fault family. Prove bounded latent transitions, coordinated redundant observations, deterministic target/action behavior, and `NO_FAULT` truth for the benign driver. Do not render a dataset, train a tokenizer/model, build the UI, or expose a network service until the corresponding later phase gates pass.
 
 ## Completed work
 
@@ -22,6 +22,11 @@ Implement Phase 2 with acceptance-test-first deterministic stable operation and 
 - Added the root disclaimer, architecture, Phase 0 audit, threat model, security control map, residual-risk language, and private vulnerability-reporting policy.
 - Added unit, contract, and Hypothesis property tests. No dataset, tokenizer, model, checkpoint, measured model result, inference service, or web interface exists yet.
 - Reproduced the complete Phase 1 gate from the intended project path and preserved the verified foundation in local commit `0cfc98c`; no remote was added and nothing was pushed or published.
+- Added generator version `0.1.0` with one immutable Aster-A variant card, two fictional channels for every normalized variable, deterministic stable traces, and one single-channel `SENSOR_DRIFT` behavior using only local `random.Random` streams.
+- Added strict scenario builders and fail-closed rejection for unsupported variants, drivers, faults, mappings, action sequences, durations, loose channel inputs, and out-of-range scalar inputs.
+- Added early required abstention, later evidence-backed diagnosis, next-tick action application, causal event ordering, stable/drift latent equality, model-visible truth isolation, and conversion into the existing validated `StructuredTrajectory` contract.
+- Added a recursive Phase 2 prohibited-content guard with bounded redacted findings and tests for URL, contact, identifier, operating-value, real-plant, military/agency, and security-related pattern classes. It is explicitly non-exhaustive and does not replace later human sample review.
+- Received an independent `ship` review with no findings. The reviewer host exposed workspace-write rather than hard read-only isolation, so exact before/after hashes and Git state were compared and remained unchanged.
 
 ## Files created or changed
 
@@ -31,8 +36,9 @@ Implement Phase 2 with acceptance-test-first deterministic stable operation and 
 - Reconciled research: `research/DATASET_SPEC.md`, `research/DECISION_LOG.md`, `research/FICTIONAL_PLANT_SPEC.md`, `research/GOLDEN_SCENARIOS.md`, `research/PREBUILD_CHECKLIST.md`, `research/README.md`, `research/RESEARCH_BLUEPRINT.md`, `research/VOCABULARY_SEED.md`.
 - Package: `src/reactorbench/__init__.py`, `src/reactorbench/config.py`, `src/reactorbench/resources.py`.
 - Schema package: `src/reactorbench/schemas/__init__.py`, `base.py`, `enums.py`, `events.py`, `export.py`, `latent.py`, `observation.py`, `provenance.py`, `scenario.py`, `target.py`, `trajectory.py`.
+- Simulator package: `src/reactorbench/simulator/__init__.py`, `content_guard.py`, `core.py`.
 - Reviewed contracts: `schemas/aster/v0/README.md`, `snapshot-contract.json`, seven `*.schema.json` files, and `manifest.json`.
-- Tests: `tests/unit/test_config.py`, `test_schemas.py`, `test_schema_gates.py`; `tests/property/test_schema_gate_properties.py`; `tests/contract/test_package_resources.py`, `test_schema_snapshots.py`, `test_snapshot_validation.py`, `verify_distribution_artifacts.py`.
+- Tests: existing foundation tests plus `tests/unit/test_simulator.py`, `test_content_guard.py`; `tests/property/test_simulator_properties.py`; and `tests/contract/test_simulator_contract.py`.
 
 Generated `dist/`, caches, run directories, corpora, checkpoints, and artifacts are ignored and are not release evidence.
 
@@ -42,11 +48,11 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 - `make sync` using the project lockfile: exit 0; 22 locked project/development packages installed into the isolated Python 3.12 environment.
 - `make check`: exit 0.
-  - Ruff format: 45 files already formatted.
+  - Ruff format: 52 files already formatted.
   - Ruff lint: all checks passed.
-  - Mypy strict mode: success across 22 source/test files reported by mypy.
-  - Pytest: 104 passed in 1.15 seconds on the final pre-commit rerun.
-  - Branch coverage: 89.58%; required threshold 85%.
+  - Mypy strict mode: success across 29 source/test files reported by mypy.
+  - Pytest: 146 passed in 2.27 seconds on the final Phase 2 milestone rerun.
+  - Branch coverage: 91.46%; required threshold 85%.
   - Build: `reactorbench_lm-0.1.0.tar.gz` and `reactorbench_lm-0.1.0-py3-none-any.whl` built successfully, with the wheel built from the sdist.
   - Artifact verifier: passed; wheel resources match reviewed roots, sdist omits incomplete tests, and the wheel installs/imports with `--no-deps --no-index` in an isolated target.
 - `git diff --cached --check`: exit 0 after whitespace-only repository-hygiene corrections.
@@ -64,6 +70,9 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - `TaskTarget` is the public structured task root; legacy scenario decisions remain nested in `StructuredTrajectory`.
 - Code and dataset licenses remain `TBD` and must be selected before distribution, not before local generator work.
 - Browser and Computer Use are reserved for runnable local UI verification in Phase 7. Visualize is available for requested in-conversation design exploration; it does not replace repository-native UI work.
+- Generator `0.1.0` currently supports only Aster-A stable operation and a single primary-flow-channel `SENSOR_DRIFT`; supported trajectories are 8–64 fictional ticks.
+- A decision is recorded at its decision tick, while any `ACTION_APPLIED` event occurs on the next tick. The suspect quality change follows the applied `FLAG_SENSOR_SUSPECT` action rather than preceding its evidence.
+- The next causal milestone is the benign `LOAD_TRANSIENT`, because it establishes bounded process-state movement needed before implementing `SENSOR_STUCK` against a genuinely changing signal.
 
 ## Assumptions
 
@@ -74,7 +83,9 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Known failures
 
-- No known Phase 1 test, type, lint, formatting, build, snapshot, or artifact failure remains.
+- No known Phase 1 or first-generator-milestone test, type, lint, formatting, build, snapshot, or artifact failure remains.
+- The generator intentionally rejects ASTER-B/C, `LOAD_TRANSIENT`, finite-duration drift, every other fault family, and compound faults until their own acceptance gates are implemented.
+- The prohibited-content guard is deliberately non-exhaustive. A reviewed real-facility denylist and stratified human sample-review procedure remain required before any dataset pilot or release.
 - A private public-reporting route cannot be configured until the owner creates the eventual public repository or names another private channel.
 - Production headers, rate limits, safe service errors, artifact-loader startup checks, browser behavior, and deployment isolation are later-phase controls and are not claimed as verified.
 
@@ -87,13 +98,13 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Uncommitted work and Git state
 
-- The verified Phase 1 tree is assembled in `/Users/zachary/Documents/ChatGPT/Projects/.reactorbench-worktree` and fully synchronized to the intended project path.
-- The complete `make check` gate was rerun successfully from the intended project immediately before the foundation commit.
-- Local Git is initialized on `codex/foundation`; the Phase 1 source, contracts, tests, and documentation are committed.
+- The verified assembly tree is synchronized to the intended project path.
+- The complete `make check` gate was rerun successfully from the intended project immediately before the first Phase 2 generator commit.
+- Local Git is initialized on `codex/foundation`; Phase 1 and the first Phase 2 generator milestone are committed.
 - Last known Git branch: `codex/foundation`.
-- Last known Git commit: `0cfc98cf6a30f27ce22e802e6cd0cf4dfb264ab0` (`chore: establish ReactorBench-LM foundation`).
+- Last known Git commit: `9ea9740bfd8208872b3f668fb140cd6b85c55a87` (`feat: add deterministic Aster-A sensor-drift simulator`).
 - Remote state: none; no remote will be created and no push is authorized.
-- Uncommitted work after the local documentation checkpoint: none; Phase 2 source changes have not begun.
+- Uncommitted work after the local documentation checkpoint: none; benign-load-transition source work has not begun.
 
 ## Relevant paths
 
@@ -103,13 +114,14 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - Current handoff: `docs/IMPLEMENTATION_STATUS.md`
 - Configuration: `configs/default.toml`
 - Package: `src/reactorbench/`
+- Simulator: `src/reactorbench/simulator/`
 - Schema snapshots: `schemas/aster/v0/`
 - Tests: `tests/unit/`, `tests/property/`, `tests/contract/`
 - Generated data, tokenizers, checkpoints, measured results, and UI artifacts: none
 
 ## Immediate next step
 
-Begin Phase 2 by freezing focused acceptance tests and the minimal Aster-A configuration for stable operation plus `SENSOR_DRIFT`. Implement no additional fault family until this gate passes.
+Freeze acceptance tests for one benign Aster-A `LOAD_TRANSIENT`, then implement its bounded latent/observation transition and `NO_FAULT` targets. Do not add `SENSOR_STUCK` until this prerequisite gate passes.
 
 Exact recommended next command before implementation:
 

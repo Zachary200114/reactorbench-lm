@@ -6,11 +6,13 @@ ReactorBench-LM is a research project for building and evaluating a small decode
 
 ## Current status
 
-The Phase 0 audit is complete, and the Phase 1 repository, configuration, schema,
-documentation, and test foundation is locally integrated in the intended project
-path. At the recorded 2026-08-18 Python 3.12 checkpoint, `make check` and
-`make build` passed; a separate coverage run measured 91.41%. Local Git has not
-been initialized, and nothing has been pushed, published, or deployed.
+The Phase 0 audit and Phase 1 foundation are complete. Phase 2 now has a reviewed
+first generator milestone: deterministic Aster-A stable operation plus one
+observation-only `SENSOR_DRIFT` scenario, with strict hidden/visible separation,
+evidence-gated abstention, and a non-exhaustive prohibited-content guard. The
+recorded 2026-08-18 Python 3.12 gate passed 146 tests with 91.46% branch coverage,
+strict typing, package builds, and isolated wheel verification. Local Git is
+initialized without a remote; nothing has been pushed, published, or deployed.
 
 There is currently:
 
