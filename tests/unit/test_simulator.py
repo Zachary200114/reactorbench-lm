@@ -25,6 +25,7 @@ from reactorbench.simulator import (
     UnsupportedScenarioError,
     build_load_transient_scenario,
     build_sensor_drift_scenario,
+    build_sensor_stuck_load_scenario,
     build_stable_scenario,
     generate_trace,
 )
@@ -183,6 +184,171 @@ def test_load_transient_builder_and_generator_fail_closed() -> None:
 
     with pytest.raises(UnsupportedScenarioError, match="cannot include"):
         generate_trace(unsupported)
+
+
+def test_sensor_stuck_load_preserves_latent_truth_and_freezes_one_channel() -> None:
+    scenario = build_sensor_stuck_load_scenario(seed=20, duration_ticks=12)
+    stuck = generate_trace(scenario)
+    load = generate_trace(build_load_transient_scenario(seed=20, duration_ticks=12))
+    injection = scenario.fault_injections[0]
+    selected_channel = injection.channel_id
+    assert selected_channel is not None
+
+    assert stuck.latent_states == load.latent_states
+    frozen_value = _channel_values(load, selected_channel)[1]
+    for stuck_frame, load_frame in zip(stuck.observations, load.observations, strict=True):
+        for stuck_channel, load_channel in zip(
+            stuck_frame.channels, load_frame.channels, strict=True
+        ):
+            if stuck_channel.channel_id != selected_channel:
+                assert stuck_channel == load_channel
+            elif stuck_frame.tick < 2:
+                assert stuck_channel == load_channel
+            else:
+                assert stuck_channel.value == frozen_value
+    selected = [
+        next(channel for channel in frame.channels if channel.channel_id == selected_channel)
+        for frame in stuck.observations
+    ]
+    assert [channel.status for channel in selected[:4]] == [ObservationStatus.NORMAL] * 4
+    assert selected[4].status is ObservationStatus.WATCH
+    assert all(channel.status is ObservationStatus.CONFLICTING for channel in selected[5:])
+    assert [frame.overall_status for frame in stuck.observations[:4]] == [
+        ObservationStatus.NORMAL
+    ] * 4
+    assert stuck.observations[4].overall_status is ObservationStatus.WATCH
+    assert all(
+        frame.overall_status is ObservationStatus.CONFLICTING for frame in stuck.observations[5:]
+    )
+    assert all(channel.quality is ChannelQuality.GOOD for channel in selected[:7])
+    assert selected[7].quality is ChannelQuality.SUSPECT
+    assert all(
+        decision.diagnosis_status is DiagnosisStatus.DIAGNOSED
+        and decision.fault_labels == (FaultFamily.SENSOR_STUCK,)
+        for decision in stuck.targets.decisions
+    )
+
+
+def test_sensor_stuck_load_events_are_causal_and_evidence_backed() -> None:
+    trace = generate_trace(build_sensor_stuck_load_scenario(seed=21, duration_ticks=12))
+    events_by_id = {event.event_id: event for event in trace.events}
+
+    assert [
+        (event.sim_time, event.event_type.value, event.action_label) for event in trace.events
+    ] == [
+        (0, "BENIGN_NOTE", None),
+        (2, "TARGET_CHANGED", None),
+        (2, "OPERATING_MODE_CHANGED", None),
+        (5, "OBSERVATION_CHANGED", None),
+        (5, "CHANNEL_DISAGREEMENT", None),
+        (6, "ACTION_APPLIED", ActionLabel.VERIFY_REDUNDANT_CHANNEL),
+        (6, "BENIGN_NOTE", None),
+        (7, "ACTION_APPLIED", ActionLabel.FLAG_SENSOR_SUSPECT),
+        (7, "OPERATING_MODE_CHANGED", None),
+        (7, "CHANNEL_QUALITY_CHANGED", None),
+    ]
+    assert [decision.immediate_action for decision in trace.targets.decisions] == [
+        ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+        ActionLabel.FLAG_SENSOR_SUSPECT,
+    ]
+    assert all(
+        EvidenceSlot.RELATED_STATE_STABLE not in decision.evidence_slots
+        and set(decision.evidence_slots)
+        == {
+            EvidenceSlot.CHANNEL_FROZEN,
+            EvidenceSlot.CORRELATED_STATE_CHANGE,
+            EvidenceSlot.CHANNEL_DISAGREEMENT,
+        }
+        for decision in trace.targets.decisions
+    )
+    assert all(
+        event.sim_time <= decision.decision_tick
+        for decision in trace.targets.decisions
+        for evidence_id in decision.evidence_event_ids
+        for event in (events_by_id[evidence_id],)
+    )
+    coordinated = next(
+        event
+        for event in trace.events
+        if event.evidence_slots == (EvidenceSlot.COORDINATED_LOAD_RESPONSE,)
+    )
+    settlement = next(
+        event
+        for event in trace.events
+        if event.event_type.value == "OPERATING_MODE_CHANGED" and event.sim_time == 7
+    )
+    assert settlement.related_event_ids == (coordinated.event_id,)
+
+
+def test_sensor_stuck_load_supports_both_channels_and_load_directions() -> None:
+    for seed, channel_id, direction in (
+        (20, "aster-electrical-output-a", 1.0),
+        (21, "aster-electrical-output-b", -1.0),
+    ):
+        stuck = generate_trace(build_sensor_stuck_load_scenario(seed=seed, channel_id=channel_id))
+        load = generate_trace(build_load_transient_scenario(seed=seed))
+        stable = generate_trace(build_stable_scenario(seed=seed))
+
+        assert stuck.latent_states == load.latent_states
+        assert (
+            stuck.latent_states[-1].values.load_demand - stable.latent_states[-1].values.load_demand
+        ) * direction > 0.0
+        assert (
+            _channel_values(stuck, channel_id)[2:] == (_channel_values(load, channel_id)[1],) * 10
+        )
+
+
+def test_sensor_stuck_load_builder_and_generator_fail_closed() -> None:
+    scenario = build_sensor_stuck_load_scenario(seed=4, duration_ticks=8)
+    injection = scenario.fault_injections[0]
+    malformed = (
+        scenario.model_copy(update={"driver": ScenarioDriver.STEADY_OPERATION}),
+        scenario.model_copy(update={"plant_variant_id": PlantVariant.ASTER_B}),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"channel_id": "aster-electrical-output-x"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"component_id": "aster-train-cirrus"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"severity": SeverityBand.MEDIUM}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": 3}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"duration_ticks": 2}),)}
+        ),
+        scenario.model_copy(update={"action_sequence": ()}),
+        scenario.model_copy(update={"fault_injections": (injection, injection)}),
+        scenario.model_copy(update={"fault_injections": [injection]}),
+    )
+
+    for invalid in malformed:
+        with pytest.raises(UnsupportedScenarioError):
+            generate_trace(invalid)
+    with pytest.raises(ValueError, match="between"):
+        build_sensor_stuck_load_scenario(seed=4, duration_ticks=7)
+    with pytest.raises(ValueError, match="electrical-output"):
+        build_sensor_stuck_load_scenario(seed=4, channel_id="aster-primary-flow-a")
+
+
+@pytest.mark.parametrize("channel_id", ["", True, 7, "aster-electrical-output-x"])
+def test_sensor_stuck_builder_requires_strict_allowlisted_channel_input(channel_id: object) -> None:
+    with pytest.raises(ValueError, match=r".+"):
+        build_sensor_stuck_load_scenario(seed=1, channel_id=channel_id)  # type: ignore[arg-type]
 
 
 def test_sensor_drift_separates_only_observation_layer_and_actions() -> None:
@@ -409,6 +575,21 @@ def test_generate_trace_rejects_unsupported_direct_schema_variants() -> None:
             generate_trace(scenario)
 
 
+def test_generate_trace_rejects_spoofed_scenario_ids_and_schema_versions() -> None:
+    scenarios = (
+        build_stable_scenario(seed=4),
+        build_load_transient_scenario(seed=4),
+        build_sensor_drift_scenario(seed=4),
+        build_sensor_stuck_load_scenario(seed=4),
+    )
+
+    for scenario in scenarios:
+        with pytest.raises(UnsupportedScenarioError, match="id"):
+            generate_trace(scenario.model_copy(update={"scenario_id": "spoofed-scenario"}))
+        with pytest.raises(UnsupportedScenarioError, match="schema"):
+            generate_trace(scenario.model_copy(update={"schema_version": "9.9.9"}))
+
+
 def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
     original_state = random.getstate()
     try:
@@ -420,12 +601,15 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         assert random.getstate() == before
         load = generate_trace(build_load_transient_scenario(seed=10))
         assert random.getstate() == before
+        stuck = generate_trace(build_sensor_stuck_load_scenario(seed=10))
+        assert random.getstate() == before
         second = generate_trace(build_stable_scenario(seed=11))
 
         assert first.latent_states != second.latent_states
         assert first.visible_payload() != second.visible_payload()
         assert drift.latent_states == first.latent_states
         assert load.latent_states != first.latent_states
+        assert stuck.latent_states == load.latent_states
     finally:
         random.setstate(original_state)
 

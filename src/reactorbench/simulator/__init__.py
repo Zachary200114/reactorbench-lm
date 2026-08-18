@@ -13,6 +13,7 @@ from .core import (
     UnsupportedScenarioError,
     build_load_transient_scenario,
     build_sensor_drift_scenario,
+    build_sensor_stuck_load_scenario,
     build_stable_scenario,
     generate_trace,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "assert_no_prohibited_content",
     "build_load_transient_scenario",
     "build_sensor_drift_scenario",
+    "build_sensor_stuck_load_scenario",
     "build_stable_scenario",
     "generate_trace",
     "scan_prohibited_content",

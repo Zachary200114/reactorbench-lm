@@ -49,6 +49,9 @@ _LOAD_RAMP_TICKS = 3
 _LOAD_STEAM_TICK = _LOAD_ONSET_TICK + 1
 _LOAD_OUTPUT_TICK = _LOAD_STEAM_TICK + 1
 _LOAD_SETTLE_TICK = _LOAD_OUTPUT_TICK + _LOAD_RAMP_TICKS
+_STUCK_VERIFY_TICK = _LOAD_OUTPUT_TICK + 1
+_STUCK_FLAG_TICK = _STUCK_VERIFY_TICK + 1
+_STUCK_FLAG_APPLY_TICK = _STUCK_FLAG_TICK + 1
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -184,6 +187,14 @@ def _drift_channels() -> tuple[str, ...]:
     )
 
 
+def _stuck_channels() -> tuple[str, ...]:
+    return tuple(
+        channel.channel_id
+        for channel in ASTER_A_SPEC.channels
+        if channel.variable is StateVariable.ELECTRICAL_OUTPUT
+    )
+
+
 def build_stable_scenario(*, seed: int, duration_ticks: int = 12) -> ScenarioDefinition:
     """Build the sole supported no-fault Aster-A scenario shape."""
 
@@ -228,6 +239,53 @@ def build_load_transient_scenario(*, seed: int, duration_ticks: int = 12) -> Sce
             ScenarioAction(
                 decision_tick=duration_ticks - 1,
                 action=ActionLabel.CONTINUE_MONITORING,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_sensor_stuck_load_scenario(
+    *, seed: int, duration_ticks: int = 12, channel_id: str | None = None
+) -> ScenarioDefinition:
+    """Build the sole supported sensor-stuck case over the benign load transient."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if _STUCK_FLAG_APPLY_TICK >= duration_ticks:
+        raise ValueError("sensor stuck needs verification and flag application history")
+    if channel_id is None:
+        selected_channel = _stuck_channels()[seed % len(_stuck_channels())]
+    elif isinstance(channel_id, str) and channel_id:
+        selected_channel = channel_id
+    else:
+        raise ValueError("channel_id must be a non-empty string or None")
+    if selected_channel not in _stuck_channels():
+        raise ValueError("channel_id must be an Aster-A electrical-output channel")
+    scenario = ScenarioDefinition(
+        scenario_id=f"aster-a-stuck-load-{seed}-{duration_ticks}-{selected_channel}",
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.LOAD_TRANSIENT,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.SENSOR_STUCK,
+                component_id=_INSTRUMENTATION,
+                onset_tick=_LOAD_ONSET_TICK,
+                severity=SeverityBand.LOW,
+                channel_id=selected_channel,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_STUCK_VERIFY_TICK,
+                action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            ),
+            ScenarioAction(
+                decision_tick=_STUCK_FLAG_TICK,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
             ),
         ),
     )
@@ -371,7 +429,10 @@ def _clip(value: float) -> float:
 
 
 def _drift_bias(*, scenario: ScenarioDefinition, tick: int, channel_id: str) -> float:
-    if not scenario.fault_injections:
+    if (
+        not scenario.fault_injections
+        or scenario.fault_injections[0].fault_family is not FaultFamily.SENSOR_DRIFT
+    ):
         return 0.0
     injection = scenario.fault_injections[0]
     if tick <= injection.onset_tick or channel_id != injection.channel_id:
@@ -384,12 +445,30 @@ def _drift_bias(*, scenario: ScenarioDefinition, tick: int, channel_id: str) -> 
     return direction * magnitude
 
 
+def _sensor_stuck_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    if (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_STUCK
+    ):
+        return scenario.fault_injections[0]
+    return None
+
+
 def _selected_channel_status(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ObservationStatus:
     if not scenario.fault_injections or channel_id != scenario.fault_injections[0].channel_id:
         return ObservationStatus.NORMAL
-    onset_tick = scenario.fault_injections[0].onset_tick
+    injection = scenario.fault_injections[0]
+    if injection.fault_family is FaultFamily.SENSOR_STUCK:
+        if tick < _LOAD_OUTPUT_TICK:
+            return ObservationStatus.NORMAL
+        if tick == _LOAD_OUTPUT_TICK:
+            return ObservationStatus.WATCH
+        return ObservationStatus.CONFLICTING
+    if injection.fault_family is not FaultFamily.SENSOR_DRIFT:
+        return ObservationStatus.NORMAL
+    onset_tick = injection.onset_tick
     if tick <= onset_tick:
         return ObservationStatus.NORMAL
     if tick == onset_tick + 1:
@@ -400,8 +479,16 @@ def _selected_channel_status(
 def _selected_channel_quality(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ChannelQuality:
+    injection = _sensor_stuck_injection(scenario)
+    if (
+        injection is not None
+        and channel_id == injection.channel_id
+        and tick >= _STUCK_FLAG_APPLY_TICK
+    ):
+        return ChannelQuality.SUSPECT
     if (
         scenario.fault_injections
+        and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_DRIFT
         and channel_id == scenario.fault_injections[0].channel_id
         and tick >= scenario.fault_injections[0].onset_tick + 4
     ):
@@ -413,6 +500,7 @@ def _observations(
     scenario: ScenarioDefinition, latent_states: tuple[LatentPlantState, ...]
 ) -> tuple[ObservationFrame, ...]:
     frames: list[ObservationFrame] = []
+    stuck = _sensor_stuck_injection(scenario)
     for latent in latent_states:
         channels: list[SensorChannelObservation] = []
         for index, variable in enumerate(StateVariable):
@@ -422,16 +510,27 @@ def _observations(
             for channel in (
                 channel for channel in ASTER_A_SPEC.channels if channel.variable is variable
             ):
+                observed_value = _clip(
+                    base
+                    + _drift_bias(
+                        scenario=scenario, tick=latent.tick, channel_id=channel.channel_id
+                    )
+                )
+                if (
+                    stuck is not None
+                    and channel.channel_id == stuck.channel_id
+                    and latent.tick >= stuck.onset_tick
+                ):
+                    reference_latent = latent_states[stuck.onset_tick - 1]
+                    reference = getattr(reference_latent.values, variable.value) + _noise(
+                        scenario.seed, stuck.onset_tick - 1, index
+                    )
+                    observed_value = _clip(reference)
                 channels.append(
                     SensorChannelObservation(
                         channel_id=channel.channel_id,
                         variable=variable,
-                        value=_clip(
-                            base
-                            + _drift_bias(
-                                scenario=scenario, tick=latent.tick, channel_id=channel.channel_id
-                            )
-                        ),
+                        value=observed_value,
                         quality=_selected_channel_quality(
                             scenario, latent.tick, channel.channel_id
                         ),
@@ -502,6 +601,143 @@ def _events_and_targets(
                 ),
             ),
         )
+
+    stuck = _sensor_stuck_injection(scenario)
+    if scenario.driver is ScenarioDriver.LOAD_TRANSIENT and stuck is not None:
+        selected_channel = stuck.channel_id or _INSTRUMENTATION
+        baseline_load = _baseline_values(scenario.seed).load_demand
+        target_load = _clip(
+            baseline_load + _load_direction(scenario.seed) * _load_magnitude(scenario.seed)
+        )
+        target = _event(
+            events,
+            sim_time=_LOAD_ONSET_TICK,
+            event_type=EventType.TARGET_CHANGED,
+            subject_id="aster-load-domain",
+            variable=StateVariable.LOAD_DEMAND,
+            value_before=baseline_load,
+            value_after=target_load,
+            related_event_ids=(stable.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_LOAD_ONSET_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id="aster-load-domain",
+            operating_mode_before=OperatingMode.STABLE,
+            operating_mode_after=OperatingMode.LOAD_CHANGE,
+            related_event_ids=(target.event_id,),
+        )
+        redundant_channel = next(
+            channel.channel_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.ELECTRICAL_OUTPUT
+            and channel.channel_id != selected_channel
+        )
+        observed_electrical_output = {
+            frame.tick: next(
+                channel.value
+                for channel in frame.channels
+                if channel.channel_id == redundant_channel
+            )
+            for frame in observations
+        }
+        correlated = _event(
+            events,
+            sim_time=_STUCK_VERIFY_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            subject_id=redundant_channel,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+            value_before=observed_electrical_output[_LOAD_ONSET_TICK - 1],
+            value_after=observed_electrical_output[_STUCK_VERIFY_TICK],
+            observation_status=ObservationStatus.NORMAL,
+            evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+            related_event_ids=(target.event_id,),
+        )
+        disagreement = _event(
+            events,
+            sim_time=_STUCK_VERIFY_TICK,
+            event_type=EventType.CHANNEL_DISAGREEMENT,
+            subject_id=selected_channel,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+            observation_status=ObservationStatus.CONFLICTING,
+            evidence_slots=(
+                EvidenceSlot.CHANNEL_DISAGREEMENT,
+                EvidenceSlot.CHANNEL_FROZEN,
+            ),
+            related_event_ids=(target.event_id, correlated.event_id),
+        )
+        _event(
+            events,
+            sim_time=_STUCK_FLAG_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_INSTRUMENTATION,
+            action_label=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            related_event_ids=(disagreement.event_id,),
+        )
+        coordinated = _event(
+            events,
+            sim_time=_STUCK_FLAG_TICK,
+            event_type=EventType.BENIGN_NOTE,
+            subject_id="aster-load-domain",
+            evidence_slots=(EvidenceSlot.COORDINATED_LOAD_RESPONSE,),
+            related_event_ids=(target.event_id,),
+        )
+        flag = _event(
+            events,
+            sim_time=_STUCK_FLAG_APPLY_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_INSTRUMENTATION,
+            action_label=ActionLabel.FLAG_SENSOR_SUSPECT,
+            related_event_ids=(disagreement.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_LOAD_SETTLE_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id="aster-load-domain",
+            operating_mode_before=OperatingMode.LOAD_CHANGE,
+            operating_mode_after=OperatingMode.STABLE,
+            related_event_ids=(coordinated.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_STUCK_FLAG_APPLY_TICK,
+            event_type=EventType.CHANNEL_QUALITY_CHANGED,
+            subject_id=selected_channel,
+            channel_quality_before=ChannelQuality.GOOD,
+            channel_quality=ChannelQuality.SUSPECT,
+            related_event_ids=(flag.event_id,),
+        )
+        decisions: tuple[DecisionTarget, ...] = (
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_STUCK_VERIFY_TICK,
+                diagnosis_status=DiagnosisStatus.DIAGNOSED,
+                fault_labels=(FaultFamily.SENSOR_STUCK,),
+                evidence_event_ids=(correlated.event_id, disagreement.event_id),
+                evidence_slots=(
+                    EvidenceSlot.CHANNEL_FROZEN,
+                    EvidenceSlot.CORRELATED_STATE_CHANGE,
+                    EvidenceSlot.CHANNEL_DISAGREEMENT,
+                ),
+                immediate_action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            ),
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_STUCK_FLAG_TICK,
+                diagnosis_status=DiagnosisStatus.DIAGNOSED,
+                fault_labels=(FaultFamily.SENSOR_STUCK,),
+                evidence_event_ids=(correlated.event_id, disagreement.event_id),
+                evidence_slots=(
+                    EvidenceSlot.CHANNEL_FROZEN,
+                    EvidenceSlot.CORRELATED_STATE_CHANGE,
+                    EvidenceSlot.CHANNEL_DISAGREEMENT,
+                ),
+                immediate_action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+        )
+        return tuple(events), ScenarioTargets(scenario_id=scenario.scenario_id, decisions=decisions)
 
     if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
         baseline_load = _baseline_values(scenario.seed).load_demand
@@ -663,16 +899,23 @@ def _events_and_targets(
 
 
 def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
+    if scenario.schema_version != SCHEMA_VERSION:
+        raise UnsupportedScenarioError("unsupported scenario schema version")
     if scenario.plant_variant_id is not PlantVariant.ASTER_A:
         raise UnsupportedScenarioError("only ASTER-A is supported")
     if scenario.driver not in {ScenarioDriver.STEADY_OPERATION, ScenarioDriver.LOAD_TRANSIENT}:
         raise UnsupportedScenarioError("unsupported scenario driver")
     try:
+        _require_uint32(scenario.seed, name="seed")
         _require_duration(scenario.duration_ticks)
     except ValueError as error:
         raise UnsupportedScenarioError(str(error)) from error
+    if type(scenario.fault_injections) is not tuple:
+        raise UnsupportedScenarioError("fault_injections must use a tuple container")
     if len(scenario.fault_injections) > 1:
         raise UnsupportedScenarioError("only zero or one injection is supported")
+    if any(not isinstance(injection, FaultInjection) for injection in scenario.fault_injections):
+        raise UnsupportedScenarioError("fault injection must use the canonical contract")
     if not scenario.fault_injections:
         expected: tuple[ScenarioAction, ...] = (
             ScenarioAction(
@@ -682,19 +925,70 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         )
         if scenario.action_sequence != expected:
             raise UnsupportedScenarioError("no-fault scenario action sequence is noncanonical")
+        expected_id = (
+            f"aster-a-stable-{scenario.seed}-{scenario.duration_ticks}"
+            if scenario.driver is ScenarioDriver.STEADY_OPERATION
+            else f"aster-a-load-{scenario.seed}-{scenario.duration_ticks}"
+        )
+        if scenario.scenario_id != expected_id:
+            raise UnsupportedScenarioError("no-fault scenario id is noncanonical")
         if scenario.driver is ScenarioDriver.LOAD_TRANSIENT and (
             _LOAD_SETTLE_TICK >= scenario.duration_ticks
         ):
             raise UnsupportedScenarioError("load transient has insufficient response history")
         return
     if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
-        raise UnsupportedScenarioError("load transient cannot include fault injections")
+        injection = scenario.fault_injections[0]
+        if injection.fault_family is not FaultFamily.SENSOR_STUCK:
+            raise UnsupportedScenarioError(
+                "load transient cannot include unsupported fault injection"
+            )
+        channel_id = injection.channel_id
+        if not isinstance(channel_id, str):
+            raise UnsupportedScenarioError(
+                "sensor-stuck load requires an electrical-output channel"
+            )
+        expected_channel_components = {
+            channel.channel_id: channel.component_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.ELECTRICAL_OUTPUT
+        }
+        expected_actions = (
+            ScenarioAction(
+                decision_tick=_STUCK_VERIFY_TICK,
+                action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            ),
+            ScenarioAction(
+                decision_tick=_STUCK_FLAG_TICK,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+        )
+        if (
+            channel_id not in _stuck_channels()
+            or injection.component_id != expected_channel_components.get(channel_id)
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _LOAD_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.action_sequence != expected_actions
+            or _STUCK_FLAG_APPLY_TICK >= scenario.duration_ticks
+        ):
+            raise UnsupportedScenarioError("unsupported sensor-stuck load scenario")
+        expected_id = f"aster-a-stuck-load-{scenario.seed}-{scenario.duration_ticks}-{channel_id}"
+        if scenario.scenario_id != expected_id:
+            raise UnsupportedScenarioError("sensor-stuck load scenario id is noncanonical")
+        return
     injection = scenario.fault_injections[0]
     if injection.fault_family is not FaultFamily.SENSOR_DRIFT:
         raise UnsupportedScenarioError("only SENSOR_DRIFT is supported")
     channel_id = injection.channel_id
     if channel_id is None:
         raise UnsupportedScenarioError("sensor drift requires a primary-flow channel")
+    if not isinstance(injection.severity, SeverityBand):
+        raise UnsupportedScenarioError("sensor drift requires a canonical severity")
+    try:
+        _require_uint32(injection.onset_tick, name="fault onset")
+    except ValueError as error:
+        raise UnsupportedScenarioError(str(error)) from error
     expected_component = {
         channel.channel_id: channel.component_id
         for channel in ASTER_A_SPEC.channels
@@ -722,6 +1016,12 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     )
     if scenario.action_sequence != expected:
         raise UnsupportedScenarioError("sensor drift action sequence is noncanonical")
+    expected_id = (
+        f"aster-a-drift-{scenario.seed}-{scenario.duration_ticks}-{injection.onset_tick}-"
+        f"{injection.severity.value.lower()}-{channel_id}"
+    )
+    if scenario.scenario_id != expected_id:
+        raise UnsupportedScenarioError("sensor drift scenario id is noncanonical")
 
 
 def generate_trace(scenario: ScenarioDefinition) -> SimulationTrace:

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
-from reactorbench.schemas import ProvenanceRecord, SplitName, TaskName
+from reactorbench.schemas import FaultFamily, ProvenanceRecord, SplitName, TaskName
 from reactorbench.simulator import (
     build_load_transient_scenario,
     build_sensor_drift_scenario,
+    build_sensor_stuck_load_scenario,
     generate_trace,
 )
 
@@ -52,3 +53,39 @@ def test_load_transient_visible_payload_hides_driver_and_fault_truth() -> None:
 
     for forbidden in ("LOAD_TRANSIENT", "fault_family", "fault_injection", "latent", "targets"):
         assert forbidden not in serialized
+
+
+def test_sensor_stuck_load_visible_payload_and_provenance_keep_driver_hidden() -> None:
+    trace = generate_trace(build_sensor_stuck_load_scenario(seed=14))
+    payload = json.dumps(trace.visible_payload(), sort_keys=True)
+    provenance = ProvenanceRecord(
+        dataset_version="0.1.0",
+        generator_commit="abcdef1",
+        renderer_version="0.1.0",
+        seed=14,
+        trajectory_id="stuck-trace-14",
+        scenario_id=trace.scenario.scenario_id,
+        plant_variant_id=trace.scenario.plant_variant_id,
+        fault_family_ids=tuple(
+            injection.fault_family for injection in trace.scenario.fault_injections
+        ),
+        template_family_ids=("template-a",),
+        split_name=SplitName.IID_TEST,
+        task_name=TaskName.FAULT_FAMILY,
+    )
+
+    assert "SENSOR_STUCK" not in payload
+    assert "LOAD_TRANSIENT" not in payload
+    assert trace.scenario.scenario_id not in payload
+    for forbidden in ("driver", "severity", "onset", "provenance"):
+        assert forbidden not in payload
+    assert provenance.fault_family_ids == (FaultFamily.SENSOR_STUCK,)
+    trajectory = trace.to_structured_trajectory(
+        trajectory_id="stuck-trace-14", provenance=provenance
+    )
+    assert trajectory.events == trace.events
+    assert trajectory.targets == trace.targets
+    assert trajectory.provenance.fault_family_ids == (FaultFamily.SENSOR_STUCK,)
+    assert tuple(injection.fault_family for injection in trajectory.scenario.fault_injections) == (
+        FaultFamily.SENSOR_STUCK,
+    )

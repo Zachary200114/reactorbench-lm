@@ -8,6 +8,7 @@ from reactorbench.simulator import (
     ASTER_A_SPEC,
     build_load_transient_scenario,
     build_sensor_drift_scenario,
+    build_sensor_stuck_load_scenario,
     build_stable_scenario,
     generate_trace,
 )
@@ -166,3 +167,96 @@ def test_load_transient_is_replayable_bounded_and_no_fault(seed: int, duration: 
         for decision in first.targets.decisions
         for evidence_id in decision.evidence_event_ids
     )
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    duration=st.integers(min_value=8, max_value=24),
+    channel_id=st.sampled_from(
+        tuple(
+            channel.channel_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.ELECTRICAL_OUTPUT
+        )
+    ),
+)
+def test_sensor_stuck_load_is_replayable_and_prefix_preserving(
+    seed: int, duration: int, channel_id: str
+) -> None:
+    scenario = build_sensor_stuck_load_scenario(
+        seed=seed, duration_ticks=duration, channel_id=channel_id
+    )
+    first = generate_trace(scenario)
+    replay = generate_trace(scenario)
+    load = generate_trace(build_load_transient_scenario(seed=seed, duration_ticks=duration))
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=duration))
+
+    assert first == replay
+    assert first.latent_states == load.latent_states
+    direction = 1.0 if seed % 2 == 0 else -1.0
+    assert (
+        first.latent_states[-1].values.load_demand - stable.latent_states[-1].values.load_demand
+    ) * direction > 0.0
+    frozen_value = next(
+        channel.value
+        for channel in load.observations[1].channels
+        if channel.channel_id == channel_id
+    )
+    for stuck_frame, load_frame in zip(first.observations, load.observations, strict=True):
+        for stuck_channel, load_channel in zip(
+            stuck_frame.channels, load_frame.channels, strict=True
+        ):
+            if stuck_channel.channel_id != channel_id:
+                assert stuck_channel == load_channel
+            elif stuck_frame.tick < 2:
+                assert stuck_channel == load_channel
+            else:
+                assert stuck_channel.value == frozen_value
+    assert all(
+        channel.value is None or 0.0 <= channel.value <= 1.0
+        for frame in first.observations
+        for channel in frame.channels
+    )
+    events_by_id = {event.event_id: event for event in first.events}
+    correlated = next(
+        event
+        for event in first.events
+        if event.event_type.value == "OBSERVATION_CHANGED"
+        and event.variable is StateVariable.ELECTRICAL_OUTPUT
+    )
+    assert correlated.value_before is not None
+    assert correlated.value_after is not None
+    direction = 1.0 if seed % 2 == 0 else -1.0
+    assert (correlated.value_after - correlated.value_before) * direction > 0.0
+    assert all(
+        events_by_id[evidence_id].sim_time <= decision.decision_tick
+        for decision in first.targets.decisions
+        for evidence_id in decision.evidence_event_ids
+    )
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    channel_id=st.sampled_from(
+        tuple(
+            channel.channel_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.ELECTRICAL_OUTPUT
+        )
+    ),
+)
+def test_sensor_stuck_minimum_trace_is_prefix_of_a_lengthened_trace(
+    seed: int, channel_id: str
+) -> None:
+    short = generate_trace(
+        build_sensor_stuck_load_scenario(seed=seed, duration_ticks=8, channel_id=channel_id)
+    )
+    long = generate_trace(
+        build_sensor_stuck_load_scenario(seed=seed, duration_ticks=12, channel_id=channel_id)
+    )
+
+    assert short.latent_states == long.latent_states[:8]
+    assert short.observations == long.observations[:8]
+    assert short.events == long.events
