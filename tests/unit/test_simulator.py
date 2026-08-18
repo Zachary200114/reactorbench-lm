@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from itertools import pairwise
 
 import pytest
 
@@ -25,6 +26,7 @@ from reactorbench.simulator import (
     UnsupportedScenarioError,
     build_load_transient_scenario,
     build_sensor_drift_scenario,
+    build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
     generate_trace,
@@ -345,6 +347,221 @@ def test_sensor_stuck_load_builder_and_generator_fail_closed() -> None:
         build_sensor_stuck_load_scenario(seed=4, channel_id="aster-primary-flow-a")
 
 
+def test_sensor_noise_is_prefix_preserving_alternating_and_evidence_gated() -> None:
+    scenario = build_sensor_noise_scenario(seed=20, duration_ticks=12)
+    trace = generate_trace(scenario)
+    stable = generate_trace(build_stable_scenario(seed=20, duration_ticks=12))
+    selected_channel = scenario.fault_injections[0].channel_id
+    assert selected_channel is not None
+    assert scenario.scenario_id == f"aster-a-noise-20-12-2-low-{selected_channel}"
+
+    assert trace.latent_states == stable.latent_states
+    for noise_frame, stable_frame in zip(trace.observations, stable.observations, strict=True):
+        for noise_channel, stable_channel in zip(
+            noise_frame.channels, stable_frame.channels, strict=True
+        ):
+            if noise_channel.channel_id != selected_channel:
+                assert noise_channel == stable_channel
+            elif noise_frame.tick <= 2:
+                assert noise_channel == stable_channel
+    selected_values = _channel_values(trace, selected_channel)
+    stable_values = _channel_values(stable, selected_channel)
+    deviations = tuple(
+        value - baseline
+        for value, baseline in zip(selected_values[3:], stable_values[3:], strict=True)
+        if value is not None and baseline is not None
+    )
+    assert all(0.018 - 1e-6 <= abs(value) <= 0.024 + 1e-6 for value in deviations)
+    assert all(left * right < 0.0 for left, right in pairwise(deviations))
+    assert all(
+        abs(deviations[index]) == pytest.approx(abs(deviations[index + 1]))
+        for index in range(0, len(deviations) - 1, 2)
+    )
+    assert [decision.immediate_action for decision in trace.targets.decisions] == [
+        ActionLabel.INSUFFICIENT_EVIDENCE,
+        ActionLabel.INSUFFICIENT_EVIDENCE,
+        ActionLabel.COMPARE_RELATED_TRENDS,
+        ActionLabel.FLAG_SENSOR_SUSPECT,
+    ]
+    assert [decision.diagnosis_status for decision in trace.targets.decisions[:2]] == [
+        DiagnosisStatus.UNRESOLVED,
+        DiagnosisStatus.UNRESOLVED,
+    ]
+    assert all(
+        decision.fault_labels == (FaultFamily.SENSOR_NOISE,)
+        for decision in trace.targets.decisions[2:]
+    )
+    selected = [
+        next(channel for channel in frame.channels if channel.channel_id == selected_channel)
+        for frame in trace.observations
+    ]
+    assert [channel.status for channel in selected[:3]] == [ObservationStatus.NORMAL] * 3
+    assert [channel.status for channel in selected[3:5]] == [ObservationStatus.WATCH] * 2
+    assert all(channel.status is ObservationStatus.CONFLICTING for channel in selected[5:])
+    assert all(channel.quality is ChannelQuality.GOOD for channel in selected[:7])
+    assert selected[7].quality is ChannelQuality.SUSPECT
+    assert all(channel.quality is not ChannelQuality.NOISY for channel in selected)
+    events_by_id = {event.event_id: event for event in trace.events}
+    second_observation = next(
+        event
+        for event in trace.events
+        if event.sim_time == 4 and event.event_type.value == "OBSERVATION_CHANGED"
+    )
+    second_abstention = next(
+        event
+        for event in trace.events
+        if event.sim_time == 5
+        and event.event_type.value == "ACTION_APPLIED"
+        and event.action_label is ActionLabel.INSUFFICIENT_EVIDENCE
+    )
+    third_deviation = next(
+        event
+        for event in trace.events
+        if event.sim_time == 5 and event.event_type.value == "OBSERVATION_CHANGED"
+    )
+    assert second_observation.event_id in trace.targets.decisions[1].evidence_event_ids
+    assert second_abstention.related_event_ids == (second_observation.event_id,)
+    assert EvidenceSlot.RAPID_INCONSISTENT_READINGS in third_deviation.evidence_slots
+    assert all(
+        events_by_id[evidence_id].sim_time <= decision.decision_tick
+        for decision in trace.targets.decisions
+        for evidence_id in decision.evidence_event_ids
+    )
+
+
+def test_sensor_noise_actions_and_fail_closed_constraints() -> None:
+    scenario = build_sensor_noise_scenario(seed=21, duration_ticks=8)
+    trace = generate_trace(scenario)
+    injection = scenario.fault_injections[0]
+    assert [
+        (event.sim_time, event.action_label) for event in trace.events if event.action_label
+    ] == [
+        (4, ActionLabel.INSUFFICIENT_EVIDENCE),
+        (5, ActionLabel.INSUFFICIENT_EVIDENCE),
+        (6, ActionLabel.COMPARE_RELATED_TRENDS),
+        (7, ActionLabel.FLAG_SENSOR_SUSPECT),
+    ]
+    assert [
+        (event.sim_time, event.event_type.value) for event in trace.events if event.sim_time >= 3
+    ] == [
+        (3, "OBSERVATION_CHANGED"),
+        (4, "ACTION_APPLIED"),
+        (4, "OBSERVATION_CHANGED"),
+        (5, "ACTION_APPLIED"),
+        (5, "OBSERVATION_CHANGED"),
+        (5, "CHANNEL_DISAGREEMENT"),
+        (6, "ACTION_APPLIED"),
+        (6, "BENIGN_NOTE"),
+        (7, "ACTION_APPLIED"),
+        (7, "CHANNEL_QUALITY_CHANGED"),
+    ]
+    invalid = (
+        scenario.model_copy(update={"driver": ScenarioDriver.LOAD_TRANSIENT}),
+        scenario.model_copy(update={"plant_variant_id": PlantVariant.ASTER_B}),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"channel_id": "aster-primary-flow-a"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"component_id": "aster-train-cirrus"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"severity": SeverityBand.MEDIUM}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": 3}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"duration_ticks": 2}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"fault_family": FaultFamily.SENSOR_DRIFT}),
+                )
+            }
+        ),
+        scenario.model_copy(update={"action_sequence": ()}),
+        scenario.model_copy(update={"fault_injections": (injection, injection)}),
+        scenario.model_copy(update={"fault_injections": [injection]}),
+        scenario.model_copy(update={"scenario_id": "spoofed-scenario"}),
+        scenario.model_copy(update={"schema_version": "9.9.9"}),
+    )
+    for malformed in invalid:
+        with pytest.raises(UnsupportedScenarioError):
+            generate_trace(malformed)
+    for channel_id in ("", True, 7, "aster-primary-thermal-state-x"):
+        with pytest.raises(ValueError, match=r".+"):
+            build_sensor_noise_scenario(seed=1, channel_id=channel_id)  # type: ignore[arg-type]
+
+
+def test_model_copy_lookalikes_are_rejected_before_fault_dispatch() -> None:
+    noise = build_sensor_noise_scenario(seed=31, duration_ticks=8)
+    stuck = build_sensor_stuck_load_scenario(seed=31, duration_ticks=8)
+
+    for scenario in (noise, stuck):
+        injection = scenario.fault_injections[0]
+        first_action = scenario.action_sequence[0]
+        canonical_actions = scenario.action_sequence
+        invalid = (
+            scenario.model_copy(update={"driver": scenario.driver.value}),
+            scenario.model_copy(
+                update={"fault_injections": (injection.model_copy(update={"onset_tick": 2.0}),)}
+            ),
+            scenario.model_copy(
+                update={"fault_injections": (injection.model_copy(update={"onset_tick": True}),)}
+            ),
+            scenario.model_copy(
+                update={
+                    "action_sequence": (
+                        first_action.model_copy(
+                            update={"decision_tick": float(first_action.decision_tick)}
+                        ),
+                        *canonical_actions[1:],
+                    )
+                }
+            ),
+            scenario.model_copy(
+                update={
+                    "action_sequence": (
+                        first_action.model_copy(update={"decision_tick": True}),
+                        *canonical_actions[1:],
+                    )
+                }
+            ),
+            scenario.model_copy(
+                update={
+                    "action_sequence": (
+                        first_action.model_copy(update={"action": first_action.action.value}),
+                        *canonical_actions[1:],
+                    )
+                }
+            ),
+            scenario.model_copy(update={"action_sequence": list(canonical_actions)}),
+            scenario.model_copy(update={"action_sequence": ("malformed-action",)}),
+        )
+        for malformed in invalid:
+            with pytest.raises(UnsupportedScenarioError):
+                generate_trace(malformed)
+
+    valid_noise = generate_trace(noise)
+    assert all(
+        decision.fault_labels == (FaultFamily.SENSOR_NOISE,)
+        for decision in valid_noise.targets.decisions[2:]
+    )
+
+
 @pytest.mark.parametrize("channel_id", ["", True, 7, "aster-electrical-output-x"])
 def test_sensor_stuck_builder_requires_strict_allowlisted_channel_input(channel_id: object) -> None:
     with pytest.raises(ValueError, match=r".+"):
@@ -493,6 +710,9 @@ def test_diagnosis_references_stable_and_mature_evidence_without_future_events()
         (build_stable_scenario, {"seed": 1, "duration_ticks": 7}),
         (build_sensor_drift_scenario, {"seed": 1, "onset_tick": True}),
         (build_sensor_drift_scenario, {"seed": 1, "duration_ticks": 8, "onset_tick": 4}),
+        (build_sensor_noise_scenario, {"seed": True}),
+        (build_sensor_noise_scenario, {"seed": 1, "duration_ticks": True}),
+        (build_sensor_noise_scenario, {"seed": 1, "duration_ticks": 7}),
     ],
 )
 def test_builders_reject_loose_or_unsupported_inputs(builder: object, kwargs: object) -> None:
@@ -603,6 +823,8 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         assert random.getstate() == before
         stuck = generate_trace(build_sensor_stuck_load_scenario(seed=10))
         assert random.getstate() == before
+        noise = generate_trace(build_sensor_noise_scenario(seed=10))
+        assert random.getstate() == before
         second = generate_trace(build_stable_scenario(seed=11))
 
         assert first.latent_states != second.latent_states
@@ -610,6 +832,7 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         assert drift.latent_states == first.latent_states
         assert load.latent_states != first.latent_states
         assert stuck.latent_states == load.latent_states
+        assert noise.latent_states == first.latent_states
     finally:
         random.setstate(original_state)
 
@@ -618,10 +841,12 @@ def test_maximum_duration_and_aster_spec_channel_cardinality() -> None:
     trace = generate_trace(build_stable_scenario(seed=4, duration_ticks=64))
     drift = generate_trace(build_sensor_drift_scenario(seed=4, duration_ticks=64))
     load = generate_trace(build_load_transient_scenario(seed=4, duration_ticks=64))
+    noise = generate_trace(build_sensor_noise_scenario(seed=4, duration_ticks=64))
 
     assert len(trace.observations) == 64
     assert len(drift.observations) == 64
     assert len(load.observations) == 64
+    assert len(noise.observations) == 64
     assert len(set(ASTER_A_SPEC.primary_train_ids)) == 2
     assert len(set(ASTER_A_SPEC.support_bus_ids)) == 2
     for variable in StateVariable:

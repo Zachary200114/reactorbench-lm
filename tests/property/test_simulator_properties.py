@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from itertools import pairwise
+
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -8,6 +11,7 @@ from reactorbench.simulator import (
     ASTER_A_SPEC,
     build_load_transient_scenario,
     build_sensor_drift_scenario,
+    build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
     generate_trace,
@@ -260,3 +264,93 @@ def test_sensor_stuck_minimum_trace_is_prefix_of_a_lengthened_trace(
     assert short.latent_states == long.latent_states[:8]
     assert short.observations == long.observations[:8]
     assert short.events == long.events
+
+
+@settings(max_examples=35, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    duration=st.integers(min_value=8, max_value=24),
+    channel_id=st.sampled_from(
+        tuple(
+            channel.channel_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+        )
+    ),
+)
+def test_sensor_noise_is_replayable_alternating_and_isolated(
+    seed: int, duration: int, channel_id: str
+) -> None:
+    scenario = build_sensor_noise_scenario(
+        seed=seed, duration_ticks=duration, channel_id=channel_id
+    )
+    noise = generate_trace(scenario)
+    replay = generate_trace(scenario)
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=duration))
+
+    assert noise == replay
+    assert noise.latent_states == stable.latent_states
+    selected_offsets: list[float] = []
+    for noise_frame, stable_frame in zip(noise.observations, stable.observations, strict=True):
+        for noise_channel, stable_channel in zip(
+            noise_frame.channels, stable_frame.channels, strict=True
+        ):
+            if noise_channel.channel_id != channel_id:
+                assert noise_channel == stable_channel
+            elif noise_frame.tick <= 2:
+                assert noise_channel == stable_channel
+            else:
+                assert noise_channel.value is not None
+                assert stable_channel.value is not None
+                selected_offsets.append(noise_channel.value - stable_channel.value)
+    assert all(0.018 - 1e-6 <= abs(offset) <= 0.024 + 1e-6 for offset in selected_offsets)
+    assert selected_offsets[0] * (1.0 if seed % 2 == 0 else -1.0) > 0.0
+    assert all(earlier * later < 0.0 for earlier, later in pairwise(selected_offsets))
+    assert all(
+        abs(selected_offsets[index]) == pytest.approx(abs(selected_offsets[index + 1]))
+        for index in range(0, len(selected_offsets) - 1, 2)
+    )
+    assert all(
+        channel.value is None or 0.0 <= channel.value <= 1.0
+        for frame in noise.observations
+        for channel in frame.channels
+    )
+    assert [event.event_index for event in noise.events] == list(range(len(noise.events)))
+    assert [event.sim_time for event in noise.events] == sorted(
+        event.sim_time for event in noise.events
+    )
+    events_by_id = {event.event_id: event for event in noise.events}
+    assert all(
+        events_by_id[evidence_id].sim_time <= decision.decision_tick
+        for decision in noise.targets.decisions
+        for evidence_id in decision.evidence_event_ids
+    )
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    channel_id=st.sampled_from(
+        tuple(
+            channel.channel_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+        )
+    ),
+)
+def test_sensor_noise_minimum_trace_is_prefix_of_a_lengthened_trace(
+    seed: int, channel_id: str
+) -> None:
+    short = generate_trace(
+        build_sensor_noise_scenario(seed=seed, duration_ticks=8, channel_id=channel_id)
+    )
+    long = generate_trace(
+        build_sensor_noise_scenario(seed=seed, duration_ticks=12, channel_id=channel_id)
+    )
+
+    assert short.latent_states == long.latent_states[:8]
+    assert short.observations == long.observations[:8]
+    assert short.events == long.events
+    assert tuple(
+        decision.model_dump(exclude={"scenario_id"}) for decision in short.targets.decisions
+    ) == tuple(decision.model_dump(exclude={"scenario_id"}) for decision in long.targets.decisions)

@@ -52,6 +52,12 @@ _LOAD_SETTLE_TICK = _LOAD_OUTPUT_TICK + _LOAD_RAMP_TICKS
 _STUCK_VERIFY_TICK = _LOAD_OUTPUT_TICK + 1
 _STUCK_FLAG_TICK = _STUCK_VERIFY_TICK + 1
 _STUCK_FLAG_APPLY_TICK = _STUCK_FLAG_TICK + 1
+_SENSOR_NOISE_ONSET_TICK = 2
+_SENSOR_NOISE_FIRST_DECISION_TICK = 3
+_SENSOR_NOISE_SECOND_DECISION_TICK = 4
+_SENSOR_NOISE_DIAGNOSIS_TICK = 5
+_SENSOR_NOISE_FLAG_TICK = 6
+_SENSOR_NOISE_FLAG_APPLY_TICK = 7
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -195,6 +201,14 @@ def _stuck_channels() -> tuple[str, ...]:
     )
 
 
+def _sensor_noise_channels() -> tuple[str, ...]:
+    return tuple(
+        channel.channel_id
+        for channel in ASTER_A_SPEC.channels
+        if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+    )
+
+
 def build_stable_scenario(*, seed: int, duration_ticks: int = 12) -> ScenarioDefinition:
     """Build the sole supported no-fault Aster-A scenario shape."""
 
@@ -285,6 +299,64 @@ def build_sensor_stuck_load_scenario(
             ),
             ScenarioAction(
                 decision_tick=_STUCK_FLAG_TICK,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_sensor_noise_scenario(
+    *, seed: int, duration_ticks: int = 12, channel_id: str | None = None
+) -> ScenarioDefinition:
+    """Build the sole supported alternating primary-thermal sensor-noise case."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if _SENSOR_NOISE_FLAG_APPLY_TICK >= duration_ticks:
+        raise ValueError("sensor noise needs diagnosis and flag application history")
+    if channel_id is None:
+        selected_channel = _sensor_noise_channels()[seed % len(_sensor_noise_channels())]
+    elif isinstance(channel_id, str) and channel_id:
+        selected_channel = channel_id
+    else:
+        raise ValueError("channel_id must be a non-empty string or None")
+    if selected_channel not in _sensor_noise_channels():
+        raise ValueError("channel_id must be an Aster-A primary-thermal-state channel")
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"aster-a-noise-{seed}-{duration_ticks}-{_SENSOR_NOISE_ONSET_TICK}-low-"
+            f"{selected_channel}"
+        ),
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.SENSOR_NOISE,
+                component_id=_INSTRUMENTATION,
+                onset_tick=_SENSOR_NOISE_ONSET_TICK,
+                severity=SeverityBand.LOW,
+                channel_id=selected_channel,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_FIRST_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_SECOND_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_DIAGNOSIS_TICK,
+                action=ActionLabel.COMPARE_RELATED_TRENDS,
+            ),
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_FLAG_TICK,
                 action=ActionLabel.FLAG_SENSOR_SUSPECT,
             ),
         ),
@@ -454,6 +526,27 @@ def _sensor_stuck_injection(scenario: ScenarioDefinition) -> FaultInjection | No
     return None
 
 
+def _sensor_noise_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    if (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_NOISE
+    ):
+        return scenario.fault_injections[0]
+    return None
+
+
+def _sensor_noise_offset(*, seed: int, tick: int) -> float:
+    if tick <= _SENSOR_NOISE_ONSET_TICK:
+        return 0.0
+    pair_index = (tick - _SENSOR_NOISE_FIRST_DECISION_TICK) // 2
+    amplitude = Random(seed * 5_000_011 + pair_index * 17_777 + 71).uniform(  # noqa: S311
+        0.018, 0.024
+    )
+    phase = 1.0 if seed % 2 == 0 else -1.0
+    alternating = -1.0 if (tick - _SENSOR_NOISE_FIRST_DECISION_TICK) % 2 else 1.0
+    return phase * amplitude * alternating
+
+
 def _selected_channel_status(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ObservationStatus:
@@ -464,6 +557,12 @@ def _selected_channel_status(
         if tick < _LOAD_OUTPUT_TICK:
             return ObservationStatus.NORMAL
         if tick == _LOAD_OUTPUT_TICK:
+            return ObservationStatus.WATCH
+        return ObservationStatus.CONFLICTING
+    if injection.fault_family is FaultFamily.SENSOR_NOISE:
+        if tick <= _SENSOR_NOISE_ONSET_TICK:
+            return ObservationStatus.NORMAL
+        if tick <= _SENSOR_NOISE_SECOND_DECISION_TICK:
             return ObservationStatus.WATCH
         return ObservationStatus.CONFLICTING
     if injection.fault_family is not FaultFamily.SENSOR_DRIFT:
@@ -486,6 +585,13 @@ def _selected_channel_quality(
         and tick >= _STUCK_FLAG_APPLY_TICK
     ):
         return ChannelQuality.SUSPECT
+    sensor_noise = _sensor_noise_injection(scenario)
+    if (
+        sensor_noise is not None
+        and channel_id == sensor_noise.channel_id
+        and tick >= _SENSOR_NOISE_FLAG_APPLY_TICK
+    ):
+        return ChannelQuality.SUSPECT
     if (
         scenario.fault_injections
         and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_DRIFT
@@ -501,6 +607,7 @@ def _observations(
 ) -> tuple[ObservationFrame, ...]:
     frames: list[ObservationFrame] = []
     stuck = _sensor_stuck_injection(scenario)
+    sensor_noise = _sensor_noise_injection(scenario)
     for latent in latent_states:
         channels: list[SensorChannelObservation] = []
         for index, variable in enumerate(StateVariable):
@@ -526,6 +633,14 @@ def _observations(
                         scenario.seed, stuck.onset_tick - 1, index
                     )
                     observed_value = _clip(reference)
+                if (
+                    sensor_noise is not None
+                    and channel.channel_id == sensor_noise.channel_id
+                    and latent.tick > sensor_noise.onset_tick
+                ):
+                    observed_value = _clip(
+                        observed_value + _sensor_noise_offset(seed=scenario.seed, tick=latent.tick)
+                    )
                 channels.append(
                     SensorChannelObservation(
                         channel_id=channel.channel_id,
@@ -600,6 +715,164 @@ def _events_and_targets(
                     ),
                 ),
             ),
+        )
+
+    sensor_noise = _sensor_noise_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and sensor_noise is not None:
+        selected_channel = sensor_noise.channel_id or _INSTRUMENTATION
+        observed = {
+            frame.tick: next(
+                channel.value
+                for channel in frame.channels
+                if channel.channel_id == selected_channel
+            )
+            for frame in observations
+        }
+        first = _event(
+            events,
+            sim_time=_SENSOR_NOISE_FIRST_DECISION_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            subject_id=selected_channel,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+            value_before=observed[_SENSOR_NOISE_ONSET_TICK],
+            value_after=observed[_SENSOR_NOISE_FIRST_DECISION_TICK],
+            observation_status=ObservationStatus.WATCH,
+            evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+            related_event_ids=(stable.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_SENSOR_NOISE_SECOND_DECISION_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_INSTRUMENTATION,
+            action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+            related_event_ids=(first.event_id,),
+        )
+        second_observation = _event(
+            events,
+            sim_time=_SENSOR_NOISE_SECOND_DECISION_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            subject_id=selected_channel,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+            value_before=observed[_SENSOR_NOISE_FIRST_DECISION_TICK],
+            value_after=observed[_SENSOR_NOISE_SECOND_DECISION_TICK],
+            observation_status=ObservationStatus.WATCH,
+            evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+            related_event_ids=(first.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_SENSOR_NOISE_DIAGNOSIS_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_INSTRUMENTATION,
+            action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+            related_event_ids=(second_observation.event_id,),
+        )
+        alternating = _event(
+            events,
+            sim_time=_SENSOR_NOISE_DIAGNOSIS_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            subject_id=selected_channel,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+            value_before=observed[_SENSOR_NOISE_SECOND_DECISION_TICK],
+            value_after=observed[_SENSOR_NOISE_DIAGNOSIS_TICK],
+            observation_status=ObservationStatus.CONFLICTING,
+            evidence_slots=(EvidenceSlot.RAPID_INCONSISTENT_READINGS,),
+            related_event_ids=(second_observation.event_id,),
+        )
+        disagreement = _event(
+            events,
+            sim_time=_SENSOR_NOISE_DIAGNOSIS_TICK,
+            event_type=EventType.CHANNEL_DISAGREEMENT,
+            subject_id=selected_channel,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+            observation_status=ObservationStatus.CONFLICTING,
+            evidence_slots=(
+                EvidenceSlot.CHANNEL_DISAGREEMENT,
+                EvidenceSlot.RAPID_INCONSISTENT_READINGS,
+            ),
+            related_event_ids=(first.event_id, alternating.event_id),
+        )
+        _event(
+            events,
+            sim_time=_SENSOR_NOISE_FLAG_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_INSTRUMENTATION,
+            action_label=ActionLabel.COMPARE_RELATED_TRENDS,
+            related_event_ids=(disagreement.event_id,),
+        )
+        related = _event(
+            events,
+            sim_time=_SENSOR_NOISE_FLAG_TICK,
+            event_type=EventType.BENIGN_NOTE,
+            subject_id=_INSTRUMENTATION,
+            evidence_slots=(EvidenceSlot.RELATED_STATE_STABLE,),
+            related_event_ids=(stable.event_id,),
+        )
+        flag = _event(
+            events,
+            sim_time=_SENSOR_NOISE_FLAG_APPLY_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_INSTRUMENTATION,
+            action_label=ActionLabel.FLAG_SENSOR_SUSPECT,
+            related_event_ids=(related.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_SENSOR_NOISE_FLAG_APPLY_TICK,
+            event_type=EventType.CHANNEL_QUALITY_CHANGED,
+            subject_id=selected_channel,
+            channel_quality_before=ChannelQuality.GOOD,
+            channel_quality=ChannelQuality.SUSPECT,
+            related_event_ids=(flag.event_id,),
+        )
+        noise_decisions: tuple[DecisionTarget, ...] = (
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_SENSOR_NOISE_FIRST_DECISION_TICK,
+                diagnosis_status=DiagnosisStatus.UNRESOLVED,
+                evidence_event_ids=(first.event_id,),
+                evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+                immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+                abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+            ),
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_SENSOR_NOISE_SECOND_DECISION_TICK,
+                diagnosis_status=DiagnosisStatus.UNRESOLVED,
+                evidence_event_ids=(first.event_id, second_observation.event_id),
+                evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+                immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+                abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+            ),
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_SENSOR_NOISE_DIAGNOSIS_TICK,
+                diagnosis_status=DiagnosisStatus.DIAGNOSED,
+                fault_labels=(FaultFamily.SENSOR_NOISE,),
+                evidence_event_ids=(disagreement.event_id,),
+                evidence_slots=(
+                    EvidenceSlot.CHANNEL_DISAGREEMENT,
+                    EvidenceSlot.RAPID_INCONSISTENT_READINGS,
+                ),
+                immediate_action=ActionLabel.COMPARE_RELATED_TRENDS,
+            ),
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_SENSOR_NOISE_FLAG_TICK,
+                diagnosis_status=DiagnosisStatus.DIAGNOSED,
+                fault_labels=(FaultFamily.SENSOR_NOISE,),
+                evidence_event_ids=(disagreement.event_id, related.event_id),
+                evidence_slots=(
+                    EvidenceSlot.CHANNEL_DISAGREEMENT,
+                    EvidenceSlot.RAPID_INCONSISTENT_READINGS,
+                    EvidenceSlot.RELATED_STATE_STABLE,
+                ),
+                immediate_action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+        )
+        return tuple(events), ScenarioTargets(
+            scenario_id=scenario.scenario_id, decisions=noise_decisions
         )
 
     stuck = _sensor_stuck_injection(scenario)
@@ -901,8 +1174,12 @@ def _events_and_targets(
 def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     if scenario.schema_version != SCHEMA_VERSION:
         raise UnsupportedScenarioError("unsupported scenario schema version")
+    if type(scenario.plant_variant_id) is not PlantVariant:
+        raise UnsupportedScenarioError("plant variant must use the canonical enum")
     if scenario.plant_variant_id is not PlantVariant.ASTER_A:
         raise UnsupportedScenarioError("only ASTER-A is supported")
+    if type(scenario.driver) is not ScenarioDriver:
+        raise UnsupportedScenarioError("scenario driver must use the canonical enum")
     if scenario.driver not in {ScenarioDriver.STEADY_OPERATION, ScenarioDriver.LOAD_TRANSIENT}:
         raise UnsupportedScenarioError("unsupported scenario driver")
     try:
@@ -914,8 +1191,30 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         raise UnsupportedScenarioError("fault_injections must use a tuple container")
     if len(scenario.fault_injections) > 1:
         raise UnsupportedScenarioError("only zero or one injection is supported")
-    if any(not isinstance(injection, FaultInjection) for injection in scenario.fault_injections):
+    if any(type(injection) is not FaultInjection for injection in scenario.fault_injections):
         raise UnsupportedScenarioError("fault injection must use the canonical contract")
+    if type(scenario.action_sequence) is not tuple:
+        raise UnsupportedScenarioError("action_sequence must use a tuple container")
+    for action in scenario.action_sequence:
+        if type(action) is not ScenarioAction:
+            raise UnsupportedScenarioError("action sequence must use the canonical contract")
+        if type(action.action) is not ActionLabel:
+            raise UnsupportedScenarioError("scenario action must use the canonical enum")
+        try:
+            _require_uint32(action.decision_tick, name="action decision tick")
+        except ValueError as error:
+            raise UnsupportedScenarioError(str(error)) from error
+    for injection in scenario.fault_injections:
+        if type(injection.fault_family) is not FaultFamily:
+            raise UnsupportedScenarioError("fault family must use the canonical enum")
+        if type(injection.severity) is not SeverityBand:
+            raise UnsupportedScenarioError("fault severity must use the canonical enum")
+        try:
+            _require_uint32(injection.onset_tick, name="fault onset")
+            if injection.duration_ticks is not None:
+                _require_uint32(injection.duration_ticks, name="fault duration")
+        except ValueError as error:
+            raise UnsupportedScenarioError(str(error)) from error
     if not scenario.fault_injections:
         expected: tuple[ScenarioAction, ...] = (
             ScenarioAction(
@@ -953,7 +1252,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             for channel in ASTER_A_SPEC.channels
             if channel.variable is StateVariable.ELECTRICAL_OUTPUT
         }
-        expected_actions = (
+        stuck_expected_actions = (
             ScenarioAction(
                 decision_tick=_STUCK_VERIFY_TICK,
                 action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
@@ -969,7 +1268,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             or injection.severity is not SeverityBand.LOW
             or injection.onset_tick != _LOAD_ONSET_TICK
             or injection.duration_ticks is not None
-            or scenario.action_sequence != expected_actions
+            or scenario.action_sequence != stuck_expected_actions
             or _STUCK_FLAG_APPLY_TICK >= scenario.duration_ticks
         ):
             raise UnsupportedScenarioError("unsupported sensor-stuck load scenario")
@@ -978,6 +1277,44 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             raise UnsupportedScenarioError("sensor-stuck load scenario id is noncanonical")
         return
     injection = scenario.fault_injections[0]
+    if injection.fault_family is FaultFamily.SENSOR_NOISE:
+        channel_id = injection.channel_id
+        noise_expected_actions = (
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_FIRST_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_SECOND_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_DIAGNOSIS_TICK,
+                action=ActionLabel.COMPARE_RELATED_TRENDS,
+            ),
+            ScenarioAction(
+                decision_tick=_SENSOR_NOISE_FLAG_TICK,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+        )
+        if (
+            not isinstance(channel_id, str)
+            or channel_id not in _sensor_noise_channels()
+            or injection.component_id != _INSTRUMENTATION
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _SENSOR_NOISE_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.action_sequence != noise_expected_actions
+            or _SENSOR_NOISE_FLAG_APPLY_TICK >= scenario.duration_ticks
+        ):
+            raise UnsupportedScenarioError("unsupported sensor-noise scenario")
+        expected_id = (
+            f"aster-a-noise-{scenario.seed}-{scenario.duration_ticks}-{_SENSOR_NOISE_ONSET_TICK}-low-"
+            f"{channel_id}"
+        )
+        if scenario.scenario_id != expected_id:
+            raise UnsupportedScenarioError("sensor-noise scenario id is noncanonical")
+        return
     if injection.fault_family is not FaultFamily.SENSOR_DRIFT:
         raise UnsupportedScenarioError("only SENSOR_DRIFT is supported")
     channel_id = injection.channel_id
