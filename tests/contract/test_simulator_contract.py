@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 
 from reactorbench.schemas import ProvenanceRecord, SplitName, TaskName
-from reactorbench.simulator import build_sensor_drift_scenario, generate_trace
+from reactorbench.simulator import (
+    build_load_transient_scenario,
+    build_sensor_drift_scenario,
+    generate_trace,
+)
 
 
 def test_visible_payload_hides_truth_and_structured_trajectory_validates() -> None:
@@ -40,3 +44,11 @@ def test_visible_payload_hides_truth_and_structured_trajectory_validates() -> No
         for index, event in enumerate(trace.events)
         for related_id in event.related_event_ids
     )
+
+
+def test_load_transient_visible_payload_hides_driver_and_fault_truth() -> None:
+    trace = generate_trace(build_load_transient_scenario(seed=14))
+    serialized = json.dumps(trace.visible_payload(), sort_keys=True)
+
+    for forbidden in ("LOAD_TRANSIENT", "fault_family", "fault_injection", "latent", "targets"):
+        assert forbidden not in serialized

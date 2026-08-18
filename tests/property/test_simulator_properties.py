@@ -3,9 +3,10 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from reactorbench.schemas import SeverityBand, StateVariable
+from reactorbench.schemas import ActionLabel, DiagnosisStatus, SeverityBand, StateVariable
 from reactorbench.simulator import (
     ASTER_A_SPEC,
+    build_load_transient_scenario,
     build_sensor_drift_scenario,
     build_stable_scenario,
     generate_trace,
@@ -84,5 +85,84 @@ def test_drift_preserves_latent_and_bounds_observations(
     assert all(
         event_by_id[evidence_id].sim_time <= decision.decision_tick
         for decision in drift.targets.decisions
+        for evidence_id in decision.evidence_event_ids
+    )
+
+
+@settings(max_examples=30, deadline=None)
+@given(seed=st.integers(min_value=0, max_value=2**32 - 1), duration=st.integers(8, 64))
+def test_load_transient_is_replayable_bounded_and_no_fault(seed: int, duration: int) -> None:
+    scenario = build_load_transient_scenario(seed=seed, duration_ticks=duration)
+    first = generate_trace(scenario)
+    second = generate_trace(scenario)
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=duration))
+
+    assert first == second
+    assert scenario.fault_injections == ()
+    assert first.latent_states[:2] == stable.latent_states[:2]
+    assert first.observations[:2] == stable.observations[:2]
+    assert all(
+        decision.diagnosis_status is DiagnosisStatus.NO_FAULT
+        and decision.fault_labels == ()
+        and decision.abstention_reason is None
+        and decision.immediate_action is ActionLabel.CONTINUE_MONITORING
+        for decision in first.targets.decisions
+    )
+    assert all(
+        transient.values.transfer_efficiency == baseline.values.transfer_efficiency
+        for transient, baseline in zip(first.latent_states, stable.latent_states, strict=True)
+    )
+    for frame in first.observations:
+        for variable in StateVariable:
+            pair = [channel for channel in frame.channels if channel.variable is variable]
+            assert len(pair) == 2
+            assert pair[0].value == pair[1].value
+    first_changes = {
+        variable: next(
+            state.tick
+            for state, baseline in zip(first.latent_states, stable.latent_states, strict=True)
+            if getattr(state.values, variable.value) != getattr(baseline.values, variable.value)
+        )
+        for variable in (
+            StateVariable.LOAD_DEMAND,
+            StateVariable.HEAT_SOURCE_LEVEL,
+            StateVariable.PRIMARY_FLOW,
+            StateVariable.STEAM_STATE,
+            StateVariable.TURBINE_OUTPUT,
+            StateVariable.ELECTRICAL_OUTPUT,
+        )
+    }
+    assert first_changes[StateVariable.LOAD_DEMAND] == 2
+    assert first_changes[StateVariable.HEAT_SOURCE_LEVEL] == 2
+    assert first_changes[StateVariable.PRIMARY_FLOW] == 2
+    assert first_changes[StateVariable.STEAM_STATE] == 3
+    assert first_changes[StateVariable.TURBINE_OUTPUT] >= first_changes[StateVariable.STEAM_STATE]
+    assert (
+        first_changes[StateVariable.ELECTRICAL_OUTPUT] >= first_changes[StateVariable.STEAM_STATE]
+    )
+    direction = 1.0 if seed % 2 == 0 else -1.0
+    assert (
+        first.latent_states[-1].values.load_demand - stable.latent_states[-1].values.load_demand
+    ) * direction > 0.0
+    assert all(
+        0.0 <= value <= 1.0
+        for state in first.latent_states
+        for value in state.values.model_dump().values()
+    )
+    assert all(
+        abs(later - earlier) <= ASTER_A_SPEC.max_per_tick_step
+        for before, after in zip(first.latent_states, first.latent_states[1:], strict=False)
+        for earlier, later in zip(
+            before.values.model_dump().values(), after.values.model_dump().values(), strict=True
+        )
+    )
+    assert [event.event_index for event in first.events] == list(range(len(first.events)))
+    assert [event.sim_time for event in first.events] == sorted(
+        event.sim_time for event in first.events
+    )
+    event_by_id = {event.event_id: event for event in first.events}
+    assert all(
+        event_by_id[evidence_id].sim_time <= decision.decision_tick
+        for decision in first.targets.decisions
         for evidence_id in decision.evidence_event_ids
     )

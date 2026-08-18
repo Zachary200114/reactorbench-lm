@@ -44,6 +44,19 @@ _MAX_DURATION = 64
 _MAX_SEED = 4_294_967_295
 _NOISE_BOUND = 0.006
 _MAX_TICK_STEP = 0.03
+_LOAD_ONSET_TICK = 2
+_LOAD_RAMP_TICKS = 3
+_LOAD_STEAM_TICK = _LOAD_ONSET_TICK + 1
+_LOAD_OUTPUT_TICK = _LOAD_STEAM_TICK + 1
+_LOAD_SETTLE_TICK = _LOAD_OUTPUT_TICK + _LOAD_RAMP_TICKS
+_LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
+    StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
+    StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
+    StateVariable.PRIMARY_FLOW: (0.55, _LOAD_ONSET_TICK),
+    StateVariable.STEAM_STATE: (0.75, _LOAD_STEAM_TICK),
+    StateVariable.TURBINE_OUTPUT: (0.75, _LOAD_OUTPUT_TICK),
+    StateVariable.ELECTRICAL_OUTPUT: (0.75, _LOAD_OUTPUT_TICK),
+}
 
 
 class UnsupportedScenarioError(ValueError):
@@ -193,6 +206,35 @@ def build_stable_scenario(*, seed: int, duration_ticks: int = 12) -> ScenarioDef
     return scenario
 
 
+def build_load_transient_scenario(*, seed: int, duration_ticks: int = 12) -> ScenarioDefinition:
+    """Build the canonical benign load transition derived only from seed and duration.
+
+    The change starts at a fixed early tick.  Its sign and bounded magnitude are
+    deterministic functions of the seed, so no unrepresented scenario parameter
+    is needed to reproduce or reverse the fictional transition.
+    """
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if _LOAD_SETTLE_TICK >= duration_ticks:
+        raise ValueError("load transient needs a completed bounded response")
+    scenario = ScenarioDefinition(
+        scenario_id=f"aster-a-load-{seed}-{duration_ticks}",
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.LOAD_TRANSIENT,
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=duration_ticks - 1,
+                action=ActionLabel.CONTINUE_MONITORING,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
 def build_sensor_drift_scenario(
     *,
     seed: int,
@@ -266,8 +308,31 @@ def _baseline_values(seed: int) -> PlantValues:
     return PlantValues(**values)
 
 
+def _load_direction(seed: int) -> float:
+    return 1.0 if seed % 2 == 0 else -1.0
+
+
+def _load_magnitude(seed: int) -> float:
+    return 0.036 + Random(seed * 3_000_017 + 43).uniform(-0.006, 0.006)  # noqa: S311
+
+
+def _load_progress(tick: int, start_tick: int) -> float:
+    if tick < start_tick:
+        return 0.0
+    return min(1.0, (tick - start_tick + 1) / _LOAD_RAMP_TICKS)
+
+
+def _load_transient_values(seed: int, tick: int) -> PlantValues:
+    baseline = _baseline_values(seed)
+    values = baseline.model_dump()
+    for variable, (weight, start_tick) in _LOAD_RESPONSE_STAGES.items():
+        change = _load_direction(seed) * _load_magnitude(seed) * _load_progress(tick, start_tick)
+        values[variable.value] = _clip(values[variable.value] + change * weight)
+    return PlantValues(**values)
+
+
 def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]:
-    values = _baseline_values(scenario.seed)
+    baseline = _baseline_values(scenario.seed)
     components = tuple(
         ComponentLatentState(
             component_id=component.component_id,
@@ -279,8 +344,17 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
     return tuple(
         LatentPlantState(
             tick=tick,
-            operating_mode=OperatingMode.STABLE,
-            values=values,
+            operating_mode=(
+                OperatingMode.LOAD_CHANGE
+                if _LOAD_ONSET_TICK <= tick < _LOAD_SETTLE_TICK
+                and scenario.driver is ScenarioDriver.LOAD_TRANSIENT
+                else OperatingMode.STABLE
+            ),
+            values=(
+                _load_transient_values(scenario.seed, tick)
+                if scenario.driver is ScenarioDriver.LOAD_TRANSIENT
+                else baseline
+            ),
             components=components,
         )
         for tick in range(scenario.duration_ticks)
@@ -411,7 +485,7 @@ def _events_and_targets(
         subject_id=_INSTRUMENTATION,
         evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
     )
-    if not scenario.fault_injections:
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and not scenario.fault_injections:
         return (
             tuple(events),
             ScenarioTargets(
@@ -423,6 +497,67 @@ def _events_and_targets(
                         diagnosis_status=DiagnosisStatus.NO_FAULT,
                         evidence_event_ids=(stable.event_id,),
                         evidence_slots=(EvidenceSlot.STABLE_OPERATION,),
+                        immediate_action=ActionLabel.CONTINUE_MONITORING,
+                    ),
+                ),
+            ),
+        )
+
+    if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
+        baseline_load = _baseline_values(scenario.seed).load_demand
+        target_load = _clip(
+            baseline_load + _load_direction(scenario.seed) * _load_magnitude(scenario.seed)
+        )
+        target = _event(
+            events,
+            sim_time=_LOAD_ONSET_TICK,
+            event_type=EventType.TARGET_CHANGED,
+            subject_id="aster-load-domain",
+            variable=StateVariable.LOAD_DEMAND,
+            value_before=baseline_load,
+            value_after=target_load,
+            related_event_ids=(stable.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_LOAD_ONSET_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id="aster-load-domain",
+            operating_mode_before=OperatingMode.STABLE,
+            operating_mode_after=OperatingMode.LOAD_CHANGE,
+            related_event_ids=(target.event_id,),
+        )
+        coordinated = _event(
+            events,
+            sim_time=_LOAD_SETTLE_TICK - 1,
+            event_type=EventType.BENIGN_NOTE,
+            subject_id="aster-load-domain",
+            evidence_slots=(EvidenceSlot.COORDINATED_LOAD_RESPONSE,),
+            related_event_ids=(target.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_LOAD_SETTLE_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id="aster-load-domain",
+            operating_mode_before=OperatingMode.LOAD_CHANGE,
+            operating_mode_after=OperatingMode.STABLE,
+            related_event_ids=(coordinated.event_id,),
+        )
+        return (
+            tuple(events),
+            ScenarioTargets(
+                scenario_id=scenario.scenario_id,
+                decisions=(
+                    DecisionTarget(
+                        scenario_id=scenario.scenario_id,
+                        decision_tick=scenario.duration_ticks - 1,
+                        diagnosis_status=DiagnosisStatus.NO_FAULT,
+                        evidence_event_ids=(stable.event_id, coordinated.event_id),
+                        evidence_slots=(
+                            EvidenceSlot.STABLE_OPERATION,
+                            EvidenceSlot.COORDINATED_LOAD_RESPONSE,
+                        ),
                         immediate_action=ActionLabel.CONTINUE_MONITORING,
                     ),
                 ),
@@ -530,8 +665,8 @@ def _events_and_targets(
 def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     if scenario.plant_variant_id is not PlantVariant.ASTER_A:
         raise UnsupportedScenarioError("only ASTER-A is supported")
-    if scenario.driver is not ScenarioDriver.STEADY_OPERATION:
-        raise UnsupportedScenarioError("only STEADY_OPERATION is supported")
+    if scenario.driver not in {ScenarioDriver.STEADY_OPERATION, ScenarioDriver.LOAD_TRANSIENT}:
+        raise UnsupportedScenarioError("unsupported scenario driver")
     try:
         _require_duration(scenario.duration_ticks)
     except ValueError as error:
@@ -546,8 +681,14 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             ),
         )
         if scenario.action_sequence != expected:
-            raise UnsupportedScenarioError("stable scenario action sequence is noncanonical")
+            raise UnsupportedScenarioError("no-fault scenario action sequence is noncanonical")
+        if scenario.driver is ScenarioDriver.LOAD_TRANSIENT and (
+            _LOAD_SETTLE_TICK >= scenario.duration_ticks
+        ):
+            raise UnsupportedScenarioError("load transient has insufficient response history")
         return
+    if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
+        raise UnsupportedScenarioError("load transient cannot include fault injections")
     injection = scenario.fault_injections[0]
     if injection.fault_family is not FaultFamily.SENSOR_DRIFT:
         raise UnsupportedScenarioError("only SENSOR_DRIFT is supported")

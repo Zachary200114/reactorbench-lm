@@ -13,6 +13,7 @@ from reactorbench.schemas import (
     EvidenceSlot,
     FaultFamily,
     ObservationStatus,
+    OperatingMode,
     PlantVariant,
     ScenarioDriver,
     SeverityBand,
@@ -22,6 +23,7 @@ from reactorbench.simulator import (
     ASTER_A_SPEC,
     SimulationTrace,
     UnsupportedScenarioError,
+    build_load_transient_scenario,
     build_sensor_drift_scenario,
     build_stable_scenario,
     generate_trace,
@@ -70,6 +72,117 @@ def test_stable_trace_is_bounded_available_and_resolved() -> None:
             channel.status is ObservationStatus.NORMAL and channel.quality is ChannelQuality.GOOD
             for channel in frame.channels
         )
+
+
+def test_load_transient_is_benign_coordinated_and_causally_ordered() -> None:
+    scenario = build_load_transient_scenario(seed=20, duration_ticks=12)
+    trace = generate_trace(scenario)
+    stable = generate_trace(build_stable_scenario(seed=20, duration_ticks=12))
+
+    assert scenario.driver is ScenarioDriver.LOAD_TRANSIENT
+    assert scenario.fault_injections == ()
+    decision = trace.targets.decisions[-1]
+    assert decision.diagnosis_status is DiagnosisStatus.NO_FAULT
+    assert decision.fault_labels == ()
+    assert decision.immediate_action is ActionLabel.CONTINUE_MONITORING
+    assert all(
+        component.state is ComponentState.AVAILABLE
+        for state in trace.latent_states
+        for component in state.components
+    )
+    assert all(frame.overall_status is ObservationStatus.NORMAL for frame in trace.observations)
+    assert all(
+        channel.status is ObservationStatus.NORMAL and channel.quality is ChannelQuality.GOOD
+        for frame in trace.observations
+        for channel in frame.channels
+    )
+    assert all(latent.operating_mode is OperatingMode.STABLE for latent in trace.latent_states[:2])
+    assert all(
+        latent.operating_mode is OperatingMode.LOAD_CHANGE for latent in trace.latent_states[2:5]
+    )
+    assert all(
+        latent.operating_mode is OperatingMode.LOAD_CHANGE for latent in trace.latent_states[5:7]
+    )
+    assert all(latent.operating_mode is OperatingMode.STABLE for latent in trace.latent_states[7:])
+    assert trace.latent_states[:2] == stable.latent_states[:2]
+    assert trace.observations[:2] == stable.observations[:2]
+    assert trace.latent_states[-1].values.load_demand > stable.latent_states[-1].values.load_demand
+    for variable in (
+        StateVariable.HEAT_SOURCE_LEVEL,
+        StateVariable.PRIMARY_FLOW,
+        StateVariable.STEAM_STATE,
+        StateVariable.TURBINE_OUTPUT,
+        StateVariable.ELECTRICAL_OUTPUT,
+    ):
+        assert getattr(trace.latent_states[-1].values, variable.value) > getattr(
+            stable.latent_states[-1].values, variable.value
+        )
+    assert all(
+        transient.values.transfer_efficiency == baseline.values.transfer_efficiency
+        for transient, baseline in zip(trace.latent_states, stable.latent_states, strict=True)
+    )
+    for frame in trace.observations:
+        for variable in StateVariable:
+            pair = [channel for channel in frame.channels if channel.variable is variable]
+            assert len(pair) == 2
+            assert pair[0].value == pair[1].value
+    assert [(event.sim_time, event.event_type.value) for event in trace.events] == [
+        (0, "BENIGN_NOTE"),
+        (2, "TARGET_CHANGED"),
+        (2, "OPERATING_MODE_CHANGED"),
+        (6, "BENIGN_NOTE"),
+        (7, "OPERATING_MODE_CHANGED"),
+    ]
+    assert not any(event.action_label is not None for event in trace.events)
+    target_event, coordinated_event = trace.events[1], trace.events[3]
+    assert target_event.sim_time < coordinated_event.sim_time
+    assert coordinated_event.related_event_ids == (target_event.event_id,)
+
+
+def test_load_transient_stages_latent_response_in_causal_order() -> None:
+    transient = generate_trace(build_load_transient_scenario(seed=20, duration_ticks=12))
+    stable = generate_trace(build_stable_scenario(seed=20, duration_ticks=12))
+
+    def first_change(variable: StateVariable) -> int:
+        return next(
+            state.tick
+            for state, baseline in zip(transient.latent_states, stable.latent_states, strict=True)
+            if getattr(state.values, variable.value) != getattr(baseline.values, variable.value)
+        )
+
+    assert first_change(StateVariable.LOAD_DEMAND) == 2
+    assert first_change(StateVariable.HEAT_SOURCE_LEVEL) == 2
+    assert first_change(StateVariable.PRIMARY_FLOW) == 2
+    assert first_change(StateVariable.STEAM_STATE) == 3
+    assert first_change(StateVariable.TURBINE_OUTPUT) == 4
+    assert first_change(StateVariable.ELECTRICAL_OUTPUT) == 4
+
+
+def test_load_transient_direction_is_seed_derived_and_reversible() -> None:
+    rising = generate_trace(build_load_transient_scenario(seed=20))
+    falling = generate_trace(build_load_transient_scenario(seed=21))
+    rising_stable = generate_trace(build_stable_scenario(seed=20))
+    falling_stable = generate_trace(build_stable_scenario(seed=21))
+
+    assert (
+        rising.latent_states[-1].values.load_demand
+        > rising_stable.latent_states[-1].values.load_demand
+    )
+    assert (
+        falling.latent_states[-1].values.load_demand
+        < falling_stable.latent_states[-1].values.load_demand
+    )
+
+
+def test_load_transient_builder_and_generator_fail_closed() -> None:
+    with pytest.raises(ValueError, match="between"):
+        build_load_transient_scenario(seed=1, duration_ticks=65)
+    scenario = build_load_transient_scenario(seed=4)
+    drift_injection = build_sensor_drift_scenario(seed=4).fault_injections[0]
+    unsupported = scenario.model_copy(update={"fault_injections": (drift_injection,)})
+
+    with pytest.raises(UnsupportedScenarioError, match="cannot include"):
+        generate_trace(unsupported)
 
 
 def test_sensor_drift_separates_only_observation_layer_and_actions() -> None:
@@ -278,7 +391,6 @@ def test_generate_trace_rejects_unsupported_direct_schema_variants() -> None:
     injection = drift.fault_injections[0]
     scenarios = (
         stable.model_copy(update={"plant_variant_id": PlantVariant.ASTER_B}),
-        stable.model_copy(update={"driver": ScenarioDriver.LOAD_TRANSIENT}),
         drift.model_copy(
             update={
                 "fault_injections": (
@@ -306,11 +418,14 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         assert random.getstate() == before
         drift = generate_trace(build_sensor_drift_scenario(seed=10))
         assert random.getstate() == before
+        load = generate_trace(build_load_transient_scenario(seed=10))
+        assert random.getstate() == before
         second = generate_trace(build_stable_scenario(seed=11))
 
         assert first.latent_states != second.latent_states
         assert first.visible_payload() != second.visible_payload()
         assert drift.latent_states == first.latent_states
+        assert load.latent_states != first.latent_states
     finally:
         random.setstate(original_state)
 
@@ -318,9 +433,11 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
 def test_maximum_duration_and_aster_spec_channel_cardinality() -> None:
     trace = generate_trace(build_stable_scenario(seed=4, duration_ticks=64))
     drift = generate_trace(build_sensor_drift_scenario(seed=4, duration_ticks=64))
+    load = generate_trace(build_load_transient_scenario(seed=4, duration_ticks=64))
 
     assert len(trace.observations) == 64
     assert len(drift.observations) == 64
+    assert len(load.observations) == 64
     assert len(set(ASTER_A_SPEC.primary_train_ids)) == 2
     assert len(set(ASTER_A_SPEC.support_bus_ids)) == 2
     for variable in StateVariable:
