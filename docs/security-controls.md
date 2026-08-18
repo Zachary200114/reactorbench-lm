@@ -14,9 +14,9 @@ No production or deployment control is verified by the current local milestones.
 | Control | Threats | Requirement | Intended implementation | Verification evidence | Current status |
 |---|---|---|---|---|---|
 | SC-001 Synthetic-only boundary | TM-01, TM-14 | Exclude real plant, Navy, restricted, operational, and proprietary content | Generator-only inputs, prohibited-content scanner, visible exact disclaimer | Scanner fixtures, sampled-release review record, UI inspection | Disclaimer and a redacting non-exhaustive Phase 2 scanner are implemented and fixture-tested; reviewed full denylist and human sampling remain pending |
-| SC-002 Strict internal schemas | TM-02, TM-03 | Reject coercion, unknown fields, ambiguous targets, non-finite and out-of-range values | Strict Pydantic v2 contracts with immutable instances under the unfrozen `0.1.0` developmental interface | Foundation unit tests plus generator unit/property tests for strictness, bounds, staged ordering, mappings, replay, and unsupported scenarios | Implemented and verified for the current internal-contract and two-generator-milestone scope |
+| SC-002 Strict internal schemas | TM-02, TM-03 | Reject coercion, unknown fields, ambiguous targets, non-finite and out-of-range values | Strict Pydantic v2 contracts with immutable instances under the unfrozen `0.1.0` developmental interface | Foundation unit tests plus generator unit/property tests for strictness, bounds, staged ordering, mappings, replay, canonical IDs, tuple containers, and unsupported driver/fault compositions | Implemented and verified for the current internal-contract and structured-generator scope |
 | SC-003 Configuration boundary | TM-03, TM-04, TM-10 | Reject unknown config and unsafe output locations; never overwrite runs | `src/reactorbench/config.py`, reviewed project-relative roots, immutable run snapshots | Unit tests for extra fields, traversal and symlink escape, collision, canonical serialization, and hash | Implemented and verified for the local Phase 1 configuration scope |
-| SC-004 Ground-truth isolation | TM-02, TM-10 | Keep latent injection separate from visible observation and task input | Separate state, observation, event, scenario, and target models | Contract tests reject hidden truth from drift/load visible payloads; property tests compare same-seed stable/drift layers and benign pre-onset state; rendered-input review remains later work | Implemented and verified for the current structured simulator boundary; renderer contamination gate pending |
+| SC-004 Ground-truth isolation | TM-02, TM-10 | Keep latent injection separate from visible observation and task input | Separate state, observation, event, scenario, and target models | Contract tests reject hidden fault, driver, scenario, severity, onset, and provenance fields from visible payloads; stuck/load tests prove same-seed latent equality and exact preservation of all nonselected observations; rendered-input review remains later work | Implemented and verified for the current structured simulator boundary; renderer contamination gate pending |
 | SC-005 Split and duplicate integrity | TM-02, TM-10 | Assign structured splits before rendering and detect leakage | Frozen split manifests, scenario/fault/template constraints, text/skeleton hashes | Cross-split unit/property tests and published overlap report | Planned for Phase 3 |
 | SC-006 Narrow request schema | TM-03, TM-04, TM-05 | Accept only versioned curated identifiers and bounded controls | Server-side gateway schema plus inference-side critical revalidation | Valid/invalid API contract suite and schema parity test | Planned for Phase 7 |
 | SC-007 Request resource limits | TM-05 | Bound bytes, structure, tokens, output, duration, rate, batch, and concurrency | Gateway/inference configuration selected from benchmarks | Boundary, timeout, rate, and concurrency tests | Planned; numeric limits require measurements |
@@ -34,8 +34,9 @@ No production or deployment control is verified by the current local milestones.
 | SC-019 Metric provenance | TM-10, TM-11 | Display only recorded metrics for matching versions and splits | Immutable evaluation result schema consumed by reports/UI | Fixture mismatch tests and release review | Documented; evaluation artifacts do not yet exist |
 | SC-020 Private vulnerability reporting | TM-07, TM-09 | Provide a tested private route without inventing contact data | GitHub private reporting or named private channel selected by owner | Pre-publication reporting drill | Policy documented; route not configured |
 
-Current local evidence recorded on 2026-08-18 under Python 3.12: `make check`
-passed with 152 tests and 91.37% branch coverage; strict typing, distribution builds,
+Current local evidence recorded on 2026-08-18 under CPython 3.12.11: `make check`
+passed with 164 tests and 91.35% branch coverage; Ruff formatting and lint, strict
+typing across 29 source files, distribution builds,
 and isolated wheel verification also passed. These results do not verify any
 production, service, UI, deployment, full-denylist, or human-review control.
 
@@ -52,7 +53,8 @@ production, service, UI, deployment, full-denylist, or human-review control.
 
 - Prohibited-content fixtures and manual sample-review procedure exist.
 - Split manifests are frozen before narrative rendering.
-- Duplicate, skeleton-overlap, scenario-identity, template-family, component, and fault-composition leakage tests pass.
+- Duplicate, skeleton-overlap, scenario-identity, template-family, component,
+  fault-pair, and driver-plus-fault composition leakage tests pass.
 
 ### Before model artifacts
 

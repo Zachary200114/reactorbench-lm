@@ -199,6 +199,10 @@ Assign splits from structured scenario definitions **before** narrative renderin
 - No template-family overlap in `template_test`.
 - No held-out component aliases in training.
 - No held-out fault pair in training, even if order is reversed.
+- No driver-plus-fault composition assigned to `composition_test` may occur in
+  training on another seed, channel, alias, or component role. Training may contain
+  that benign driver alone and that fault alone where each is otherwise valid, but
+  never their held-out composition.
 - Deduplicate exact text and normalized template skeletons globally.
 - Measure n-gram overlap across train/test and publish it.
 - Freeze test manifests before the main run.

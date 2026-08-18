@@ -1,6 +1,6 @@
 # ReactorBench-LM architecture
 
-Status: Phase 1 complete; two Phase 2 generator milestones locally integrated and verified on 2026-08-18
+Status: Phase 1 complete; selected Phase 2 generator milestones locally integrated and verified on 2026-08-18
 
 ## Design objective
 
@@ -84,7 +84,8 @@ milestone, but they are not yet a frozen version 1 interface and no dataset exis
 ## Phase 2 simulator boundary
 
 `src/reactorbench/simulator/` currently implements Aster-A stable operation, one
-observation-only `SENSOR_DRIFT` case, and a benign `LOAD_TRANSIENT`. It uses
+observation-only `SENSOR_DRIFT` case, a benign `LOAD_TRANSIENT`, and one constrained
+`SENSOR_STUCK`-during-`LOAD_TRANSIENT` composition. It uses
 deterministic local random streams, two fictional channels per normalized variable,
 bounded latent updates, and explicit observation/event/target separation. A same-seed
 stable trace and drift trace have identical latent states; only the selected channel
@@ -95,6 +96,19 @@ fictional stage lags, then returns to `STABLE`. Transfer efficiency remains unch
 both observation channels agree, and structured truth is `NO_FAULT`. Its behavior is
 fully derived from the validated driver, seed, duration, and generator version rather
 than from unrepresented caller input.
+
+The stuck-load case is limited to Aster-A, exactly one indefinite low-severity
+`SENSOR_STUCK` injection, and either electrical-output channel. At tick 2 the selected
+channel freezes at its tick-1 observed value while the load transition begins. The
+latent trace remains exactly equal to the same-seed benign load trace, and every
+nonselected observation remains unchanged. A genuine redundant-channel response and
+channel disagreement support `VERIFY_REDUNDANT_CHANNEL` at decision tick 5; that action
+is applied at tick 6, when coordinated load evidence is also recorded. The second
+decision, `FLAG_SENSOR_SUSPECT`, occurs at tick 6 and is applied at tick 7, after which
+the selected channel quality is `SUSPECT`. Unsupported variants, channels, severities,
+durations, action sequences, identifiers, container shapes, drivers, and extra faults
+fail closed. This developmental fixture informs G04 but does not freeze the golden
+scenario; the required human review has not occurred.
 
 The public visible payload contains observations and canonical events only. Scenario
 injections, latent truth, fault labels, and targets remain outside that payload.
@@ -144,10 +158,10 @@ The browser never selects paths, models, token limits, execution devices, or arb
 
 ## Current implementation boundary
 
-The Phase 1 foundation and two Phase 2 generator milestones are present. The recorded
-2026-08-18 Python 3.12 gate passed formatting, lint, strict typing, 152 tests, 91.37%
+The Phase 1 foundation and selected Phase 2 generator milestones are present. The recorded
+2026-08-18 Python 3.12 gate passed formatting, lint, strict typing, 164 tests, 91.35%
 branch coverage, distribution builds, and isolated wheel verification. Phase 2 is not
-complete: observation faults beyond drift, process faults, variants, and broader
+complete: observation faults beyond drift/stuck, process faults, variants, and broader
 generator gates still need implementation. Dataset generation, tokenizer training,
 model training, measured evaluation, inference serving, and UI construction remain
 later work. Refer to [the implementation status](IMPLEMENTATION_STATUS.md) for the
