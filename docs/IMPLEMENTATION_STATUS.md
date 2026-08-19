@@ -1,13 +1,13 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-18 18:12 EDT
-Current phase: Phase 2 in progress — `SENSOR_STUCK` plus `LOAD_TRANSIENT` milestone complete
-Checkpoint reason: the constrained stuck-load composition passed focused and full gates, independent review, and local code integration; documentation is being preserved as a separate handoff checkpoint
+Last updated: 2026-08-18 18:39 EDT
+Current phase: Phase 2 in progress — developmental `SENSOR_NOISE` milestone complete
+Checkpoint reason: the constrained noise case passed focused and full gates, corrected independent review, and local code integration; documentation is being preserved as a separate handoff checkpoint
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Current objective
 
-Audit the authoritative G05 `SENSOR_NOISE` contract and the existing observation-layer implementation before changing code. Then freeze the smallest acceptance-test scope for one Aster-A observation-only noise case, preserving deterministic replay, temporal abstention, latent/visible separation, and the documented action order. Do not add process faults, render a dataset, train a tokenizer/model, build the UI, or expose a network service until their later gates pass.
+Audit the authoritative G06 `PUMP_DEGRADATION` contract, latent component-health representation, causal dependency graph, and current staged-transition patterns before changing code. Then freeze the smallest fictional process-fault acceptance scope, including delayed downstream effects and the short-trace abstention counterfactual. Do not add multiple process faults, render a dataset, train a tokenizer/model, build the UI, or expose a network service until their later gates pass.
 
 ## Completed work
 
@@ -37,6 +37,14 @@ Audit the authoritative G05 `SENSOR_NOISE` contract and the existing observation
 - Added fail-closed validation for unsupported variants, versions, drivers, fault/container shapes, channels, channel/component mappings, severities, onsets, finite durations, action sequences, extra faults, short traces, and noncanonical scenario identifiers.
 - Verified that visible structured payloads omit fault, driver, scenario, severity, onset, and provenance truth. Golden G04 remains outside training and is not frozen because its required human review has not occurred.
 - The first stuck-load review identified settlement lineage tied to disagreement rather than coordinated load evidence, non-tuple injection acceptance through unchecked model copying, and an incomplete trajectory contract test. All three were corrected, focused tests were strengthened, and the final independent verdict was `ship`.
+- Added one narrow observation-only Aster-A `SENSOR_NOISE` case over `STEADY_OPERATION`: exactly one indefinite low-severity injection on either primary-thermal-state channel, with stable/noise equality through onset tick 2.
+- Added deterministic, prefix-preserving alternating offsets from tick 3 onward. Adjacent offsets share a seeded magnitude in the normalized `[0.018, 0.024]` interval and use opposite signs; each later pair may draw a different deterministic magnitude and seed parity controls the initial phase.
+- Proved that the noise trace has exactly the same latent states as its same-seed stable trace, that every nonselected observation is identical, and that the selected channel alone differs after onset while all values remain bounded.
+- Added two explicit `UNRESOLVED` decisions with `INSUFFICIENT_EVIDENCE` at ticks 3 and 4. Rapid inconsistent readings and disagreement support a tick-5 `SENSOR_NOISE` diagnosis with `COMPARE_RELATED_TRENDS`; related-state stability supports `FLAG_SENSOR_SUSPECT` at tick 6. Applied actions occur at ticks 4, 5, 6, and 7, and selected quality becomes `SUSPECT` at tick 7.
+- Prevented target leakage by using `NORMAL`, `WATCH`, `CONFLICTING`, and generic evidence in the visible trace; the lexical `NOISY` quality label appears neither before diagnosis nor anywhere in the visible payload. Hidden structured targets and provenance retain `SENSOR_NOISE` truth.
+- Hardened scenario dispatch against unchecked `model_copy` lookalikes: driver, variant, fault, severity, and action values must be canonical enum instances; ticks must be exact integers rather than floats or booleans; action/fault containers and members must use their canonical tuple/model forms.
+- Independent review initially returned `fix-first` because a string-valued driver and float-valued tick could survive unchecked model copying and reach supported dispatch. The validation was generalized across the supported fault cases, tests were expanded, and the final independent verdict was `ship`.
+- Kept structured `SENSOR_NOISE` fault truth distinct from the later dataset `noise_test` corruption split. Golden G05 remains outside training and is not frozen because its required human review has not occurred.
 
 ## Files created or changed
 
@@ -57,15 +65,13 @@ Generated `dist/`, caches, run directories, corpora, checkpoints, and artifacts 
 Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolved by `uv 0.8.24`. No global Python package installation was performed.
 
 - `make sync` using the project lockfile: exit 0; 22 locked project/development packages installed into the isolated Python 3.12 environment.
-- Focused stuck-load gate in the shared assembly tree: Ruff format and lint passed,
-  mypy passed on the six-file focused selection, and pytest passed 42 tests in 2.44
-  seconds.
-- `make check`: exit 0 on the final stuck-load milestone under CPython 3.12.11.
+- Focused final noise gate in the shared assembly tree: 51 tests passed.
+- `make check`: exit 0 on the final noise milestone under CPython 3.12.11.
   - Ruff format: passed.
   - Ruff lint: all checks passed.
   - Mypy strict mode: success across 29 source files reported by mypy.
-  - Pytest: 164 passed.
-  - Branch coverage: 91.35%; required threshold 85%.
+  - Pytest: 173 passed.
+  - Branch coverage: 91.50%; required threshold 85%.
   - Build: `reactorbench_lm-0.1.0.tar.gz` and `reactorbench_lm-0.1.0-py3-none-any.whl` built successfully, with the wheel built from the sdist.
   - Artifact verifier: passed; wheel resources match reviewed roots, sdist omits incomplete tests, and the wheel installs/imports with `--no-deps --no-index` in an isolated target.
 - `git diff --cached --check`: exit 0 after whitespace-only repository-hygiene corrections.
@@ -83,24 +89,27 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - `TaskTarget` is the public structured task root; legacy scenario decisions remain nested in `StructuredTrajectory`.
 - Code and dataset licenses remain `TBD` and must be selected before distribution, not before local generator work.
 - Browser and Computer Use are reserved for runnable local UI verification in Phase 7. Visualize is available for requested in-conversation design exploration; it does not replace repository-native UI work.
-- Generator `0.1.0` currently supports Aster-A stable operation, a single primary-flow-channel `SENSOR_DRIFT`, a benign staged `LOAD_TRANSIENT`, and that load driver combined with exactly one indefinite low-severity `SENSOR_STUCK` on either electrical-output channel; supported trajectories are 8–64 fictional ticks, with stuck-load defaulting to 12 and requiring at least 8.
+- Generator `0.1.0` currently supports Aster-A stable operation, a single primary-flow-channel `SENSOR_DRIFT`, a benign staged `LOAD_TRANSIENT`, that load driver combined with exactly one indefinite low-severity `SENSOR_STUCK` on either electrical-output channel, and exactly one indefinite low-severity `SENSOR_NOISE` on either primary-thermal-state channel during steady operation. Supported trajectories are 8–64 fictional ticks; stuck/noise milestones default to 12 and require at least 8.
 - A decision is recorded at its decision tick, while any `ACTION_APPLIED` event occurs on the next tick. The suspect quality change follows the applied `FLAG_SENSOR_SUSPECT` action rather than preceding its evidence.
 - `LOAD_TRANSIENT` direction and magnitude are deterministic functions of its seed; caller-selectable driver parameters remain deferred until they can be represented explicitly in validated scenario truth.
 - The developmental stuck-load schedule uses onset tick 2, evidence/first decision tick 5, applied verification/second decision tick 6, and applied flag plus suspect quality tick 7. Its final settlement is linked to coordinated benign-load evidence, not to the sensor disagreement.
 - Driver-plus-fault combinations are explicit compositional split keys. A held-out composition may expose its separate factors in training, but not the combination under another seed, channel, alias, or component role.
-- The next likely fault milestone is `SENSOR_NOISE`, but only after a read-only contract audit freezes a minimal implementation scope consistent with G05; this checkpoint does not silently settle that design.
+- Developmental sensor noise begins producing paired alternating offsets after onset tick 2. Decisions at ticks 3 and 4 abstain, tick 5 diagnoses and selects `COMPARE_RELATED_TRENDS`, tick 6 selects `FLAG_SENSOR_SUSPECT`, and all corresponding applied-action events occur on the next tick.
+- `SENSOR_NOISE` structured fault truth and the later narrative-corruption `noise_test` split are independent dimensions; renderer corruption must not create a fault label.
+- Exact canonical types are revalidated at simulator entry even when immutable Pydantic models were bypassed with unchecked `model_copy` updates.
+- The next likely process-fault milestone is `PUMP_DEGRADATION`, but only after a read-only G06 contract and schema-capability audit freezes a minimal fictional causal schedule; this checkpoint does not silently settle that design.
 
 ## Assumptions
 
 - All permitted scenarios remain project-authored and synthetic; no real facility, Navy-derived, operational, or proprietary material may enter code, fixtures, data, prompts, or outputs.
 - The system Python 3.13.2 may be compatible, but reproducible gates use the isolated Python 3.12 baseline.
-- Golden scenarios remain outside training. Concrete golden `decision_tick` values require generator fixtures and human review before freeze; implemented developmental behavior does not by itself freeze G04.
+- Golden scenarios remain outside training. Concrete golden `decision_tick` values require generator fixtures and human review before freeze; implemented developmental behavior does not by itself freeze G04 or G05.
 - Exact account-level remaining usage is not observable in this environment. The requested 1% cutoff was not measured; durable phase checkpoints are the conservative fallback unless the user supplies the visible percentage.
 
 ## Known failures
 
 - No known Phase 1 or completed Phase 2 milestone test, type, lint, formatting, build, snapshot, or artifact failure remains.
-- The generator intentionally rejects ASTER-B/C, finite-duration drift/stuck, every unsupported fault family, multiple simultaneous faults, and every driver/fault composition except the single reviewed `LOAD_TRANSIENT` plus `SENSOR_STUCK` contract.
+- The generator intentionally rejects ASTER-B/C, finite-duration drift/stuck/noise, every unsupported fault family, multiple simultaneous faults, and every driver/fault composition except the single reviewed `LOAD_TRANSIENT` plus `SENSOR_STUCK` contract.
 - The prohibited-content guard is deliberately non-exhaustive. A reviewed real-facility denylist and stratified human sample-review procedure remain required before any dataset pilot or release.
 - A private public-reporting route cannot be configured until the owner creates the eventual public repository or names another private channel.
 - Production headers, rate limits, safe service errors, artifact-loader startup checks, browser behavior, and deployment isolation are later-phase controls and are not claimed as verified.
@@ -114,11 +123,11 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Uncommitted work and Git state
 
-- The verified source/test assembly was synchronized to the intended project path for the stuck-load integration.
-- The complete `make check` gate was rerun successfully from the intended project immediately before the stuck-load code commit.
+- The verified source/test assembly was synchronized to the intended project path for the sensor-noise integration.
+- The complete `make check` gate was rerun successfully from the intended project immediately before the sensor-noise code commit.
 - Local Git is initialized on `codex/foundation`; Phase 1 and the completed Phase 2 code milestones are committed locally.
 - Last known Git branch: `codex/foundation`.
-- Last known code commit: `6cd7c18` (stuck-load simulator milestone).
+- Last known code commit: `7fdbb4b` (sensor-noise simulator milestone).
 - Remote state: none; no remote will be created and no push is authorized.
 - The expected worktree state immediately after this separate documentation checkpoint is clean; verify rather than assume it on resume. The status file records the preceding implementation commit because a commit cannot contain its own final Git hash.
 
@@ -137,7 +146,7 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Immediate next step
 
-Perform a read-only audit of G05, the fictional plant fault contract, existing observation/channel schemas, and the current drift/stuck implementations. Define acceptance tests for the smallest deterministic `SENSOR_NOISE` milestone before making source changes. Do not generalize fault composition or alter the golden suite during this audit.
+Perform a read-only audit of G06, the fictional plant `PUMP_DEGRADATION` contract, component-health and latent-state schemas, causal dependencies, and existing staged-transition implementations. Define acceptance tests for the smallest deterministic process-fault milestone before making source changes. Do not add another fault, generalize composition, or alter the golden suite during this audit.
 
 Exact recommended next command before implementation:
 
