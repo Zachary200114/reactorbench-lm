@@ -18,6 +18,8 @@ from .core import (
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
+    build_valve_lag_scenario,
+    build_valve_stuck_scenario,
     generate_trace,
 )
 
@@ -36,6 +38,8 @@ __all__ = [
     "build_sensor_noise_scenario",
     "build_sensor_stuck_load_scenario",
     "build_stable_scenario",
+    "build_valve_lag_scenario",
+    "build_valve_stuck_scenario",
     "generate_trace",
     "scan_prohibited_content",
 ]

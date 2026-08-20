@@ -88,6 +88,11 @@ def _event_payloads() -> dict[EventType, dict[str, object]]:
             "commanded_value": 0.6,
             "observed_value": 0.4,
         },
+        EventType.COMMAND_POSITION_ALIGNED: {
+            "variable": StateVariable.PRIMARY_FLOW,
+            "commanded_value": 0.6,
+            "observed_value": 0.6,
+        },
         EventType.ACTION_APPLIED: {"action_label": ActionLabel.CONTINUE_MONITORING},
         EventType.BENIGN_NOTE: {},
     }
@@ -242,6 +247,11 @@ def test_event_matrix_rejects_contradictory_payload_values() -> None:
     payload = _event(EventType.COMMAND_POSITION_MISMATCH).model_dump()
     payload["observed_value"] = payload["commanded_value"]
     with pytest.raises(ValidationError, match="different commanded and observed"):
+        CanonicalEvent.model_validate(payload)
+
+    payload = _event(EventType.COMMAND_POSITION_ALIGNED).model_dump()
+    payload["observed_value"] = 0.4
+    with pytest.raises(ValidationError, match="equal commanded and observed"):
         CanonicalEvent.model_validate(payload)
 
 

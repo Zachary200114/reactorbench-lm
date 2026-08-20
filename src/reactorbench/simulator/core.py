@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from random import Random
+from typing import TypedDict
 
 from reactorbench.schemas import (
     SCHEMA_VERSION,
@@ -79,6 +80,13 @@ _PUMP_TRIP_DECISION_TICK = 5
 _PUMP_TRIP_ACTION_TICK = 6
 _PUMP_TRIP_RECOVERY_TICK = 7
 _PUMP_TRIP_MIN_DURATION = 8
+_VALVE_ONSET_TICK = 2
+_VALVE_EARLY_DECISION_TICK = 3
+_VALVE_EARLY_ACTION_TICK = 4
+_VALVE_DECISIVE_TICK = 6
+_VALVE_ACTION_TICK = 7
+_VALVE_LAG_DURATION_TICKS = 4
+_VALVE_MIN_DURATION = 8
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -106,6 +114,11 @@ class ChannelSpec:
     component_id: str
 
 
+class _ComponentPositionFields(TypedDict):
+    commanded_position: float | None
+    actual_position: float | None
+
+
 @dataclass(frozen=True)
 class AsterVariantSpec:
     version: str
@@ -116,6 +129,7 @@ class AsterVariantSpec:
     baseline_noise_bound: float
     max_per_tick_step: float
     primary_train_ids: tuple[str, ...]
+    primary_flow_valve_ids: tuple[str, ...]
     support_bus_ids: tuple[str, ...]
     primary_train_support_bus_pairs: tuple[tuple[str, str], ...]
     standby_start_delay_ticks: int
@@ -123,10 +137,12 @@ class AsterVariantSpec:
 
 
 _PRIMARY_TRAINS = ("aster-train-cirrus", "aster-train-kestrel")
+_PRIMARY_FLOW_VALVES = ("aster-valve-lark",)
 _SUPPORT_BUSES = ("aster-bus-rill", "aster-bus-quill")
 _INSTRUMENTATION = "aster-instrument-vireo"
 _COMPONENTS = (
     *(ComponentSpec(component_id, "PRIMARY_LOOP") for component_id in _PRIMARY_TRAINS),
+    *(ComponentSpec(component_id, "PRIMARY_LOOP") for component_id in _PRIMARY_FLOW_VALVES),
     *(ComponentSpec(component_id, "SUPPORT_POWER") for component_id in _SUPPORT_BUSES),
     ComponentSpec(_INSTRUMENTATION, "INSTRUMENTATION"),
 )
@@ -154,10 +170,11 @@ ASTER_A_SPEC = AsterVariantSpec(
     plant_variant=PlantVariant.ASTER_A,
     components=_COMPONENTS,
     channels=_CHANNELS,
-    aliases=("cirrus", "kestrel", "rill", "quill", "vireo"),
+    aliases=("cirrus", "kestrel", "lark", "rill", "quill", "vireo"),
     baseline_noise_bound=_NOISE_BOUND,
     max_per_tick_step=_MAX_TICK_STEP,
     primary_train_ids=_PRIMARY_TRAINS,
+    primary_flow_valve_ids=_PRIMARY_FLOW_VALVES,
     support_bus_ids=_SUPPORT_BUSES,
     primary_train_support_bus_pairs=tuple(zip(_PRIMARY_TRAINS, _SUPPORT_BUSES, strict=True)),
     standby_start_delay_ticks=1,
@@ -438,6 +455,115 @@ def build_pump_trip_scenario(
     return scenario
 
 
+def _build_valve_scenario(
+    *,
+    seed: int,
+    fault_family: FaultFamily,
+    duration_ticks: int,
+    component_id: str | None,
+    lag_ticks: int | None,
+) -> ScenarioDefinition:
+    """Build one fixed-duration member of the G08/G09 temporal contrast pair."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if duration_ticks < _VALVE_MIN_DURATION:
+        raise ValueError("valve scenarios need decision and action application history")
+    if fault_family not in {FaultFamily.VALVE_LAG, FaultFamily.VALVE_STUCK}:
+        raise ValueError("fault_family must be VALVE_LAG or VALVE_STUCK")
+    if fault_family is FaultFamily.VALVE_LAG:
+        if type(lag_ticks) is not int or lag_ticks not in {3, 4}:
+            raise ValueError("lag_ticks must be an integer in the declared {3, 4} lag band")
+        injection_duration = lag_ticks
+    elif lag_ticks is not None:
+        raise ValueError("lag_ticks is only supported for VALVE_LAG")
+    else:
+        injection_duration = None
+    if component_id is None:
+        selected_component = ASTER_A_SPEC.primary_flow_valve_ids[
+            seed % len(ASTER_A_SPEC.primary_flow_valve_ids)
+        ]
+    elif type(component_id) is str and component_id in ASTER_A_SPEC.primary_flow_valve_ids:
+        selected_component = component_id
+    else:
+        raise ValueError("component_id must be an Aster-A primary-flow valve id or None")
+
+    decisive_tick = (
+        _VALVE_ONSET_TICK + injection_duration if injection_duration else _VALVE_DECISIVE_TICK
+    )
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"aster-a-{fault_family.value.lower().replace('_', '-')}-{seed}-{duration_ticks}-"
+            f"{_VALVE_ONSET_TICK}-low-{selected_component}"
+            f"-lag-{injection_duration}"
+            if injection_duration is not None
+            else f"aster-a-{fault_family.value.lower().replace('_', '-')}-{seed}-{duration_ticks}-"
+            f"{_VALVE_ONSET_TICK}-low-{selected_component}"
+        ),
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=fault_family,
+                component_id=selected_component,
+                onset_tick=_VALVE_ONSET_TICK,
+                severity=SeverityBand.LOW,
+                duration_ticks=injection_duration,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_VALVE_EARLY_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=decisive_tick,
+                action=(
+                    ActionLabel.CONTINUE_MONITORING
+                    if fault_family is FaultFamily.VALVE_LAG
+                    else ActionLabel.REQUEST_COMPONENT_INSPECTION
+                ),
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_valve_lag_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    component_id: str | None = None,
+    lag_ticks: int = _VALVE_LAG_DURATION_TICKS,
+) -> ScenarioDefinition:
+    """Build G08: a fictional command lag that resolves after a bounded interval."""
+
+    return _build_valve_scenario(
+        seed=seed,
+        fault_family=FaultFamily.VALVE_LAG,
+        duration_ticks=duration_ticks,
+        component_id=component_id,
+        lag_ticks=lag_ticks,
+    )
+
+
+def build_valve_stuck_scenario(
+    *, seed: int, duration_ticks: int = 12, component_id: str | None = None
+) -> ScenarioDefinition:
+    """Build G09: the matched fictional command mismatch that remains unresolved."""
+
+    return _build_valve_scenario(
+        seed=seed,
+        fault_family=FaultFamily.VALVE_STUCK,
+        duration_ticks=duration_ticks,
+        component_id=component_id,
+        lag_ticks=None,
+    )
+
+
 def build_sensor_stuck_load_scenario(
     *, seed: int, duration_ticks: int = 12, channel_id: str | None = None
 ) -> ScenarioDefinition:
@@ -623,6 +749,98 @@ def _pump_trip_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
     return None
 
 
+def _valve_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    if len(scenario.fault_injections) == 1 and scenario.fault_injections[0].fault_family in {
+        FaultFamily.VALVE_LAG,
+        FaultFamily.VALVE_STUCK,
+    }:
+        return scenario.fault_injections[0]
+    return None
+
+
+def _valve_decisive_tick(scenario: ScenarioDefinition) -> int:
+    injection = _valve_injection(scenario)
+    if injection is not None and injection.fault_family is FaultFamily.VALVE_LAG:
+        if injection.duration_ticks is None:
+            raise ValueError("valve lag requires a finite declared duration")
+        return injection.onset_tick + injection.duration_ticks
+    return _VALVE_DECISIVE_TICK
+
+
+def _valve_action_tick(scenario: ScenarioDefinition) -> int:
+    return _valve_decisive_tick(scenario) + 1
+
+
+def _valve_initial_position(seed: int) -> float:
+    """Return a seeded fictional valve position away from normalized boundaries."""
+
+    return round(Random(seed * 7_000_001 + 191).uniform(0.44, 0.56), 6)  # noqa: S311
+
+
+def _valve_commanded_position(seed: int) -> float:
+    initial = _valve_initial_position(seed)
+    magnitude = Random(seed * 7_000_003 + 193).uniform(0.018, 0.026)  # noqa: S311
+    direction = 1.0 if seed % 2 == 0 else -1.0
+    return _clip(initial + direction * magnitude)
+
+
+def _valve_positions(
+    *, scenario: ScenarioDefinition, tick: int, component_id: str
+) -> tuple[float | None, float | None]:
+    """Keep fictional command truth separate from effective component position."""
+
+    if component_id not in ASTER_A_SPEC.primary_flow_valve_ids:
+        return None, None
+    initial = _valve_initial_position(scenario.seed)
+    injection = _valve_injection(scenario)
+    if injection is None or tick < _VALVE_ONSET_TICK:
+        return initial, initial
+    commanded = _valve_commanded_position(scenario.seed)
+    if (
+        injection.fault_family is FaultFamily.VALVE_LAG
+        and injection.duration_ticks is not None
+        and tick >= injection.onset_tick + injection.duration_ticks
+    ):
+        return commanded, commanded
+    return commanded, initial
+
+
+def _component_positions(
+    *, scenario: ScenarioDefinition, tick: int, component_id: str
+) -> _ComponentPositionFields:
+    commanded_position, actual_position = _valve_positions(
+        scenario=scenario, tick=tick, component_id=component_id
+    )
+    return {
+        "commanded_position": commanded_position,
+        "actual_position": actual_position,
+    }
+
+
+def _valve_flow_delta(scenario: ScenarioDefinition, tick: int) -> float:
+    injection = _valve_injection(scenario)
+    if (
+        injection is None
+        or injection.fault_family is not FaultFamily.VALVE_LAG
+        or injection.duration_ticks is None
+        or tick < _valve_decisive_tick(scenario)
+    ):
+        return 0.0
+    return round(
+        (_valve_commanded_position(scenario.seed) - _valve_initial_position(scenario.seed)) * 0.55,
+        6,
+    )
+
+
+def _valve_values(scenario: ScenarioDefinition, tick: int) -> PlantValues:
+    baseline = _baseline_values(scenario.seed)
+    values = baseline.model_dump()
+    flow_delta = _valve_flow_delta(scenario, tick)
+    if flow_delta:
+        values[StateVariable.PRIMARY_FLOW.value] = _clip(baseline.primary_flow + flow_delta)
+    return PlantValues(**values)
+
+
 def _baseline_values(seed: int) -> PlantValues:
     values: dict[str, float] = {}
     for index, variable in enumerate(StateVariable):
@@ -707,7 +925,7 @@ def _pump_values(seed: int, tick: int) -> PlantValues:
 
 
 def _pump_components(
-    *, selected_component: str, step: float, tick: int
+    *, scenario: ScenarioDefinition, selected_component: str, step: float, tick: int
 ) -> tuple[ComponentLatentState, ...]:
     health_loss = _pump_health_loss(step=step, tick=tick)
     return tuple(
@@ -724,6 +942,11 @@ def _pump_components(
             ),
             pending_maintenance=(
                 component.component_id == selected_component and tick >= _PUMP_INSPECTION_APPLY_TICK
+            ),
+            **_component_positions(
+                scenario=scenario,
+                tick=tick,
+                component_id=component.component_id,
             ),
         )
         for component in ASTER_A_SPEC.components
@@ -800,6 +1023,9 @@ def _trip_components(
             component_id=component.component_id,
             state=state_for(component.component_id),
             health=1.0,
+            **_component_positions(
+                scenario=scenario, tick=tick, component_id=component.component_id
+            ),
         )
         for component in ASTER_A_SPEC.components
     )
@@ -844,7 +1070,46 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
                 ),
                 values=_pump_values(scenario.seed, tick),
                 components=_pump_components(
-                    selected_component=pump.component_id, step=step, tick=tick
+                    scenario=scenario,
+                    selected_component=pump.component_id,
+                    step=step,
+                    tick=tick,
+                ),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
+    valve = _valve_injection(scenario)
+    if valve is not None:
+        decisive_tick = _valve_decisive_tick(scenario)
+        action_tick = _valve_action_tick(scenario)
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _VALVE_ONSET_TICK
+                    else OperatingMode.DISTURBED
+                    if valve.fault_family is FaultFamily.VALVE_STUCK or tick < decisive_tick
+                    else OperatingMode.RECOVERY
+                ),
+                values=_valve_values(scenario, tick),
+                components=tuple(
+                    ComponentLatentState(
+                        component_id=component.component_id,
+                        state=ComponentState.AVAILABLE,
+                        health=1.0,
+                        pending_maintenance=(
+                            valve.fault_family is FaultFamily.VALVE_STUCK
+                            and component.component_id == valve.component_id
+                            and tick >= action_tick
+                        ),
+                        **_component_positions(
+                            scenario=scenario,
+                            tick=tick,
+                            component_id=component.component_id,
+                        ),
+                    )
+                    for component in ASTER_A_SPEC.components
                 ),
             )
             for tick in range(scenario.duration_ticks)
@@ -854,6 +1119,7 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
             component_id=component.component_id,
             state=ComponentState.AVAILABLE,
             health=1.0,
+            **_component_positions(scenario=scenario, tick=0, component_id=component.component_id),
         )
         for component in ASTER_A_SPEC.components
     )
@@ -996,6 +1262,32 @@ def _trip_overall_status(tick: int) -> ObservationStatus:
     return ObservationStatus.NORMAL if tick < _PUMP_TRIP_ONSET_TICK else ObservationStatus.ABNORMAL
 
 
+def _valve_channel_status(
+    scenario: ScenarioDefinition, tick: int, variable: StateVariable
+) -> ObservationStatus:
+    if variable is not StateVariable.PRIMARY_FLOW:
+        return ObservationStatus.NORMAL
+    injection = _valve_injection(scenario)
+    if injection is None or tick < _valve_decisive_tick(scenario):
+        return ObservationStatus.NORMAL
+    return (
+        ObservationStatus.WATCH
+        if injection.fault_family is FaultFamily.VALVE_LAG
+        else ObservationStatus.NORMAL
+    )
+
+
+def _valve_overall_status(scenario: ScenarioDefinition, tick: int) -> ObservationStatus:
+    injection = _valve_injection(scenario)
+    if injection is None or tick < _valve_decisive_tick(scenario):
+        return ObservationStatus.NORMAL
+    return (
+        ObservationStatus.WATCH
+        if injection.fault_family is FaultFamily.VALVE_LAG
+        else ObservationStatus.ABNORMAL
+    )
+
+
 def _selected_channel_status(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ObservationStatus:
@@ -1057,6 +1349,7 @@ def _observations(
     frames: list[ObservationFrame] = []
     pump = _pump_degradation_injection(scenario)
     trip = _pump_trip_injection(scenario)
+    valve = _valve_injection(scenario)
     stuck = _sensor_stuck_injection(scenario)
     sensor_noise = _sensor_noise_injection(scenario)
     for latent in latent_states:
@@ -1097,11 +1390,13 @@ def _observations(
                     if trip is not None
                     else _pump_channel_status(latent.tick, variable)
                     if pump is not None
+                    else _valve_channel_status(scenario, latent.tick, variable)
+                    if valve is not None
                     else _selected_channel_status(scenario, latent.tick, channel.channel_id)
                 )
                 channel_quality = (
                     ChannelQuality.GOOD
-                    if pump is not None or trip is not None
+                    if pump is not None or trip is not None or valve is not None
                     else _selected_channel_quality(scenario, latent.tick, channel.channel_id)
                 )
                 channels.append(
@@ -1118,9 +1413,11 @@ def _observations(
             if trip is not None
             else _pump_overall_status(latent.tick)
             if pump is not None
+            else _valve_overall_status(scenario, latent.tick)
+            if valve is not None
             else ObservationStatus.NORMAL
         )
-        if pump is None and trip is None and scenario.fault_injections:
+        if pump is None and trip is None and valve is None and scenario.fault_injections:
             selected = scenario.fault_injections[0].channel_id or _INSTRUMENTATION
             overall_status = _selected_channel_status(scenario, latent.tick, selected)
         frames.append(
@@ -1640,6 +1937,193 @@ def _pump_events_and_targets(
     )
 
 
+def _valve_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit the G08/G09 shared prefix and their minimal decisive contrast."""
+
+    injection = _valve_injection(scenario)
+    if injection is None:
+        raise ValueError("valve event generation requires a valve injection")
+    is_lag = injection.fault_family is FaultFamily.VALVE_LAG
+    decisive_tick = _valve_decisive_tick(scenario)
+    action_tick = _valve_action_tick(scenario)
+    events: list[CanonicalEvent] = []
+    initial_position = _valve_initial_position(scenario.seed)
+    commanded_position = _valve_commanded_position(scenario.seed)
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_INSTRUMENTATION,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    command = _event(
+        events,
+        sim_time=_VALVE_ONSET_TICK,
+        event_type=EventType.COMMAND_RECORDED,
+        subject_id=injection.component_id,
+        variable=StateVariable.PRIMARY_FLOW,
+        commanded_value=commanded_position,
+        related_event_ids=(stable.event_id,),
+    )
+
+    def mismatch(
+        *, tick: int, slots: tuple[EvidenceSlot, ...], previous: CanonicalEvent
+    ) -> CanonicalEvent:
+        return _event(
+            events,
+            sim_time=tick,
+            event_type=EventType.COMMAND_POSITION_MISMATCH,
+            subject_id=injection.component_id,
+            variable=StateVariable.PRIMARY_FLOW,
+            commanded_value=commanded_position,
+            observed_value=initial_position,
+            evidence_slots=slots,
+            related_event_ids=(previous.event_id,),
+        )
+
+    first_mismatch = mismatch(
+        tick=_VALVE_ONSET_TICK,
+        slots=(EvidenceSlot.COMMAND_POSITION_MISMATCH,),
+        previous=command,
+    )
+    early_mismatch = mismatch(
+        tick=_VALVE_EARLY_DECISION_TICK,
+        slots=(EvidenceSlot.COMMAND_POSITION_MISMATCH,),
+        previous=first_mismatch,
+    )
+    missing = _event(
+        events,
+        sim_time=_VALVE_EARLY_DECISION_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_INSTRUMENTATION,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        related_event_ids=(early_mismatch.event_id,),
+    )
+    early_decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_VALVE_EARLY_DECISION_TICK,
+        diagnosis_status=DiagnosisStatus.UNRESOLVED,
+        evidence_event_ids=(first_mismatch.event_id, early_mismatch.event_id, missing.event_id),
+        evidence_slots=(
+            EvidenceSlot.COMMAND_POSITION_MISMATCH,
+            EvidenceSlot.MISSING_DECISIVE_EVIDENCE,
+        ),
+        immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+    )
+    _event(
+        events,
+        sim_time=_VALVE_EARLY_ACTION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_INSTRUMENTATION,
+        action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+        related_event_ids=(missing.event_id,),
+    )
+    applied_mismatch = mismatch(
+        tick=_VALVE_EARLY_ACTION_TICK,
+        slots=(EvidenceSlot.COMMAND_POSITION_MISMATCH,),
+        previous=early_mismatch,
+    )
+    prior = (
+        applied_mismatch
+        if decisive_tick - 1 == _VALVE_EARLY_ACTION_TICK
+        else mismatch(
+            tick=decisive_tick - 1,
+            slots=(EvidenceSlot.COMMAND_POSITION_MISMATCH,),
+            previous=applied_mismatch,
+        )
+    )
+
+    if is_lag:
+        flow = _event(
+            events,
+            sim_time=decisive_tick,
+            event_type=EventType.OBSERVATION_CHANGED,
+            subject_id=_first_channel_id(StateVariable.PRIMARY_FLOW),
+            variable=StateVariable.PRIMARY_FLOW,
+            value_before=_observed_value(
+                observations,
+                tick=decisive_tick - 1,
+                variable=StateVariable.PRIMARY_FLOW,
+            ),
+            value_after=_observed_value(
+                observations,
+                tick=decisive_tick,
+                variable=StateVariable.PRIMARY_FLOW,
+            ),
+            observation_status=ObservationStatus.WATCH,
+            evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+            related_event_ids=(prior.event_id,),
+        )
+        decisive = _event(
+            events,
+            sim_time=decisive_tick,
+            event_type=EventType.COMMAND_POSITION_ALIGNED,
+            subject_id=injection.component_id,
+            variable=StateVariable.PRIMARY_FLOW,
+            commanded_value=commanded_position,
+            observed_value=commanded_position,
+            evidence_slots=(EvidenceSlot.MISMATCH_RESOLVED,),
+            related_event_ids=(flow.event_id,),
+        )
+        fault = FaultFamily.VALVE_LAG
+        action = ActionLabel.CONTINUE_MONITORING
+        slots = (
+            EvidenceSlot.COMMAND_POSITION_MISMATCH,
+            EvidenceSlot.CORRELATED_STATE_CHANGE,
+            EvidenceSlot.MISMATCH_RESOLVED,
+        )
+        evidence = (command.event_id, prior.event_id, flow.event_id, decisive.event_id)
+    else:
+        decisive = mismatch(
+            tick=decisive_tick,
+            slots=(
+                EvidenceSlot.COMMAND_POSITION_MISMATCH,
+                EvidenceSlot.MISMATCH_PERSISTED,
+            ),
+            previous=prior,
+        )
+        related_stable = _event(
+            events,
+            sim_time=_VALVE_DECISIVE_TICK,
+            event_type=EventType.BENIGN_NOTE,
+            subject_id=_INSTRUMENTATION,
+            evidence_slots=(EvidenceSlot.RELATED_STATE_STABLE,),
+            related_event_ids=(decisive.event_id,),
+        )
+        fault = FaultFamily.VALVE_STUCK
+        action = ActionLabel.REQUEST_COMPONENT_INSPECTION
+        slots = (
+            EvidenceSlot.COMMAND_POSITION_MISMATCH,
+            EvidenceSlot.MISMATCH_PERSISTED,
+            EvidenceSlot.RELATED_STATE_STABLE,
+        )
+        evidence = (command.event_id, prior.event_id, decisive.event_id, related_stable.event_id)
+    mature_decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=decisive_tick,
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=(fault,),
+        evidence_event_ids=evidence,
+        evidence_slots=slots,
+        immediate_action=action,
+    )
+    _event(
+        events,
+        sim_time=action_tick,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=injection.component_id,
+        action_label=action,
+        related_event_ids=(decisive.event_id,),
+    )
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id,
+        decisions=(early_decision, mature_decision),
+    )
+
+
 def _events_and_targets(
     scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
 ) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
@@ -1676,6 +2160,10 @@ def _events_and_targets(
     pump = _pump_degradation_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and pump is not None:
         return _pump_events_and_targets(scenario, observations)
+
+    valve = _valve_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and valve is not None:
+        return _valve_events_and_targets(scenario, observations)
 
     sensor_noise = _sensor_noise_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and sensor_noise is not None:
@@ -2260,6 +2748,59 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             raise UnsupportedScenarioError("sensor-stuck load scenario id is noncanonical")
         return
     injection = scenario.fault_injections[0]
+    if injection.fault_family in {FaultFamily.VALVE_LAG, FaultFamily.VALVE_STUCK}:
+        lag_duration = injection.duration_ticks
+        if injection.fault_family is FaultFamily.VALVE_LAG:
+            if type(lag_duration) is not int or lag_duration not in {3, 4}:
+                raise UnsupportedScenarioError(
+                    "valve lag must use the declared {3, 4} duration band"
+                )
+            decisive_tick = injection.onset_tick + lag_duration
+        else:
+            decisive_tick = _VALVE_DECISIVE_TICK
+        expected_action = (
+            ActionLabel.CONTINUE_MONITORING
+            if injection.fault_family is FaultFamily.VALVE_LAG
+            else ActionLabel.REQUEST_COMPONENT_INSPECTION
+        )
+        valve_expected_actions = (
+            ScenarioAction(
+                decision_tick=_VALVE_EARLY_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=decisive_tick,
+                action=expected_action,
+            ),
+        )
+        expected_duration = (
+            lag_duration if injection.fault_family is FaultFamily.VALVE_LAG else None
+        )
+        if (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or type(injection.component_id) is not str
+            or injection.component_id not in ASTER_A_SPEC.primary_flow_valve_ids
+            or injection.channel_id is not None
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _VALVE_ONSET_TICK
+            or injection.duration_ticks != expected_duration
+            or scenario.action_sequence != valve_expected_actions
+            or scenario.duration_ticks < _VALVE_MIN_DURATION
+            or scenario.standby_context is not None
+        ):
+            raise UnsupportedScenarioError("unsupported valve lag/stuck scenario")
+        expected_id = (
+            f"aster-a-{injection.fault_family.value.lower().replace('_', '-')}-"
+            f"{scenario.seed}-{scenario.duration_ticks}-{_VALVE_ONSET_TICK}-low-"
+            f"{injection.component_id}-lag-{expected_duration}"
+            if expected_duration is not None
+            else f"aster-a-{injection.fault_family.value.lower().replace('_', '-')}-"
+            f"{scenario.seed}-{scenario.duration_ticks}-{_VALVE_ONSET_TICK}-low-"
+            f"{injection.component_id}"
+        )
+        if scenario.scenario_id != expected_id:
+            raise UnsupportedScenarioError("valve lag/stuck scenario id is noncanonical")
+        return
     if injection.fault_family is FaultFamily.PUMP_TRIP:
         context = scenario.standby_context
         if type(context) is not StandbyContext:

@@ -16,6 +16,8 @@ from reactorbench.simulator import (
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
+    build_valve_lag_scenario,
+    build_valve_stuck_scenario,
     generate_trace,
 )
 
@@ -55,6 +57,23 @@ def test_visible_payload_hides_truth_and_structured_trajectory_validates() -> No
         for index, event in enumerate(trace.events)
         for related_id in event.related_event_ids
     )
+
+
+def test_valve_counterfactual_visible_payload_remains_target_free() -> None:
+    lag = generate_trace(build_valve_lag_scenario(seed=23))
+    stuck = generate_trace(build_valve_stuck_scenario(seed=23))
+
+    for trace in (lag, stuck):
+        serialized = json.dumps(trace.visible_payload(), sort_keys=True)
+        for forbidden in (
+            "VALVE_LAG",
+            "VALVE_STUCK",
+            "fault_family",
+            "fault_injection",
+            "latent",
+            "targets",
+        ):
+            assert forbidden not in serialized
 
 
 def test_load_transient_visible_payload_hides_driver_and_fault_truth() -> None:

@@ -86,6 +86,9 @@ EVENT_FIELD_MATRIX: Mapping[EventType, EventFieldContract] = MappingProxyType(
         EventType.COMMAND_POSITION_MISMATCH: EventFieldContract(
             frozenset({"variable", "commanded_value", "observed_value"})
         ),
+        EventType.COMMAND_POSITION_ALIGNED: EventFieldContract(
+            frozenset({"variable", "commanded_value", "observed_value"})
+        ),
         EventType.ACTION_APPLIED: EventFieldContract(frozenset({"action_label"})),
         EventType.BENIGN_NOTE: EventFieldContract(frozenset()),
     }
@@ -177,5 +180,10 @@ class CanonicalEvent(ContractModel):
             if self.commanded_value == self.observed_value:
                 raise ValueError(
                     "COMMAND_POSITION_MISMATCH requires different commanded and observed values"
+                )
+        elif self.event_type is EventType.COMMAND_POSITION_ALIGNED:
+            if self.commanded_value != self.observed_value:
+                raise ValueError(
+                    "COMMAND_POSITION_ALIGNED requires equal commanded and observed values"
                 )
         return self

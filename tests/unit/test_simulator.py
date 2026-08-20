@@ -33,6 +33,8 @@ from reactorbench.simulator import (
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
+    build_valve_lag_scenario,
+    build_valve_stuck_scenario,
     generate_trace,
     scan_prohibited_content,
 )
@@ -1755,6 +1757,155 @@ def test_pump_trip_replay_prefix_aliases_rng_and_max_duration() -> None:
         build_pump_trip_scenario(seed=21).fault_injections[0].component_id
         == (ASTER_A_SPEC.primary_train_ids[1])
     )
+
+
+def test_valve_lag_and_stuck_are_matched_temporal_counterfactuals() -> None:
+    seed = 20
+    lag = generate_trace(build_valve_lag_scenario(seed=seed, duration_ticks=12))
+    stuck = generate_trace(build_valve_stuck_scenario(seed=seed, duration_ticks=12))
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=12))
+    valve_id = ASTER_A_SPEC.primary_flow_valve_ids[0]
+
+    assert lag.scenario.fault_injections[0].duration_ticks == 4
+    assert stuck.scenario.fault_injections[0].duration_ticks is None
+    assert lag.latent_states[:6] == stuck.latent_states[:6]
+    assert lag.observations[:6] == stuck.observations[:6]
+    assert tuple(event for event in lag.events if event.sim_time <= 5) == tuple(
+        event for event in stuck.events if event.sim_time <= 5
+    )
+    assert lag.latent_states[6].values.primary_flow != stable.latent_states[6].values.primary_flow
+    assert stuck.latent_states[6].values.primary_flow == stable.latent_states[6].values.primary_flow
+
+    for trace in (lag, stuck):
+        for state in trace.latent_states:
+            valve = next(
+                component for component in state.components if component.component_id == valve_id
+            )
+            assert (valve.commanded_position is None) is (valve.actual_position is None)
+            assert valve.commanded_position is not None
+            assert valve.actual_position is not None
+            assert all(
+                component.commanded_position is None and component.actual_position is None
+                for component in state.components
+                if component.component_id != valve_id
+            )
+
+    assert [decision.diagnosis_status for decision in lag.targets.decisions] == [
+        DiagnosisStatus.UNRESOLVED,
+        DiagnosisStatus.DIAGNOSED,
+    ]
+    assert all(
+        decision.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
+        and decision.immediate_action is ActionLabel.INSUFFICIENT_EVIDENCE
+        for decision in (lag.targets.decisions[0], stuck.targets.decisions[0])
+    )
+    assert lag.targets.decisions[-1].fault_labels == (FaultFamily.VALVE_LAG,)
+    assert lag.targets.decisions[-1].immediate_action is ActionLabel.CONTINUE_MONITORING
+    assert stuck.targets.decisions[-1].fault_labels == (FaultFamily.VALVE_STUCK,)
+    assert stuck.targets.decisions[-1].immediate_action is ActionLabel.REQUEST_COMPONENT_INSPECTION
+    assert any(event.event_type is EventType.COMMAND_POSITION_ALIGNED for event in lag.events)
+    assert not any(event.event_type is EventType.COMMAND_POSITION_ALIGNED for event in stuck.events)
+    assert any(EvidenceSlot.MISMATCH_PERSISTED in event.evidence_slots for event in stuck.events)
+    assert all(
+        event.sim_time == 7
+        for trace in (lag, stuck)
+        for event in trace.events
+        if event.event_type is EventType.ACTION_APPLIED
+        and event.action_label is not ActionLabel.INSUFFICIENT_EVIDENCE
+    )
+    assert not any(
+        component.pending_maintenance
+        for state in lag.latent_states
+        for component in state.components
+    )
+    assert not any(
+        component.pending_maintenance
+        for state in stuck.latent_states[:7]
+        for component in state.components
+    )
+    assert all(
+        next(
+            component for component in state.components if component.component_id == valve_id
+        ).pending_maintenance
+        for state in stuck.latent_states[7:]
+    )
+    assert "VALVE_LAG" not in str(lag.visible_payload())
+    assert "VALVE_STUCK" not in str(stuck.visible_payload())
+
+
+def test_valve_builder_and_model_copy_shapes_fail_closed() -> None:
+    scenario = build_valve_lag_scenario(seed=4)
+    injection = scenario.fault_injections[0]
+    malformed = (
+        scenario.model_copy(update={"scenario_id": "spoofed"}),
+        scenario.model_copy(update={"duration_ticks": 7}),
+        scenario.model_copy(update={"fault_injections": [injection]}),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"duration_ticks": 3}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"component_id": "lark"}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (injection.model_copy(update={"fault_family": "VALVE_LAG"}),)
+            }
+        ),
+    )
+    for candidate in malformed:
+        with pytest.raises(UnsupportedScenarioError):
+            generate_trace(candidate)
+
+    with pytest.raises(ValueError, match="primary-flow valve"):
+        build_valve_stuck_scenario(seed=4, component_id="lark")
+    with pytest.raises(ValueError, match="duration_ticks"):
+        build_valve_lag_scenario(seed=4, duration_ticks=7)
+
+
+def test_valve_lag_declared_band_changes_only_its_resolution_schedule() -> None:
+    lag_three = generate_trace(build_valve_lag_scenario(seed=20, lag_ticks=3))
+    lag_four = generate_trace(build_valve_lag_scenario(seed=20, lag_ticks=4))
+    stuck = generate_trace(build_valve_stuck_scenario(seed=20))
+
+    assert lag_three.scenario.fault_injections[0].duration_ticks == 3
+    assert lag_four.scenario.fault_injections[0].duration_ticks == 4
+    assert lag_three.scenario.scenario_id.endswith("aster-valve-lark-lag-3")
+    assert lag_four.scenario.scenario_id.endswith("aster-valve-lark-lag-4")
+    assert [decision.decision_tick for decision in lag_three.targets.decisions] == [3, 5]
+    assert [decision.decision_tick for decision in lag_four.targets.decisions] == [3, 6]
+    assert (
+        next(
+            event.sim_time
+            for event in lag_three.events
+            if event.event_type is EventType.COMMAND_POSITION_ALIGNED
+        )
+        == 5
+    )
+    assert (
+        next(
+            event.sim_time
+            for event in lag_four.events
+            if event.event_type is EventType.COMMAND_POSITION_ALIGNED
+        )
+        == 6
+    )
+    assert all(
+        event.sim_time == 6
+        for event in lag_three.events
+        if event.event_type is EventType.ACTION_APPLIED
+        and event.action_label is ActionLabel.CONTINUE_MONITORING
+    )
+    assert all(
+        event.sim_time == 7
+        for event in lag_four.events
+        if event.event_type is EventType.ACTION_APPLIED
+        and event.action_label is ActionLabel.CONTINUE_MONITORING
+    )
+    assert stuck.targets.decisions[-1].decision_tick == 6
+
+    for invalid_lag_ticks in (True, 3.0, 2, 5):
+        with pytest.raises(ValueError, match="lag_ticks"):
+            build_valve_lag_scenario(seed=4, lag_ticks=invalid_lag_ticks)  # type: ignore[arg-type]
 
 
 def test_pump_trip_builder_and_model_copy_shapes_fail_closed() -> None:

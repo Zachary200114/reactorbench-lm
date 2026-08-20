@@ -22,6 +22,8 @@ from reactorbench.simulator import (
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
+    build_valve_lag_scenario,
+    build_valve_stuck_scenario,
     generate_trace,
 )
 
@@ -52,6 +54,35 @@ def test_stable_generation_is_replayable_and_seed_controlled(seed: int, duration
     assert first == second
     assert len(first.observations) == duration
     assert all(len(frame.channels) == 2 * len(StateVariable) for frame in first.observations)
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    lag_ticks=st.sampled_from((3, 4)),
+)
+def test_valve_counterfactual_is_seeded_prefix_safe_and_bounded(seed: int, lag_ticks: int) -> None:
+    lag = generate_trace(
+        build_valve_lag_scenario(seed=seed, duration_ticks=12, lag_ticks=lag_ticks)
+    )
+    stuck = generate_trace(build_valve_stuck_scenario(seed=seed, duration_ticks=12))
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=12))
+
+    assert lag == generate_trace(lag.scenario)
+    assert stuck == generate_trace(stuck.scenario)
+    assert lag.scenario.fault_injections[0].duration_ticks == lag_ticks
+    assert lag.targets.decisions[-1].decision_tick == 2 + lag_ticks
+    assert (
+        lag.latent_states[2 + lag_ticks].values.primary_flow
+        != stable.latent_states[2 + lag_ticks].values.primary_flow
+    )
+    assert stuck.latent_states[6].values.primary_flow == stable.latent_states[6].values.primary_flow
+    assert all(
+        0.0 <= value <= 1.0
+        for trace in (lag, stuck)
+        for state in trace.latent_states
+        for value in state.values.model_dump().values()
+    )
 
 
 @settings(max_examples=35, deadline=None)
