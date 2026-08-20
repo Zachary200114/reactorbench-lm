@@ -197,13 +197,16 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 - Pilot/model work cannot begin until the real candidate passes both human gates and
   the relevant contracts/manifests are approved for that use.
 
-## Uncommitted work
+## Repository state
 
 - Prior Phase 2 HEAD: `d59a94d` (`docs: checkpoint completed phase 2`) on
   `codex/foundation`.
 - Verified Phase 3 implementation commit:
   `d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`.
-- This documentation reconciliation awaits a follow-up local checkpoint commit. No
+- The Phase 3 documentation reconciliation is committed in the local checkpoint that
+  follows the implementation commit. The tracked worktree is expected to be clean;
+  verify the exact current documentation commit with `git rev-parse --verify HEAD`.
+  The unapproved packet remains an intentionally ignored local review artifact. No
   remote, push, publication, or deployment exists.
 
 ## Immediate next step
