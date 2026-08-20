@@ -48,6 +48,7 @@ from reactorbench.simulator import (
     build_valve_stuck_scenario,
     dependency_map_context_for,
     generate_trace,
+    get_variant_spec,
     scan_prohibited_content,
 )
 from reactorbench.simulator.core import _decision_from_process_evidence
@@ -123,6 +124,7 @@ def test_g10_g11_variant_builders_are_deterministic_bounded_and_causal(
     for variant in PlantVariant:
         scenario = builder(seed=20, duration_ticks=12, plant_variant=variant)
         trace = generate_trace(scenario)
+        max_step = get_variant_spec(variant).max_per_tick_step
         stable = generate_trace(
             build_stable_scenario(seed=20, duration_ticks=12, plant_variant=variant)
         )
@@ -137,7 +139,7 @@ def test_g10_g11_variant_builders_are_deterministic_bounded_and_causal(
         )
         for variable in StateVariable:
             values = [getattr(state.values, variable.value) for state in trace.latent_states]
-            assert all(abs(second - first) <= 0.03 for first, second in pairwise(values))
+            assert all(abs(second - first) <= max_step + 1e-9 for first, second in pairwise(values))
         decisions = trace.targets.decisions
         assert decisions[-1].fault_labels == (fault,)
         assert decisions[-1].immediate_action is second_action

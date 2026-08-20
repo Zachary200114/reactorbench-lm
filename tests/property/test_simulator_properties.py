@@ -30,6 +30,7 @@ from reactorbench.simulator import (
     build_valve_lag_scenario,
     build_valve_stuck_scenario,
     generate_trace,
+    get_variant_spec,
 )
 
 
@@ -73,6 +74,7 @@ def test_g10_g11_process_cases_preserve_prefix_bounds_and_unaffected_channels(
     stable = generate_trace(
         build_stable_scenario(seed=seed, duration_ticks=duration, plant_variant=variant)
     )
+    max_step = get_variant_spec(variant).max_per_tick_step
     transfer = generate_trace(
         build_transfer_efficiency_loss_scenario(
             seed=seed, duration_ticks=duration, plant_variant=variant
@@ -114,7 +116,7 @@ def test_g10_g11_process_cases_preserve_prefix_bounds_and_unaffected_channels(
         )
         for variable in StateVariable:
             series = [getattr(state.values, variable.value) for state in trace.latent_states]
-            assert all(abs(after - before) <= 0.03 for before, after in pairwise(series))
+            assert all(abs(after - before) <= max_step + 1e-9 for before, after in pairwise(series))
         for variable in unaffected:
             assert tuple(
                 getattr(state.values, variable.value) for state in trace.latent_states
@@ -180,6 +182,28 @@ def test_valve_counterfactual_is_seeded_prefix_safe_and_bounded(seed: int, lag_t
         for state in trace.latent_states
         for value in state.values.model_dump().values()
     )
+    for trace in (lag, stuck):
+        for previous, current in pairwise(trace.latent_states):
+            for variable in StateVariable:
+                before = getattr(previous.values, variable.value)
+                after = getattr(current.values, variable.value)
+                assert abs(after - before) <= ASTER_A_SPEC.max_per_tick_step + 1e-9
+            for before_component, after_component in zip(
+                previous.components, current.components, strict=True
+            ):
+                assert before_component.component_id == after_component.component_id
+                assert (
+                    abs(after_component.health - before_component.health)
+                    <= ASTER_A_SPEC.max_per_tick_step + 1e-9
+                )
+                for field in ("commanded_position", "actual_position"):
+                    before_position = getattr(before_component, field)
+                    after_position = getattr(after_component, field)
+                    if before_position is not None and after_position is not None:
+                        assert (
+                            abs(after_position - before_position)
+                            <= ASTER_A_SPEC.max_per_tick_step + 1e-9
+                        )
 
 
 @settings(max_examples=35, deadline=None)

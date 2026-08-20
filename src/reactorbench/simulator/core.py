@@ -1,4 +1,4 @@
-"""Deterministic first-fault Aster-A structured simulator."""
+"""Deterministic multi-variant Aster structured simulator."""
 
 from __future__ import annotations
 
@@ -86,6 +86,11 @@ _PUMP_LOAD_APPLY_TICK = 8
 _PUMP_MIN_DURATION = 9
 _PUMP_MODE_SUBJECT = "aster-operating-domain"
 _PUMP_LOAD_SUBJECT = "aster-load-domain"
+_COMPOUND_SENSOR_DECISION_TICK = 4
+_COMPOUND_FLAG_DECISION_TICK = 5
+_COMPOUND_INSPECTION_DECISION_TICK = 6
+_COMPOUND_LOAD_DECISION_TICK = 7
+_COMPOUND_MIN_DURATION = 9
 _PUMP_TRIP_ONSET_TICK = 2
 _PUMP_TRIP_FLOW_TICK = 3
 _PUMP_TRIP_THERMAL_TICK = 4
@@ -410,6 +415,98 @@ def build_pump_degradation_scenario(
             ),
             ScenarioAction(
                 decision_tick=_PUMP_LOAD_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_pump_degradation_sensor_drift_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    component_id: str | None = None,
+    channel_id: str | None = None,
+) -> ScenarioDefinition:
+    """Build G14's bounded compound process-plus-observation fixture.
+
+    The pump fault determines the latent trajectory.  The independent thermal
+    channel drift is an observation-only overlay, so matched pump-only traces
+    remain a valid counterfactual for every latent and non-selected channel.
+    """
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if duration_ticks < _COMPOUND_MIN_DURATION:
+        raise ValueError("compound pump/drift scenario needs at least 9 ticks")
+    if component_id is None:
+        selected_component = ASTER_A_SPEC.primary_train_ids[
+            seed % len(ASTER_A_SPEC.primary_train_ids)
+        ]
+    elif type(component_id) is str and component_id in ASTER_A_SPEC.primary_train_ids:
+        selected_component = component_id
+    else:
+        raise ValueError("component_id must be an Aster-A primary-train id or None")
+
+    thermal_channels = ASTER_A_SPEC.channels_for(StateVariable.PRIMARY_THERMAL_STATE)
+    if channel_id is None:
+        selected_channel = thermal_channels[(seed // 2) % len(thermal_channels)].channel_id
+    elif type(channel_id) is str and channel_id in {
+        channel.channel_id for channel in thermal_channels
+    }:
+        selected_channel = channel_id
+    else:
+        raise ValueError("channel_id must be an Aster-A primary-thermal-state channel or None")
+    sensor_component = next(
+        channel.component_id
+        for channel in thermal_channels
+        if channel.channel_id == selected_channel
+    )
+
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"aster-a-case-{seed}-{duration_ticks}-{_PUMP_DEGRADATION_ONSET_TICK}-low-"
+            f"{selected_component}-{selected_channel}"
+        ),
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        # ScenarioDefinition canonicalizes this to schema enum order:
+        # SENSOR_DRIFT, PUMP_DEGRADATION.
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.SENSOR_DRIFT,
+                component_id=sensor_component,
+                onset_tick=_PUMP_DEGRADATION_ONSET_TICK,
+                severity=SeverityBand.LOW,
+                channel_id=selected_channel,
+            ),
+            FaultInjection(
+                fault_family=FaultFamily.PUMP_DEGRADATION,
+                component_id=selected_component,
+                onset_tick=_PUMP_DEGRADATION_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(decision_tick=_PUMP_FLOW_TICK, action=ActionLabel.INSUFFICIENT_EVIDENCE),
+            ScenarioAction(
+                decision_tick=_COMPOUND_SENSOR_DECISION_TICK,
+                action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            ),
+            ScenarioAction(
+                decision_tick=_COMPOUND_FLAG_DECISION_TICK,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+            ScenarioAction(
+                decision_tick=_COMPOUND_INSPECTION_DECISION_TICK,
+                action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+            ),
+            ScenarioAction(
+                decision_tick=_COMPOUND_LOAD_DECISION_TICK,
                 action=ActionLabel.REDUCE_SIMULATED_LOAD,
             ),
         ),
@@ -1085,6 +1182,20 @@ def _pump_degradation_injection(scenario: ScenarioDefinition) -> FaultInjection 
     return _single_injection_for(scenario, FaultFamily.PUMP_DEGRADATION)
 
 
+def _compound_pump_drift_injections(
+    scenario: ScenarioDefinition,
+) -> tuple[FaultInjection, FaultInjection] | None:
+    """Return G14's canonical (sensor, pump) pair without index guessing."""
+
+    if _fault_signature(scenario) != (
+        FaultFamily.SENSOR_DRIFT,
+        FaultFamily.PUMP_DEGRADATION,
+    ):
+        return None
+    sensor, pump = scenario.fault_injections
+    return sensor, pump
+
+
 def _pump_trip_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
     return _single_injection_for(scenario, FaultFamily.PUMP_TRIP)
 
@@ -1718,7 +1829,8 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
             )
             for tick in range(scenario.duration_ticks)
         )
-    pump = _pump_degradation_injection(scenario)
+    compound = _compound_pump_drift_injections(scenario)
+    pump = compound[1] if compound is not None else _pump_degradation_injection(scenario)
     if pump is not None:
         step = _pump_health_step(scenario.seed)
         return tuple(
@@ -1816,7 +1928,12 @@ def _clip(value: float) -> float:
 
 
 def _drift_bias(*, scenario: ScenarioDefinition, tick: int, channel_id: str) -> float:
-    injection = _single_injection_for(scenario, FaultFamily.SENSOR_DRIFT)
+    compound = _compound_pump_drift_injections(scenario)
+    injection = (
+        compound[0]
+        if compound is not None
+        else _single_injection_for(scenario, FaultFamily.SENSOR_DRIFT)
+    )
     if injection is None:
         return 0.0
     if tick <= injection.onset_tick or channel_id != injection.channel_id:
@@ -2191,7 +2308,10 @@ def _observations(
 ) -> tuple[ObservationFrame, ...]:
     spec = _spec_for(scenario)
     frames: list[ObservationFrame] = []
-    pump = _pump_degradation_injection(scenario)
+    compound = _compound_pump_drift_injections(scenario)
+    compound_sensor = compound[0] if compound is not None else None
+    compound_onset = compound_sensor.onset_tick if compound_sensor is not None else -1
+    pump = compound[1] if compound is not None else _pump_degradation_injection(scenario)
     trip = _pump_trip_injection(scenario)
     transfer = _transfer_injection(scenario)
     flow_imbalance = _flow_imbalance_injection(scenario)
@@ -2243,8 +2363,17 @@ def _observations(
                     observed_value = _clip(
                         observed_value + _sensor_noise_offset(seed=scenario.seed, tick=latent.tick)
                     )
+                is_compound_sensor_channel = (
+                    compound_sensor is not None and channel.channel_id == compound_sensor.channel_id
+                )
                 channel_status = (
-                    ObservationStatus.WATCH
+                    ObservationStatus.NORMAL
+                    if is_compound_sensor_channel and latent.tick <= compound_onset
+                    else ObservationStatus.WATCH
+                    if is_compound_sensor_channel and latent.tick == compound_onset + 1
+                    else ObservationStatus.CONFLICTING
+                    if is_compound_sensor_channel and latent.tick > compound_onset + 1
+                    else ObservationStatus.WATCH
                     if (
                         _is_sparse_primary_flow_scenario(scenario)
                         and latent.tick == _SPARSE_PRIMARY_FLOW_TICK
@@ -2272,7 +2401,11 @@ def _observations(
                     else _selected_channel_status(scenario, latent.tick, channel.channel_id)
                 )
                 channel_quality = (
-                    ChannelQuality.GOOD
+                    ChannelQuality.SUSPECT
+                    if is_compound_sensor_channel and latent.tick >= compound_onset + 4
+                    else ChannelQuality.GOOD
+                    if compound_sensor is not None
+                    else ChannelQuality.GOOD
                     if (
                         _is_sparse_primary_flow_scenario(scenario)
                         or inventory is not None
@@ -2636,6 +2769,386 @@ def _pump_trip_events_and_targets(
         )
     return tuple(events), ScenarioTargets(
         scenario_id=scenario.scenario_id, decisions=tuple(decisions)
+    )
+
+
+def _decision_from_compound_evidence(
+    *,
+    scenario_id: str,
+    decision_tick: int,
+    events: tuple[CanonicalEvent, ...],
+) -> DecisionTarget:
+    """Infer G14 labels strictly from a canonical visible-event prefix.
+
+    Process and sensor sufficiency are assessed independently.  This keeps the
+    compound target falsifiable: removing the thermal disagreement cannot erase
+    genuinely visible process evidence, and removing process evidence cannot
+    create a pump diagnosis from an observation disagreement.
+    """
+
+    if type(scenario_id) is not str or type(decision_tick) is not int or decision_tick < 0:
+        raise ValueError("scenario_id and decision_tick must be canonical non-negative inputs")
+    if type(events) is not tuple:
+        raise TypeError("compound evidence must use a tuple of canonical events")
+    prior_ids: set[str] = set()
+    prior_time = -1
+    for index, event in enumerate(events):
+        if type(event) is not CanonicalEvent:
+            raise TypeError("compound evidence must contain canonical events")
+        if (
+            event.event_index != index
+            or event.event_id != f"e-{index:04d}"
+            or event.sim_time < prior_time
+            or event.sim_time > decision_tick
+            or any(related_id not in prior_ids for related_id in event.related_event_ids)
+        ):
+            raise ValueError("compound evidence must be an ordered visible-event prefix")
+        prior_ids.add(event.event_id)
+        prior_time = event.sim_time
+
+    def first(
+        *,
+        tick: int,
+        event_type: EventType,
+        variable: StateVariable | None = None,
+        slots: tuple[EvidenceSlot, ...] = (),
+    ) -> CanonicalEvent | None:
+        return next(
+            (
+                event
+                for event in events
+                if event.sim_time == tick
+                and event.event_type is event_type
+                and (variable is None or event.variable is variable)
+                and all(slot in event.evidence_slots for slot in slots)
+            ),
+            None,
+        )
+
+    missing = first(
+        tick=_PUMP_FLOW_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+    )
+    sensor = first(
+        tick=_COMPOUND_SENSOR_DECISION_TICK,
+        event_type=EventType.CHANNEL_DISAGREEMENT,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        slots=(
+            EvidenceSlot.CHANNEL_DISAGREEMENT,
+            EvidenceSlot.CONFLICTING_OBSERVATIONS,
+        ),
+    )
+    paired_thermal = first(
+        tick=_COMPOUND_SENSOR_DECISION_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+    )
+    process_events = (
+        first(
+            tick=_PUMP_DEGRADATION_ONSET_TICK,
+            event_type=EventType.COMPONENT_STATE_CHANGED,
+            slots=(EvidenceSlot.COMPONENT_HEALTH_DECLINING,),
+        ),
+        first(
+            tick=_PUMP_FLOW_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            variable=StateVariable.PRIMARY_FLOW,
+            slots=(EvidenceSlot.FLOW_DECLINING, EvidenceSlot.MULTIPLE_CHANNELS_AGREE),
+        ),
+        paired_thermal,
+        first(
+            tick=_PUMP_STEAM_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            variable=StateVariable.STEAM_STATE,
+            slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        ),
+        first(
+            tick=_PUMP_OUTPUT_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+            slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        ),
+    )
+    sensor_sufficient = (
+        sensor is not None
+        and paired_thermal is not None
+        and sensor.subject_id != paired_thermal.subject_id
+        and paired_thermal.event_id in sensor.related_event_ids
+        and decision_tick >= _COMPOUND_SENSOR_DECISION_TICK
+    )
+    process_sufficient = all(process_events) and decision_tick >= _COMPOUND_INSPECTION_DECISION_TICK
+    actions = {
+        _PUMP_FLOW_TICK: ActionLabel.INSUFFICIENT_EVIDENCE,
+        _COMPOUND_SENSOR_DECISION_TICK: ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+        _COMPOUND_FLAG_DECISION_TICK: ActionLabel.FLAG_SENSOR_SUSPECT,
+        _COMPOUND_INSPECTION_DECISION_TICK: ActionLabel.REQUEST_COMPONENT_INSPECTION,
+        _COMPOUND_LOAD_DECISION_TICK: ActionLabel.REDUCE_SIMULATED_LOAD,
+    }
+    action = actions.get(decision_tick, ActionLabel.INSUFFICIENT_EVIDENCE)
+    if not sensor_sufficient and not process_sufficient:
+        unresolved_evidence_ids = (missing.event_id,) if missing is not None else ()
+        return DecisionTarget(
+            scenario_id=scenario_id,
+            decision_tick=decision_tick,
+            diagnosis_status=DiagnosisStatus.UNRESOLVED,
+            evidence_event_ids=unresolved_evidence_ids,
+            evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+            immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+        )
+
+    labels: tuple[FaultFamily, ...] = ()
+    evidence_ids: list[str] = []
+    evidence_slots: list[EvidenceSlot] = []
+    if sensor_sufficient and sensor is not None and paired_thermal is not None:
+        labels += (FaultFamily.SENSOR_DRIFT,)
+        evidence_ids.extend((paired_thermal.event_id, sensor.event_id))
+        evidence_slots.extend(
+            (
+                EvidenceSlot.CORRELATED_STATE_CHANGE,
+                EvidenceSlot.CHANNEL_DISAGREEMENT,
+                EvidenceSlot.CONFLICTING_OBSERVATIONS,
+            )
+        )
+    if process_sufficient:
+        labels += (FaultFamily.PUMP_DEGRADATION,)
+        for process_event in process_events:
+            if process_event is not None and process_event.event_id not in evidence_ids:
+                evidence_ids.append(process_event.event_id)
+        for slot in (
+            EvidenceSlot.COMPONENT_HEALTH_DECLINING,
+            EvidenceSlot.FLOW_DECLINING,
+            EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+            EvidenceSlot.CORRELATED_STATE_CHANGE,
+            EvidenceSlot.DEPENDENT_TREND_DELAY,
+        ):
+            if slot not in evidence_slots:
+                evidence_slots.append(slot)
+    return DecisionTarget(
+        scenario_id=scenario_id,
+        decision_tick=decision_tick,
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=labels,
+        evidence_event_ids=tuple(evidence_ids),
+        evidence_slots=tuple(evidence_slots),
+        immediate_action=action,
+    )
+
+
+def _compound_pump_drift_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit the causal, factor-separable G14 visible event chain."""
+
+    injections = _compound_pump_drift_injections(scenario)
+    if injections is None:
+        raise ValueError("compound event generation requires the canonical G14 signature")
+    sensor, pump = injections
+    selected_channel = sensor.channel_id
+    if selected_channel is None:
+        raise ValueError("compound sensor injection needs a channel")
+    paired_channel = next(
+        channel.channel_id
+        for channel in ASTER_A_SPEC.channels_for(StateVariable.PRIMARY_THERMAL_STATE)
+        if channel.channel_id != selected_channel
+    )
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_INSTRUMENTATION,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION,),
+    )
+    component = _event(
+        events,
+        sim_time=_PUMP_DEGRADATION_ONSET_TICK,
+        event_type=EventType.COMPONENT_STATE_CHANGED,
+        subject_id=pump.component_id,
+        component_state_before=ComponentState.AVAILABLE,
+        component_state_after=ComponentState.DEGRADED,
+        evidence_slots=(EvidenceSlot.COMPONENT_HEALTH_DECLINING,),
+        related_event_ids=(stable.event_id,),
+    )
+    disturbed = _event(
+        events,
+        sim_time=_PUMP_DEGRADATION_ONSET_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=_PUMP_MODE_SUBJECT,
+        operating_mode_before=OperatingMode.STABLE,
+        operating_mode_after=OperatingMode.DISTURBED,
+        related_event_ids=(component.event_id,),
+    )
+    flow = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_PUMP_FLOW_TICK,
+        variable=StateVariable.PRIMARY_FLOW,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.FLOW_DECLINING, EvidenceSlot.MULTIPLE_CHANNELS_AGREE),
+        related_event_ids=(component.event_id,),
+        spec=ASTER_A_SPEC,
+    )
+    missing = _process_channel_observation_event(
+        events,
+        observations=observations,
+        tick=_PUMP_FLOW_TICK,
+        channel_id=selected_channel,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        related_event_ids=(flow.event_id,),
+    )
+    early = _decision_from_compound_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_PUMP_FLOW_TICK,
+        events=tuple(events),
+    )
+    abstain = _event(
+        events,
+        sim_time=_COMPOUND_SENSOR_DECISION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_INSTRUMENTATION,
+        action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+        related_event_ids=(missing.event_id,),
+    )
+    paired = _process_channel_observation_event(
+        events,
+        observations=observations,
+        tick=_COMPOUND_SENSOR_DECISION_TICK,
+        channel_id=paired_channel,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+        related_event_ids=(flow.event_id,),
+    )
+    disagreement = _event(
+        events,
+        sim_time=_COMPOUND_SENSOR_DECISION_TICK,
+        event_type=EventType.CHANNEL_DISAGREEMENT,
+        subject_id=selected_channel,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        observation_status=ObservationStatus.CONFLICTING,
+        evidence_slots=(EvidenceSlot.CHANNEL_DISAGREEMENT, EvidenceSlot.CONFLICTING_OBSERVATIONS),
+        related_event_ids=(missing.event_id, paired.event_id),
+    )
+    sensor_decision = _decision_from_compound_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_COMPOUND_SENSOR_DECISION_TICK,
+        events=tuple(events),
+    )
+    verify = _event(
+        events,
+        sim_time=_COMPOUND_FLAG_DECISION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_INSTRUMENTATION,
+        action_label=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+        related_event_ids=(disagreement.event_id,),
+    )
+    steam = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_PUMP_STEAM_TICK,
+        variable=StateVariable.STEAM_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        related_event_ids=(paired.event_id,),
+        spec=ASTER_A_SPEC,
+    )
+    flag_decision = _decision_from_compound_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_COMPOUND_FLAG_DECISION_TICK,
+        events=tuple(events),
+    )
+    electrical = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_COMPOUND_INSPECTION_DECISION_TICK,
+        variable=StateVariable.ELECTRICAL_OUTPUT,
+        status=ObservationStatus.ABNORMAL,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        related_event_ids=(steam.event_id,),
+        spec=ASTER_A_SPEC,
+    )
+    inspection_decision = _decision_from_compound_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_COMPOUND_INSPECTION_DECISION_TICK,
+        events=tuple(events),
+    )
+    flag = _event(
+        events,
+        sim_time=_COMPOUND_INSPECTION_DECISION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_INSTRUMENTATION,
+        action_label=ActionLabel.FLAG_SENSOR_SUSPECT,
+        related_event_ids=(disagreement.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_COMPOUND_INSPECTION_DECISION_TICK,
+        event_type=EventType.CHANNEL_QUALITY_CHANGED,
+        subject_id=selected_channel,
+        channel_quality_before=ChannelQuality.GOOD,
+        channel_quality=ChannelQuality.SUSPECT,
+        related_event_ids=(flag.event_id,),
+    )
+    inspection = _event(
+        events,
+        sim_time=_COMPOUND_LOAD_DECISION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=pump.component_id,
+        action_label=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+        related_event_ids=(electrical.event_id,),
+    )
+    persistent = _event(
+        events,
+        sim_time=_COMPOUND_LOAD_DECISION_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_PUMP_MODE_SUBJECT,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        related_event_ids=(inspection.event_id,),
+    )
+    load_decision = _decision_from_compound_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_COMPOUND_LOAD_DECISION_TICK,
+        events=tuple(events),
+    )
+    reduce = _event(
+        events,
+        sim_time=_PUMP_LOAD_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_PUMP_LOAD_SUBJECT,
+        action_label=ActionLabel.REDUCE_SIMULATED_LOAD,
+        related_event_ids=(persistent.event_id,),
+    )
+    target = _event(
+        events,
+        sim_time=_PUMP_LOAD_APPLY_TICK,
+        event_type=EventType.TARGET_CHANGED,
+        subject_id=_PUMP_LOAD_SUBJECT,
+        variable=StateVariable.LOAD_DEMAND,
+        value_before=_pump_values(scenario.seed, _PUMP_LOAD_APPLY_TICK - 1).load_demand,
+        value_after=_pump_values(scenario.seed, _PUMP_LOAD_APPLY_TICK).load_demand,
+        related_event_ids=(reduce.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_PUMP_LOAD_APPLY_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=_PUMP_MODE_SUBJECT,
+        operating_mode_before=OperatingMode.DISTURBED,
+        operating_mode_after=OperatingMode.RECOVERY,
+        related_event_ids=(target.event_id,),
+    )
+    # ``disturbed`` is intentionally retained as an audit event even though
+    # the visible decision helper needs only the component/process observations.
+    _ = abstain, verify, flag_decision, inspection_decision, load_decision, disturbed
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id,
+        decisions=(early, sensor_decision, flag_decision, inspection_decision, load_decision),
     )
 
 
@@ -4166,6 +4679,10 @@ def _events_and_targets(
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and trip is not None:
         return _pump_trip_events_and_targets(scenario, observations)
 
+    compound = _compound_pump_drift_injections(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and compound is not None:
+        return _compound_pump_drift_events_and_targets(scenario, observations)
+
     pump = _pump_degradation_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and pump is not None:
         return _pump_events_and_targets(scenario, observations)
@@ -4666,10 +5183,15 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         raise UnsupportedScenarioError(str(error)) from error
     if type(scenario.fault_injections) is not tuple:
         raise UnsupportedScenarioError("fault_injections must use a tuple container")
-    if len(scenario.fault_injections) > 1:
-        raise UnsupportedScenarioError("only zero or one injection is supported")
     if any(type(injection) is not FaultInjection for injection in scenario.fault_injections):
         raise UnsupportedScenarioError("fault injection must use the canonical contract")
+    compound_signature = (
+        FaultFamily.SENSOR_DRIFT,
+        FaultFamily.PUMP_DEGRADATION,
+    )
+    is_compound = _fault_signature(scenario) == compound_signature
+    if len(scenario.fault_injections) > 1 and not is_compound:
+        raise UnsupportedScenarioError("only the canonical G14 compound signature is supported")
     if type(scenario.action_sequence) is not tuple:
         raise UnsupportedScenarioError("action_sequence must use a tuple container")
     is_pump_trip = (
@@ -4764,6 +5286,60 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             _LOAD_SETTLE_TICK >= scenario.duration_ticks
         ):
             raise UnsupportedScenarioError("load transient has insufficient response history")
+        return
+    if is_compound:
+        sensor, pump = scenario.fault_injections
+        thermal_components = {
+            channel.channel_id: channel.component_id
+            for channel in ASTER_A_SPEC.channels
+            if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+        }
+        expected_id = (
+            f"aster-a-case-{scenario.seed}-{scenario.duration_ticks}-"
+            f"{_PUMP_DEGRADATION_ONSET_TICK}-low-{pump.component_id}-{sensor.channel_id}"
+        )
+        compound_expected_actions = (
+            ScenarioAction(decision_tick=_PUMP_FLOW_TICK, action=ActionLabel.INSUFFICIENT_EVIDENCE),
+            ScenarioAction(
+                decision_tick=_COMPOUND_SENSOR_DECISION_TICK,
+                action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            ),
+            ScenarioAction(
+                decision_tick=_COMPOUND_FLAG_DECISION_TICK,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+            ScenarioAction(
+                decision_tick=_COMPOUND_INSPECTION_DECISION_TICK,
+                action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+            ),
+            ScenarioAction(
+                decision_tick=_COMPOUND_LOAD_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+        )
+        if (
+            scenario.plant_variant_id is not PlantVariant.ASTER_A
+            or scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or scenario.duration_ticks < _COMPOUND_MIN_DURATION
+            or scenario.standby_context is not None
+            or scenario.dependency_map_context is not None
+            or type(sensor.component_id) is not str
+            or type(sensor.channel_id) is not str
+            or sensor.channel_id not in thermal_components
+            or sensor.component_id != thermal_components.get(sensor.channel_id)
+            or sensor.onset_tick != _PUMP_DEGRADATION_ONSET_TICK
+            or sensor.severity is not SeverityBand.LOW
+            or sensor.duration_ticks is not None
+            or type(pump.component_id) is not str
+            or pump.component_id not in ASTER_A_SPEC.primary_train_ids
+            or pump.channel_id is not None
+            or pump.onset_tick != _PUMP_DEGRADATION_ONSET_TICK
+            or pump.severity is not SeverityBand.LOW
+            or pump.duration_ticks is not None
+            or scenario.action_sequence != compound_expected_actions
+            or scenario.scenario_id != expected_id
+        ):
+            raise UnsupportedScenarioError("unsupported compound pump/degradation scenario")
         return
     injection = scenario.fault_injections[0]
     process_faults = {
