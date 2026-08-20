@@ -34,6 +34,7 @@ from reactorbench.schemas import (
     SensorChannelObservation,
     SeverityBand,
     SplitName,
+    StandbyContext,
     StateVariable,
     TaskName,
 )
@@ -307,6 +308,108 @@ def test_scenario_actions_are_ordered_with_one_action_per_tick() -> None:
                 ScenarioAction(decision_tick=3, action=ActionLabel.COMPARE_RELATED_TRENDS),
             ),
         )
+
+
+def test_standby_context_is_strict_frozen_and_round_trips_with_scenario() -> None:
+    context = StandbyContext(
+        context_id="standby-context-001",
+        active_train_id="train-cedar",
+        standby_train_id="train-hemlock",
+        standby_state=ComponentState.AVAILABLE,
+        standby_support_bus_id="support-bus-hemlock",
+        support_bus_state=ComponentState.AVAILABLE,
+        standby_start_delay_ticks=2,
+    )
+    scenario = ScenarioDefinition(
+        scenario_id="scenario-standby-001",
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=7,
+        duration_ticks=10,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        standby_context=context,
+    )
+
+    assert StandbyContext.model_validate_json(context.model_dump_json()) == context
+    assert ScenarioDefinition.model_validate_json(scenario.model_dump_json()) == scenario
+    assert scenario.standby_context == context
+    with pytest.raises(ValidationError, match="frozen"):
+        context.standby_state = ComponentState.UNAVAILABLE
+
+
+def test_standby_context_rejects_unknown_fields_and_same_train_ids() -> None:
+    payload: dict[str, object] = {
+        "context_id": "standby-context-001",
+        "active_train_id": "train-cedar",
+        "standby_train_id": "train-hemlock",
+        "standby_state": ComponentState.AVAILABLE,
+        "standby_support_bus_id": "support-bus-hemlock",
+        "support_bus_state": ComponentState.AVAILABLE,
+        "standby_start_delay_ticks": 2,
+    }
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StandbyContext.model_validate({**payload, "policy_card": "not-permitted"})
+
+    with pytest.raises(ValidationError, match="must be different"):
+        StandbyContext.model_validate({**payload, "standby_train_id": "train-cedar"})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("standby_state", ComponentState.DEGRADED),
+        ("standby_state", ComponentState.STARTING),
+        ("support_bus_state", ComponentState.SUSPECT),
+        ("support_bus_state", ComponentState.UNKNOWN),
+    ],
+)
+def test_standby_context_rejects_states_outside_dependency_vocabulary(
+    field_name: str, bad_value: ComponentState
+) -> None:
+    context = StandbyContext(
+        context_id="standby-context-001",
+        active_train_id="train-cedar",
+        standby_train_id="train-hemlock",
+        standby_state=ComponentState.AVAILABLE,
+        standby_support_bus_id="support-bus-hemlock",
+        support_bus_state=ComponentState.AVAILABLE,
+        standby_start_delay_ticks=2,
+    )
+    payload = context.model_dump()
+    payload[field_name] = bad_value
+
+    with pytest.raises(ValidationError, match=f"{field_name} must be AVAILABLE or UNAVAILABLE"):
+        StandbyContext.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("context_id", 7),
+        ("active_train_id", True),
+        ("standby_state", "AVAILABLE"),
+        ("standby_support_bus_id", 1.0),
+        ("support_bus_state", 0),
+        ("standby_start_delay_ticks", True),
+        ("standby_start_delay_ticks", "2"),
+        ("standby_start_delay_ticks", 2.0),
+    ],
+)
+def test_standby_context_rejects_python_type_coercion(field_name: str, bad_value: object) -> None:
+    context = StandbyContext(
+        context_id="standby-context-001",
+        active_train_id="train-cedar",
+        standby_train_id="train-hemlock",
+        standby_state=ComponentState.AVAILABLE,
+        standby_support_bus_id="support-bus-hemlock",
+        support_bus_state=ComponentState.UNAVAILABLE,
+        standby_start_delay_ticks=2,
+    )
+    payload = context.model_dump()
+    payload[field_name] = bad_value
+
+    with pytest.raises(ValidationError):
+        StandbyContext.model_validate(payload)
 
 
 @pytest.mark.parametrize("bad_seed", [-1, 4_294_967_296, True, "7"])

@@ -270,6 +270,34 @@ def test_fault_duration_must_end_inside_the_scenario_window() -> None:
         ScenarioDefinition.model_validate(payload)
 
 
+def test_evidence_slot_vocabulary_has_exact_reviewed_parity() -> None:
+    assert tuple(slot.value for slot in EvidenceSlot) == (
+        "STABLE_OPERATION",
+        "COORDINATED_LOAD_RESPONSE",
+        "CHANNEL_DISAGREEMENT",
+        "RELATED_STATE_STABLE",
+        "CHANNEL_FROZEN",
+        "CORRELATED_STATE_CHANGE",
+        "RAPID_INCONSISTENT_READINGS",
+        "COMPONENT_HEALTH_DECLINING",
+        "FLOW_DECLINING",
+        "DEPENDENT_TREND_DELAY",
+        "COMPONENT_UNAVAILABLE",
+        "STANDBY_AVAILABLE",
+        "COMMAND_POSITION_MISMATCH",
+        "MISMATCH_RESOLVED",
+        "MISMATCH_PERSISTED",
+        "UPSTREAM_DOWNSTREAM_DIVERGENCE",
+        "SECONDARY_TREND_MISMATCH",
+        "SUPPORT_BUS_CHANGE",
+        "MAPPED_COMPONENT_CHANGE",
+        "INVENTORY_TREND_DECLINING",
+        "MULTIPLE_CHANNELS_AGREE",
+        "MISSING_DECISIVE_EVIDENCE",
+        "CONFLICTING_OBSERVATIONS",
+    )
+
+
 type ConcreteTaskTarget = (
     CausalContinuationTarget
     | FaultDiagnosisTarget

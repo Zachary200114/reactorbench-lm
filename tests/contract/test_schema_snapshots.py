@@ -38,6 +38,30 @@ def test_schema_documents_and_manifest_are_deterministic() -> None:
         assert document["additionalProperties"] is False
 
 
+def test_standby_context_is_nested_in_the_scenario_root_with_exact_fields() -> None:
+    documents = schema_documents()
+    assert len(documents) == 7
+
+    scenario_schema = documents["scenario.schema.json"]
+    standby_schema = scenario_schema["$defs"]["StandbyContext"]
+    expected_fields = {
+        "context_id",
+        "active_train_id",
+        "standby_train_id",
+        "standby_state",
+        "standby_support_bus_id",
+        "support_bus_state",
+        "standby_start_delay_ticks",
+    }
+    assert set(standby_schema["properties"]) == expected_fields
+    assert set(standby_schema["required"]) == expected_fields
+    assert standby_schema["additionalProperties"] is False
+    assert scenario_schema["properties"]["standby_context"] == {
+        "anyOf": [{"$ref": "#/$defs/StandbyContext"}, {"type": "null"}],
+        "default": None,
+    }
+
+
 def test_committed_generated_snapshot_matches_the_models() -> None:
     documents, manifest = load_snapshot(SNAPSHOT_DIRECTORY)
     assert documents == schema_documents()

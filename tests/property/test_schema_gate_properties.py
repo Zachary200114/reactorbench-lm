@@ -10,6 +10,7 @@ from reactorbench.schemas import (
     ActionLabel,
     AsterSubsystem,
     CausalContinuationTarget,
+    ComponentState,
     CounterfactualChange,
     CounterfactualComparisonTarget,
     CounterfactualConclusion,
@@ -36,6 +37,7 @@ from reactorbench.schemas import (
     ScenarioTargets,
     SeverityBand,
     SplitName,
+    StandbyContext,
     StateVariable,
     StructuredTrajectory,
     TaskName,
@@ -79,6 +81,58 @@ def test_fault_duration_boundary_property(window: tuple[int, int, int]) -> None:
     invalid_payload["fault_injections"][0]["duration_ticks"] = scenario_duration - onset_tick + 1
     with pytest.raises(ValidationError, match="fault duration"):
         ScenarioDefinition.model_validate(invalid_payload)
+
+
+@given(
+    standby_state=st.sampled_from((ComponentState.AVAILABLE, ComponentState.UNAVAILABLE)),
+    support_bus_state=st.sampled_from((ComponentState.AVAILABLE, ComponentState.UNAVAILABLE)),
+    start_delay=st.integers(min_value=1, max_value=64),
+)
+def test_standby_context_round_trip_property(
+    standby_state: ComponentState,
+    support_bus_state: ComponentState,
+    start_delay: int,
+) -> None:
+    context = StandbyContext(
+        context_id="standby-context-property",
+        active_train_id="train-cedar",
+        standby_train_id="train-hemlock",
+        standby_state=standby_state,
+        standby_support_bus_id="support-bus-hemlock",
+        support_bus_state=support_bus_state,
+        standby_start_delay_ticks=start_delay,
+    )
+
+    assert StandbyContext.model_validate_json(context.model_dump_json()) == context
+
+
+@given(
+    field_name=st.sampled_from(("standby_state", "support_bus_state")),
+    invalid_state=st.sampled_from(
+        tuple(
+            state
+            for state in ComponentState
+            if state not in {ComponentState.AVAILABLE, ComponentState.UNAVAILABLE}
+        )
+    ),
+)
+def test_standby_context_invalid_state_property(
+    field_name: str, invalid_state: ComponentState
+) -> None:
+    context = StandbyContext(
+        context_id="standby-context-property",
+        active_train_id="train-cedar",
+        standby_train_id="train-hemlock",
+        standby_state=ComponentState.AVAILABLE,
+        standby_support_bus_id="support-bus-hemlock",
+        support_bus_state=ComponentState.AVAILABLE,
+        standby_start_delay_ticks=2,
+    )
+    payload = context.model_dump()
+    payload[field_name] = invalid_state
+
+    with pytest.raises(ValidationError, match=f"{field_name} must be AVAILABLE or UNAVAILABLE"):
+        StandbyContext.model_validate(payload)
 
 
 def _property_trajectory(duration: int) -> StructuredTrajectory:

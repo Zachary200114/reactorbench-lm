@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 
-from reactorbench.schemas import FaultFamily, ProvenanceRecord, SplitName, TaskName
+from reactorbench.schemas import (
+    ComponentState,
+    FaultFamily,
+    ProvenanceRecord,
+    SplitName,
+    TaskName,
+)
 from reactorbench.simulator import (
     build_load_transient_scenario,
     build_pump_degradation_scenario,
+    build_pump_trip_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
@@ -18,7 +25,8 @@ def test_visible_payload_hides_truth_and_structured_trajectory_validates() -> No
     payload = trace.visible_payload()
     serialized = json.dumps(payload, sort_keys=True)
 
-    assert set(payload) == {"schema_version", "observations", "events"}
+    assert set(payload) == {"schema_version", "standby_context", "observations", "events"}
+    assert payload["standby_context"] is None
     for forbidden in ("SENSOR_DRIFT", "fault_family", "fault_injection", "latent", "targets"):
         assert forbidden not in serialized
 
@@ -110,7 +118,13 @@ def test_sensor_noise_visible_payload_hides_truth_and_trajectory_validates() -> 
         task_name=TaskName.FAULT_FAMILY,
     )
 
-    assert set(trace.visible_payload()) == {"schema_version", "observations", "events"}
+    assert set(trace.visible_payload()) == {
+        "schema_version",
+        "standby_context",
+        "observations",
+        "events",
+    }
+    assert trace.visible_payload()["standby_context"] is None
     assert trace.scenario.scenario_id not in payload
     for forbidden in (
         "SENSOR_NOISE",
@@ -154,7 +168,13 @@ def test_pump_degradation_visible_payload_hides_fault_and_health_truth() -> None
         task_name=TaskName.FAULT_FAMILY,
     )
 
-    assert set(trace.visible_payload()) == {"schema_version", "observations", "events"}
+    assert set(trace.visible_payload()) == {
+        "schema_version",
+        "standby_context",
+        "observations",
+        "events",
+    }
+    assert trace.visible_payload()["standby_context"] is None
     assert trace.scenario.scenario_id not in payload
     for forbidden in (
         "PUMP_DEGRADATION",
@@ -175,3 +195,103 @@ def test_pump_degradation_visible_payload_hides_fault_and_health_truth() -> None
     )
     assert trajectory.events == trace.events
     assert trajectory.targets == trace.targets
+
+
+def test_pump_trip_visible_context_is_safe_and_trajectory_retains_audit_truth() -> None:
+    trace = generate_trace(
+        build_pump_trip_scenario(
+            seed=23,
+            duration_ticks=8,
+            standby_state=ComponentState.AVAILABLE,
+        )
+    )
+    payload = trace.visible_payload()
+    serialized = json.dumps(payload, sort_keys=True)
+    context = payload["standby_context"]
+    assert isinstance(context, dict)
+    assert set(context) == {
+        "context_id",
+        "active_train_id",
+        "standby_train_id",
+        "standby_state",
+        "standby_support_bus_id",
+        "support_bus_state",
+        "standby_start_delay_ticks",
+    }
+    assert context["standby_state"] == ComponentState.AVAILABLE.value
+    assert context["support_bus_state"] == ComponentState.AVAILABLE.value
+    assert trace.scenario.scenario_id not in serialized
+    for forbidden in (
+        "PUMP_TRIP",
+        "fault_family",
+        "fault_injection",
+        "STEADY_OPERATION",
+        "severity",
+        "onset",
+        "action_sequence",
+        "provenance",
+        "latent",
+        "targets",
+    ):
+        assert forbidden not in serialized
+    serialized_context = json.dumps(context, sort_keys=True)
+    for forbidden in (
+        "fault",
+        "severity",
+        "action",
+        "decision_tick",
+        "injection",
+        "SELECT_SYNTHETIC_STANDBY_TRAIN",
+    ):
+        assert forbidden not in serialized_context
+
+    provenance = ProvenanceRecord(
+        dataset_version="0.1.0",
+        generator_commit="abcdef1",
+        renderer_version="0.1.0",
+        seed=23,
+        trajectory_id="trip-trace-23",
+        scenario_id=trace.scenario.scenario_id,
+        plant_variant_id=trace.scenario.plant_variant_id,
+        fault_family_ids=(FaultFamily.PUMP_TRIP,),
+        template_family_ids=("template-a",),
+        split_name=SplitName.IID_TEST,
+        task_name=TaskName.FAULT_FAMILY,
+    )
+    trajectory = trace.to_structured_trajectory(
+        trajectory_id="trip-trace-23", provenance=provenance
+    )
+    assert trajectory.events == trace.events
+    assert trajectory.targets == trace.targets
+    assert trajectory.scenario.standby_context == trace.scenario.standby_context
+    assert trajectory.provenance.fault_family_ids == (FaultFamily.PUMP_TRIP,)
+    assert all(
+        related_id in {earlier.event_id for earlier in trace.events[:index]}
+        for index, event in enumerate(trace.events)
+        for related_id in event.related_event_ids
+    )
+
+    unavailable = generate_trace(
+        build_pump_trip_scenario(
+            seed=23,
+            duration_ticks=8,
+            standby_state=ComponentState.UNAVAILABLE,
+        )
+    )
+    unavailable_provenance = provenance.model_copy(
+        update={
+            "trajectory_id": "trip-unavailable-23",
+            "scenario_id": unavailable.scenario.scenario_id,
+        }
+    )
+    unavailable_trajectory = unavailable.to_structured_trajectory(
+        trajectory_id="trip-unavailable-23",
+        provenance=unavailable_provenance,
+    )
+    assert [
+        (decision.decision_tick, decision.immediate_action.value)
+        for decision in unavailable_trajectory.targets.decisions
+    ] == [
+        (5, "REDUCE_SIMULATED_LOAD"),
+        (6, "ENTER_SIMULATED_STABLE_STATE"),
+    ]

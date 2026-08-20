@@ -28,11 +28,13 @@ from reactorbench.simulator import (
     UnsupportedScenarioError,
     build_load_transient_scenario,
     build_pump_degradation_scenario,
+    build_pump_trip_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
     generate_trace,
+    scan_prohibited_content,
 )
 
 
@@ -1262,3 +1264,650 @@ def test_pump_degradation_rng_parity_and_step_variation() -> None:
         if component.component_id == odd.scenario.fault_injections[0].component_id
     )
     assert even_health != odd_health
+
+
+def test_pump_trip_context_pair_changes_only_the_context_driven_branch() -> None:
+    available_scenario = build_pump_trip_scenario(
+        seed=20,
+        component_id=ASTER_A_SPEC.primary_train_ids[0],
+        standby_state=ComponentState.AVAILABLE,
+    )
+    unavailable_scenario = build_pump_trip_scenario(
+        seed=20,
+        component_id=ASTER_A_SPEC.primary_train_ids[0],
+        standby_state=ComponentState.UNAVAILABLE,
+    )
+    available = generate_trace(available_scenario)
+    unavailable = generate_trace(unavailable_scenario)
+    available_context = available_scenario.standby_context
+    unavailable_context = unavailable_scenario.standby_context
+    assert available_context is not None
+    assert unavailable_context is not None
+
+    dependency_map = dict(ASTER_A_SPEC.primary_train_support_bus_pairs)
+    assert dependency_map == dict(
+        zip(ASTER_A_SPEC.primary_train_ids, ASTER_A_SPEC.support_bus_ids, strict=True)
+    )
+    assert available_context.active_train_id == ASTER_A_SPEC.primary_train_ids[0]
+    assert available_context.standby_train_id == ASTER_A_SPEC.primary_train_ids[1]
+    assert (
+        available_context.standby_support_bus_id
+        == dependency_map[available_context.standby_train_id]
+    )
+    assert available_context.support_bus_state is ComponentState.AVAILABLE
+    assert available_context.standby_start_delay_ticks == 1
+    assert available_scenario.scenario_id.endswith("aster-train-cirrus-available")
+    assert unavailable_scenario.scenario_id.endswith("aster-train-cirrus-unavailable")
+    assert available_scenario.action_sequence[0].action is (
+        ActionLabel.SELECT_SYNTHETIC_STANDBY_TRAIN
+    )
+    assert [action.action for action in unavailable_scenario.action_sequence] == [
+        ActionLabel.REDUCE_SIMULATED_LOAD,
+        ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+    ]
+
+    assert tuple(state.values for state in available.latent_states[:6]) == tuple(
+        state.values for state in unavailable.latent_states[:6]
+    )
+    assert available.observations[:6] == unavailable.observations[:6]
+    assert available.events[1:7] == unavailable.events[1:7]
+    assert available.events[0].model_dump(exclude={"evidence_slots"}) == unavailable.events[
+        0
+    ].model_dump(exclude={"evidence_slots"})
+    assert available.events[0].evidence_slots == (
+        EvidenceSlot.STABLE_OPERATION,
+        EvidenceSlot.STANDBY_AVAILABLE,
+    )
+    assert unavailable.events[0].evidence_slots == (
+        EvidenceSlot.STABLE_OPERATION,
+        EvidenceSlot.COMPONENT_UNAVAILABLE,
+    )
+    assert (
+        available.targets.decisions[0].fault_labels
+        == unavailable.targets.decisions[0].fault_labels
+        == (FaultFamily.PUMP_TRIP,)
+    )
+    assert available.targets.decisions[0].immediate_action is (
+        ActionLabel.SELECT_SYNTHETIC_STANDBY_TRAIN
+    )
+    assert unavailable.targets.decisions[0].immediate_action is ActionLabel.REDUCE_SIMULATED_LOAD
+    assert [
+        (decision.decision_tick, decision.immediate_action)
+        for decision in unavailable.targets.decisions
+    ] == [
+        (5, ActionLabel.REDUCE_SIMULATED_LOAD),
+        (6, ActionLabel.ENTER_SIMULATED_STABLE_STATE),
+    ]
+    assert (
+        unavailable.targets.decisions[1].evidence_event_ids[:-1]
+        == unavailable.targets.decisions[0].evidence_event_ids
+    )
+    appended_evidence = next(
+        event
+        for event in unavailable.events
+        if event.event_id == unavailable.targets.decisions[1].evidence_event_ids[-1]
+    )
+    assert appended_evidence.event_type is EventType.TARGET_CHANGED
+    assert appended_evidence.variable is StateVariable.LOAD_DEMAND
+    assert appended_evidence.sim_time == unavailable.targets.decisions[1].decision_tick == 6
+    assert (
+        unavailable.targets.decisions[1].evidence_slots
+        == unavailable.targets.decisions[0].evidence_slots
+    )
+    assert all(
+        decision.diagnosis_status is DiagnosisStatus.DIAGNOSED
+        and decision.fault_labels == (FaultFamily.PUMP_TRIP,)
+        and decision.abstention_reason is None
+        for decision in unavailable.targets.decisions
+    )
+    assert all(
+        decision.diagnosis_status is DiagnosisStatus.DIAGNOSED
+        and decision.abstention_reason is None
+        and decision.decision_tick == 5
+        for decision in (
+            available.targets.decisions[0],
+            unavailable.targets.decisions[0],
+        )
+    )
+
+
+def test_pump_trip_latent_causality_recovery_and_stabilization_are_bounded() -> None:
+    seed = 21
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=64))
+    available = generate_trace(
+        build_pump_trip_scenario(
+            seed=seed,
+            duration_ticks=64,
+            standby_state=ComponentState.AVAILABLE,
+        )
+    )
+    unavailable = generate_trace(
+        build_pump_trip_scenario(
+            seed=seed,
+            duration_ticks=64,
+            standby_state=ComponentState.UNAVAILABLE,
+        )
+    )
+    context = available.scenario.standby_context
+    unavailable_context = unavailable.scenario.standby_context
+    assert context is not None
+    assert unavailable_context is not None
+
+    def component_state(trace: SimulationTrace, tick: int, component_id: str) -> ComponentState:
+        return next(
+            component.state
+            for component in trace.latent_states[tick].components
+            if component.component_id == component_id
+        )
+
+    for trace in (available, unavailable):
+        active = trace.scenario.standby_context
+        assert active is not None
+        assert all(
+            next(
+                component.health
+                for component in latent.components
+                if component.component_id == active.active_train_id
+            )
+            == 1.0
+            for latent in trace.latent_states
+        )
+        assert component_state(trace, 1, active.active_train_id) is ComponentState.AVAILABLE
+        assert component_state(trace, 2, active.active_train_id) is ComponentState.UNAVAILABLE
+        assert all(
+            component_state(trace, tick, bus_id) is ComponentState.AVAILABLE
+            for tick in range(trace.scenario.duration_ticks)
+            for bus_id in ASTER_A_SPEC.support_bus_ids
+        )
+
+    assert component_state(available, 5, context.standby_train_id) is ComponentState.AVAILABLE
+    assert component_state(available, 6, context.standby_train_id) is ComponentState.STARTING
+    assert component_state(available, 7, context.standby_train_id) is ComponentState.RECOVERING
+    assert all(
+        component_state(unavailable, tick, unavailable_context.standby_train_id)
+        is ComponentState.UNAVAILABLE
+        for tick in range(unavailable.scenario.duration_ticks)
+    )
+
+    def first_change(trace: SimulationTrace, variable: StateVariable) -> int:
+        return next(
+            state.tick
+            for state, baseline in zip(trace.latent_states, stable.latent_states, strict=True)
+            if getattr(state.values, variable.value) != getattr(baseline.values, variable.value)
+        )
+
+    assert first_change(available, StateVariable.PRIMARY_FLOW) == 3
+    assert first_change(available, StateVariable.PRIMARY_THERMAL_STATE) == 4
+    assert first_change(available, StateVariable.STEAM_STATE) == 5
+    assert first_change(available, StateVariable.TURBINE_OUTPUT) == 5
+    assert first_change(available, StateVariable.ELECTRICAL_OUTPUT) == 5
+    assert (
+        available.latent_states[3].values.primary_flow
+        == available.latent_states[6].values.primary_flow
+    )
+    assert (
+        available.latent_states[7].values.primary_flow
+        > available.latent_states[6].values.primary_flow
+    )
+    assert (
+        available.latent_states[-1].values.primary_flow
+        < stable.latent_states[-1].values.primary_flow
+    )
+    assert all(
+        state.values.primary_flow == unavailable.latent_states[3].values.primary_flow
+        for state in unavailable.latent_states[3:]
+    )
+    assert (
+        unavailable.latent_states[5].values.load_demand
+        == stable.latent_states[5].values.load_demand
+    )
+    assert (
+        unavailable.latent_states[6].values.load_demand < stable.latent_states[6].values.load_demand
+    )
+    assert (
+        unavailable.latent_states[6].values.heat_source_level
+        < stable.latent_states[6].values.heat_source_level
+    )
+    assert all(
+        state.values.transfer_efficiency == baseline.values.transfer_efficiency
+        for trace in (available, unavailable)
+        for state, baseline in zip(trace.latent_states, stable.latent_states, strict=True)
+    )
+    assert (
+        available.latent_states[3].values.heat_source_level
+        * available.latent_states[3].values.primary_flow
+        * available.latent_states[3].values.transfer_efficiency
+        < stable.latent_states[3].values.heat_source_level
+        * stable.latent_states[3].values.primary_flow
+        * stable.latent_states[3].values.transfer_efficiency
+    )
+
+    for trace in (available, unavailable):
+        for before, after in pairwise(trace.latent_states):
+            for variable in StateVariable:
+                step = abs(
+                    getattr(after.values, variable.value) - getattr(before.values, variable.value)
+                )
+                if before.tick == 2 and variable is StateVariable.PRIMARY_FLOW:
+                    assert step > ASTER_A_SPEC.max_per_tick_step
+                else:
+                    assert step <= ASTER_A_SPEC.max_per_tick_step
+    assert [state.operating_mode for state in available.latent_states[:8]] == [
+        OperatingMode.STABLE,
+        OperatingMode.STABLE,
+        OperatingMode.DISTURBED,
+        OperatingMode.DISTURBED,
+        OperatingMode.DISTURBED,
+        OperatingMode.DISTURBED,
+        OperatingMode.DISTURBED,
+        OperatingMode.RECOVERY,
+    ]
+    assert unavailable.latent_states[7].operating_mode is OperatingMode.STABILIZED
+
+
+def test_pump_trip_events_statuses_and_noise_residuals_are_explicit() -> None:
+    available = generate_trace(
+        build_pump_trip_scenario(seed=20, standby_state=ComponentState.AVAILABLE)
+    )
+    unavailable = generate_trace(
+        build_pump_trip_scenario(seed=20, standby_state=ComponentState.UNAVAILABLE)
+    )
+    stable = generate_trace(build_stable_scenario(seed=20))
+
+    assert [
+        (event.sim_time, event.event_type, event.action_label) for event in available.events
+    ] == [
+        (0, EventType.BENIGN_NOTE, None),
+        (2, EventType.COMPONENT_STATE_CHANGED, None),
+        (2, EventType.OPERATING_MODE_CHANGED, None),
+        (3, EventType.OBSERVATION_CHANGED, None),
+        (4, EventType.OBSERVATION_CHANGED, None),
+        (5, EventType.OBSERVATION_CHANGED, None),
+        (5, EventType.OBSERVATION_CHANGED, None),
+        (6, EventType.ACTION_APPLIED, ActionLabel.SELECT_SYNTHETIC_STANDBY_TRAIN),
+        (6, EventType.COMPONENT_STATE_CHANGED, None),
+        (7, EventType.COMPONENT_STATE_CHANGED, None),
+        (7, EventType.OBSERVATION_CHANGED, None),
+        (7, EventType.OPERATING_MODE_CHANGED, None),
+    ]
+    assert [
+        (event.sim_time, event.event_type, event.action_label) for event in unavailable.events
+    ] == [
+        (0, EventType.BENIGN_NOTE, None),
+        (2, EventType.COMPONENT_STATE_CHANGED, None),
+        (2, EventType.OPERATING_MODE_CHANGED, None),
+        (3, EventType.OBSERVATION_CHANGED, None),
+        (4, EventType.OBSERVATION_CHANGED, None),
+        (5, EventType.OBSERVATION_CHANGED, None),
+        (5, EventType.OBSERVATION_CHANGED, None),
+        (6, EventType.ACTION_APPLIED, ActionLabel.REDUCE_SIMULATED_LOAD),
+        (6, EventType.TARGET_CHANGED, None),
+        (7, EventType.ACTION_APPLIED, ActionLabel.ENTER_SIMULATED_STABLE_STATE),
+        (7, EventType.OPERATING_MODE_CHANGED, None),
+    ]
+    for trace in (available, unavailable):
+        events_by_id = {event.event_id: event for event in trace.events}
+        assert [event.event_index for event in trace.events] == list(range(len(trace.events)))
+        assert [event.sim_time for event in trace.events] == sorted(
+            event.sim_time for event in trace.events
+        )
+        assert all(
+            events_by_id[related_id].event_index < event.event_index
+            for event in trace.events
+            for related_id in event.related_event_ids
+        )
+        decision = trace.targets.decisions[0]
+        assert all(
+            events_by_id[event_id].sim_time <= decision.decision_tick
+            for event_id in decision.evidence_event_ids
+        )
+        assert {
+            EvidenceSlot.COMPONENT_UNAVAILABLE,
+            EvidenceSlot.FLOW_DECLINING,
+            EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+            EvidenceSlot.CORRELATED_STATE_CHANGE,
+            EvidenceSlot.DEPENDENT_TREND_DELAY,
+        }.issubset(decision.evidence_slots)
+        assert scan_prohibited_content(trace) == ()
+
+        for frame, stable_frame, latent, stable_latent in zip(
+            trace.observations,
+            stable.observations,
+            trace.latent_states,
+            stable.latent_states,
+            strict=True,
+        ):
+            assert frame.overall_status is (
+                ObservationStatus.NORMAL if frame.tick < 2 else ObservationStatus.ABNORMAL
+            )
+            for channel, stable_channel in zip(frame.channels, stable_frame.channels, strict=True):
+                assert channel.value is not None
+                assert stable_channel.value is not None
+                assert channel.quality is ChannelQuality.GOOD
+                true_value = getattr(latent.values, channel.variable.value)
+                stable_true = getattr(stable_latent.values, stable_channel.variable.value)
+                assert channel.value - true_value == pytest.approx(
+                    stable_channel.value - stable_true
+                )
+            for variable in StateVariable:
+                pair = [channel for channel in frame.channels if channel.variable is variable]
+                assert pair[0].value == pair[1].value
+                assert pair[0].status is pair[1].status
+
+    available_flow_status = [
+        next(
+            channel.status
+            for channel in frame.channels
+            if channel.variable is StateVariable.PRIMARY_FLOW
+        )
+        for frame in available.observations
+    ]
+    unavailable_flow_status = [
+        next(
+            channel.status
+            for channel in frame.channels
+            if channel.variable is StateVariable.PRIMARY_FLOW
+        )
+        for frame in unavailable.observations
+    ]
+    assert available_flow_status[:7] == [
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.ABNORMAL,
+        ObservationStatus.ABNORMAL,
+        ObservationStatus.ABNORMAL,
+        ObservationStatus.ABNORMAL,
+    ]
+    assert all(status is ObservationStatus.WATCH for status in available_flow_status[7:])
+    assert all(status is ObservationStatus.ABNORMAL for status in unavailable_flow_status[3:])
+    assert (
+        next(
+            channel.status
+            for channel in available.observations[4].channels
+            if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+        )
+        is ObservationStatus.WATCH
+    )
+    assert (
+        next(
+            channel.status
+            for channel in available.observations[5].channels
+            if channel.variable is StateVariable.STEAM_STATE
+        )
+        is ObservationStatus.WATCH
+    )
+    thermal_statuses = [
+        next(
+            channel.status
+            for channel in frame.channels
+            if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+        )
+        for frame in available.observations
+    ]
+    steam_statuses = [
+        next(
+            channel.status
+            for channel in frame.channels
+            if channel.variable is StateVariable.STEAM_STATE
+        )
+        for frame in available.observations
+    ]
+    assert thermal_statuses[:5] == [
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.WATCH,
+    ]
+    assert all(status is ObservationStatus.ABNORMAL for status in thermal_statuses[5:])
+    assert steam_statuses[:6] == [
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.NORMAL,
+        ObservationStatus.WATCH,
+    ]
+    assert all(status is ObservationStatus.ABNORMAL for status in steam_statuses[6:])
+    for unrelated in (
+        StateVariable.HEAT_SOURCE_LEVEL,
+        StateVariable.PRIMARY_INVENTORY,
+        StateVariable.TRANSFER_EFFICIENCY,
+        StateVariable.SECONDARY_FLOW,
+        StateVariable.SECONDARY_INVENTORY,
+        StateVariable.CONDENSER_FUNCTION,
+        StateVariable.HEAT_REJECTION,
+        StateVariable.LOAD_DEMAND,
+        StateVariable.SUPPORT_POWER,
+    ):
+        assert all(
+            channel.status is ObservationStatus.NORMAL
+            for frame in available.observations
+            for channel in frame.channels
+            if channel.variable is unrelated
+        )
+
+
+def test_pump_trip_replay_prefix_aliases_rng_and_max_duration() -> None:
+    original_state = random.getstate()
+    try:
+        random.seed(7331)
+        before = random.getstate()
+        traces: list[SimulationTrace] = []
+        for component_id in ASTER_A_SPEC.primary_train_ids:
+            for standby_state in (ComponentState.AVAILABLE, ComponentState.UNAVAILABLE):
+                short = generate_trace(
+                    build_pump_trip_scenario(
+                        seed=20,
+                        duration_ticks=8,
+                        component_id=component_id,
+                        standby_state=standby_state,
+                    )
+                )
+                long = generate_trace(
+                    build_pump_trip_scenario(
+                        seed=20,
+                        duration_ticks=12,
+                        component_id=component_id,
+                        standby_state=standby_state,
+                    )
+                )
+                assert short == generate_trace(short.scenario)
+                context = short.scenario.standby_context
+                assert context is not None
+                assert context.active_train_id == component_id
+                assert context.standby_train_id == next(
+                    train_id
+                    for train_id in ASTER_A_SPEC.primary_train_ids
+                    if train_id != component_id
+                )
+                assert (
+                    context.standby_support_bus_id
+                    == dict(ASTER_A_SPEC.primary_train_support_bus_pairs)[context.standby_train_id]
+                )
+                assert short.latent_states == long.latent_states[:8]
+                assert short.observations == long.observations[:8]
+                assert short.events == long.events
+                assert tuple(
+                    decision.model_dump(exclude={"scenario_id"})
+                    for decision in short.targets.decisions
+                ) == tuple(
+                    decision.model_dump(exclude={"scenario_id"})
+                    for decision in long.targets.decisions
+                )
+                traces.append(short)
+                assert random.getstate() == before
+        maximum = generate_trace(build_pump_trip_scenario(seed=20, duration_ticks=64))
+        assert len(maximum.observations) == 64
+        assert random.getstate() == before
+    finally:
+        random.setstate(original_state)
+
+    assert {trace.scenario.fault_injections[0].component_id for trace in traces} == set(
+        ASTER_A_SPEC.primary_train_ids
+    )
+    assert (
+        build_pump_trip_scenario(seed=20).fault_injections[0].component_id
+        == (ASTER_A_SPEC.primary_train_ids[0])
+    )
+    assert (
+        build_pump_trip_scenario(seed=21).fault_injections[0].component_id
+        == (ASTER_A_SPEC.primary_train_ids[1])
+    )
+
+
+def test_pump_trip_builder_and_model_copy_shapes_fail_closed() -> None:
+    scenario = build_pump_trip_scenario(seed=4, standby_state=ComponentState.AVAILABLE)
+    injection = scenario.fault_injections[0]
+    context = scenario.standby_context
+    assert context is not None
+    malformed = (
+        scenario.model_copy(update={"driver": ScenarioDriver.LOAD_TRANSIENT}),
+        scenario.model_copy(update={"plant_variant_id": PlantVariant.ASTER_B}),
+        scenario.model_copy(update={"scenario_id": "spoofed"}),
+        scenario.model_copy(update={"duration_ticks": 7}),
+        scenario.model_copy(update={"duration_ticks": 8.0}),
+        scenario.model_copy(update={"duration_ticks": True}),
+        scenario.model_copy(update={"seed": "4"}),
+        scenario.model_copy(update={"seed": 4.0}),
+        scenario.model_copy(update={"seed": True}),
+        scenario.model_copy(update={"fault_injections": [injection]}),
+        scenario.model_copy(update={"fault_injections": (injection, injection)}),
+        scenario.model_copy(update={"action_sequence": [*scenario.action_sequence]}),
+        scenario.model_copy(update={"action_sequence": ()}),
+        scenario.model_copy(update={"standby_context": None}),
+        scenario.model_copy(update={"standby_context": context.model_dump()}),
+        scenario.model_copy(update={"standby_context": [context]}),
+        scenario.model_copy(
+            update={"standby_context": context.model_copy(update={"context_id": "spoofed"})}
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(
+                    update={"active_train_id": context.standby_train_id}
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(
+                    update={"standby_train_id": context.active_train_id}
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"standby_context": context.model_copy(update={"standby_state": "AVAILABLE"})}
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(
+                    update={"standby_state": ComponentState.DEGRADED}
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(
+                    update={"standby_support_bus_id": ASTER_A_SPEC.support_bus_ids[0]}
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(
+                    update={"support_bus_state": ComponentState.UNAVAILABLE}
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(update={"support_bus_state": "AVAILABLE"})
+            }
+        ),
+        scenario.model_copy(
+            update={"standby_context": context.model_copy(update={"standby_start_delay_ticks": 2})}
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(update={"standby_start_delay_ticks": 1.0})
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "standby_context": context.model_copy(update={"standby_start_delay_ticks": True})
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"component_id": "aster-train-unknown"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"channel_id": "x"}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": 3}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": 2.0}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": True}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"severity": SeverityBand.MEDIUM}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"severity": "LOW"}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"duration_ticks": 1}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (injection.model_copy(update={"fault_family": "PUMP_TRIP"}),)
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "action_sequence": (
+                    scenario.action_sequence[0].model_copy(
+                        update={"action": "SELECT_SYNTHETIC_STANDBY_TRAIN"}
+                    ),
+                )
+            }
+        ),
+    )
+    for invalid in malformed:
+        with pytest.raises(UnsupportedScenarioError):
+            generate_trace(invalid)
+
+    stable_with_context = build_stable_scenario(seed=4).model_copy(
+        update={"standby_context": context}
+    )
+    with pytest.raises(UnsupportedScenarioError, match="only supported for pump trip"):
+        generate_trace(stable_with_context)
+
+    invalid_components: tuple[object, ...] = ("cirrus", 1, 1.0, True, [])
+    for invalid_component in invalid_components:
+        with pytest.raises(ValueError, match="component_id"):
+            build_pump_trip_scenario(seed=4, component_id=invalid_component)  # type: ignore[arg-type]
+    invalid_states: tuple[object, ...] = (
+        "AVAILABLE",
+        ComponentState.DEGRADED,
+        ComponentState.STARTING,
+        1,
+        True,
+    )
+    for invalid_state in invalid_states:
+        with pytest.raises(ValueError, match="standby_state"):
+            build_pump_trip_scenario(seed=4, standby_state=invalid_state)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="between 8 and 64"):
+        build_pump_trip_scenario(seed=4, duration_ticks=7)

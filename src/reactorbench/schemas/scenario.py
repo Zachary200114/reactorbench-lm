@@ -15,6 +15,7 @@ from .base import (
 )
 from .enums import (
     ActionLabel,
+    ComponentState,
     FaultFamily,
     PlantVariant,
     ScenarioDriver,
@@ -52,6 +53,30 @@ class ScenarioAction(ContractModel):
     action: ActionLabel
 
 
+class StandbyContext(ContractModel):
+    """Bounded dependency context for a fictional standby train."""
+
+    context_id: ContractId
+    active_train_id: ContractId
+    standby_train_id: ContractId
+    standby_state: ComponentState
+    standby_support_bus_id: ContractId
+    support_bus_state: ComponentState
+    standby_start_delay_ticks: PositiveInt
+
+    @model_validator(mode="after")
+    def train_ids_and_states_are_bounded(self) -> StandbyContext:
+        if self.active_train_id == self.standby_train_id:
+            raise ValueError("active_train_id and standby_train_id must be different")
+
+        permitted_states = {ComponentState.AVAILABLE, ComponentState.UNAVAILABLE}
+        if self.standby_state not in permitted_states:
+            raise ValueError("standby_state must be AVAILABLE or UNAVAILABLE")
+        if self.support_bus_state not in permitted_states:
+            raise ValueError("support_bus_state must be AVAILABLE or UNAVAILABLE")
+        return self
+
+
 class ScenarioDefinition(ContractModel):
     schema_version: SchemaVersion = SCHEMA_VERSION
     scenario_id: ContractId
@@ -61,6 +86,7 @@ class ScenarioDefinition(ContractModel):
     driver: ScenarioDriver
     fault_injections: tuple[FaultInjection, ...] = ()
     action_sequence: tuple[ScenarioAction, ...] = ()
+    standby_context: StandbyContext | None = None
 
     @field_validator("fault_injections", mode="after")
     @classmethod

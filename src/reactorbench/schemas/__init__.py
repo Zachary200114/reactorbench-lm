@@ -32,7 +32,7 @@ from .export import (
 from .latent import ComponentLatentState, LatentPlantState, PlantValues
 from .observation import ObservationFrame, SensorChannelObservation
 from .provenance import ProvenanceRecord
-from .scenario import FaultInjection, ScenarioAction, ScenarioDefinition
+from .scenario import FaultInjection, ScenarioAction, ScenarioDefinition, StandbyContext
 from .target import (
     CausalContinuationTarget,
     CounterfactualComparisonTarget,
@@ -88,6 +88,7 @@ __all__ = [
     "SensorChannelObservation",
     "SeverityBand",
     "SplitName",
+    "StandbyContext",
     "StateVariable",
     "StructuredTrajectory",
     "TaskName",

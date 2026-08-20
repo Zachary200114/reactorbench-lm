@@ -6,11 +6,18 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from reactorbench.schemas import ActionLabel, DiagnosisStatus, SeverityBand, StateVariable
+from reactorbench.schemas import (
+    ActionLabel,
+    ComponentState,
+    DiagnosisStatus,
+    SeverityBand,
+    StateVariable,
+)
 from reactorbench.simulator import (
     ASTER_A_SPEC,
     build_load_transient_scenario,
     build_pump_degradation_scenario,
+    build_pump_trip_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
@@ -393,3 +400,71 @@ def test_pump_degradation_is_replayable_bounded_and_prefix_preserving(
         )
     )
     assert [decision.decision_tick for decision in first.targets.decisions] == [4, 6, 7]
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    duration=st.integers(min_value=8, max_value=24),
+    component_id=st.sampled_from(ASTER_A_SPEC.primary_train_ids),
+    standby_state=st.sampled_from((ComponentState.AVAILABLE, ComponentState.UNAVAILABLE)),
+)
+def test_pump_trip_is_replayable_prefix_stable_and_bounded_except_for_trip(
+    seed: int,
+    duration: int,
+    component_id: str,
+    standby_state: ComponentState,
+) -> None:
+    scenario = build_pump_trip_scenario(
+        seed=seed,
+        duration_ticks=duration,
+        component_id=component_id,
+        standby_state=standby_state,
+    )
+    first = generate_trace(scenario)
+    replay = generate_trace(scenario)
+    short = generate_trace(
+        build_pump_trip_scenario(
+            seed=seed,
+            duration_ticks=8,
+            component_id=component_id,
+            standby_state=standby_state,
+        )
+    )
+
+    assert first == replay
+    assert short.latent_states == first.latent_states[:8]
+    assert short.observations == first.observations[:8]
+    assert short.events == first.events
+    assert tuple(
+        decision.model_dump(exclude={"scenario_id"}) for decision in short.targets.decisions
+    ) == tuple(decision.model_dump(exclude={"scenario_id"}) for decision in first.targets.decisions)
+    assert all(
+        0.0 <= value <= 1.0
+        for latent in first.latent_states
+        for value in latent.values.model_dump().values()
+    )
+    for before, after in pairwise(first.latent_states):
+        for variable in StateVariable:
+            step = abs(
+                getattr(after.values, variable.value) - getattr(before.values, variable.value)
+            )
+            if before.tick == 2 and variable is StateVariable.PRIMARY_FLOW:
+                assert step > ASTER_A_SPEC.max_per_tick_step
+            else:
+                assert step <= ASTER_A_SPEC.max_per_tick_step
+    event_by_id = {event.event_id: event for event in first.events}
+    assert [event.event_index for event in first.events] == list(range(len(first.events)))
+    assert [event.sim_time for event in first.events] == sorted(
+        event.sim_time for event in first.events
+    )
+    assert all(
+        event_by_id[related_id].event_index < event.event_index
+        for event in first.events
+        for related_id in event.related_event_ids
+    )
+    assert all(
+        event_by_id[evidence_id].sim_time <= decision.decision_tick
+        for decision in first.targets.decisions
+        for evidence_id in decision.evidence_event_ids
+    )

@@ -32,6 +32,7 @@ from reactorbench.schemas import (
     ScenarioTargets,
     SensorChannelObservation,
     SeverityBand,
+    StandbyContext,
     StateVariable,
     StructuredTrajectory,
 )
@@ -70,6 +71,14 @@ _PUMP_LOAD_APPLY_TICK = 8
 _PUMP_MIN_DURATION = 9
 _PUMP_MODE_SUBJECT = "aster-operating-domain"
 _PUMP_LOAD_SUBJECT = "aster-load-domain"
+_PUMP_TRIP_ONSET_TICK = 2
+_PUMP_TRIP_FLOW_TICK = 3
+_PUMP_TRIP_THERMAL_TICK = 4
+_PUMP_TRIP_STEAM_TICK = 5
+_PUMP_TRIP_DECISION_TICK = 5
+_PUMP_TRIP_ACTION_TICK = 6
+_PUMP_TRIP_RECOVERY_TICK = 7
+_PUMP_TRIP_MIN_DURATION = 8
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -108,6 +117,8 @@ class AsterVariantSpec:
     max_per_tick_step: float
     primary_train_ids: tuple[str, ...]
     support_bus_ids: tuple[str, ...]
+    primary_train_support_bus_pairs: tuple[tuple[str, str], ...]
+    standby_start_delay_ticks: int
     instrumentation_id: str
 
 
@@ -148,6 +159,8 @@ ASTER_A_SPEC = AsterVariantSpec(
     max_per_tick_step=_MAX_TICK_STEP,
     primary_train_ids=_PRIMARY_TRAINS,
     support_bus_ids=_SUPPORT_BUSES,
+    primary_train_support_bus_pairs=tuple(zip(_PRIMARY_TRAINS, _SUPPORT_BUSES, strict=True)),
+    standby_start_delay_ticks=1,
     instrumentation_id=_INSTRUMENTATION,
 )
 
@@ -167,6 +180,11 @@ class SimulationTrace:
 
         return {
             "schema_version": SCHEMA_VERSION,
+            "standby_context": (
+                self.scenario.standby_context.model_dump(mode="json")
+                if self.scenario.standby_context is not None
+                else None
+            ),
             "observations": [frame.model_dump(mode="json") for frame in self.observations],
             "events": [event.model_dump(mode="json") for event in self.events],
         }
@@ -320,6 +338,101 @@ def build_pump_degradation_scenario(
                 action=ActionLabel.REDUCE_SIMULATED_LOAD,
             ),
         ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def _support_bus_for_train(train_id: str) -> str:
+    dependency_map = dict(ASTER_A_SPEC.primary_train_support_bus_pairs)
+    try:
+        return dependency_map[train_id]
+    except KeyError as error:
+        raise ValueError("train_id must have one Aster-A support-bus dependency") from error
+
+
+def _trip_standby_context(*, active_train_id: str, standby_state: ComponentState) -> StandbyContext:
+    standby_train_id = next(
+        train_id for train_id in ASTER_A_SPEC.primary_train_ids if train_id != active_train_id
+    )
+    support_bus_id = _support_bus_for_train(standby_train_id)
+    return StandbyContext(
+        context_id=(
+            f"aster-a-standby-{active_train_id}-{standby_train_id}-{standby_state.value.lower()}"
+        ),
+        active_train_id=active_train_id,
+        standby_train_id=standby_train_id,
+        standby_state=standby_state,
+        standby_support_bus_id=support_bus_id,
+        support_bus_state=ComponentState.AVAILABLE,
+        standby_start_delay_ticks=ASTER_A_SPEC.standby_start_delay_ticks,
+    )
+
+
+def build_pump_trip_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    component_id: str | None = None,
+    standby_state: ComponentState = ComponentState.AVAILABLE,
+) -> ScenarioDefinition:
+    """Build one matched fictional pump-trip case with bounded standby context."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if duration_ticks < _PUMP_TRIP_MIN_DURATION:
+        raise ValueError("pump trip needs at least 8 ticks")
+    if component_id is None:
+        active_train_id = ASTER_A_SPEC.primary_train_ids[seed % len(ASTER_A_SPEC.primary_train_ids)]
+    elif type(component_id) is str and component_id in ASTER_A_SPEC.primary_train_ids:
+        active_train_id = component_id
+    else:
+        raise ValueError("component_id must be an Aster-A primary-train id or None")
+    if type(standby_state) is not ComponentState or standby_state not in {
+        ComponentState.AVAILABLE,
+        ComponentState.UNAVAILABLE,
+    }:
+        raise ValueError("standby_state must be AVAILABLE or UNAVAILABLE")
+
+    context = _trip_standby_context(active_train_id=active_train_id, standby_state=standby_state)
+    actions = (
+        (
+            ScenarioAction(
+                decision_tick=_PUMP_TRIP_DECISION_TICK,
+                action=ActionLabel.SELECT_SYNTHETIC_STANDBY_TRAIN,
+            ),
+        )
+        if standby_state is ComponentState.AVAILABLE
+        else (
+            ScenarioAction(
+                decision_tick=_PUMP_TRIP_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_TRIP_ACTION_TICK,
+                action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            ),
+        )
+    )
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"aster-a-pump-trip-{seed}-{duration_ticks}-{_PUMP_TRIP_ONSET_TICK}-low-"
+            f"{active_train_id}-{standby_state.value.lower()}"
+        ),
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.PUMP_TRIP,
+                component_id=active_train_id,
+                onset_tick=_PUMP_TRIP_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=actions,
+        standby_context=context,
     )
     assert_no_prohibited_content(scenario)
     return scenario
@@ -501,6 +614,15 @@ def _pump_degradation_injection(scenario: ScenarioDefinition) -> FaultInjection 
     return None
 
 
+def _pump_trip_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    if (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_TRIP
+    ):
+        return scenario.fault_injections[0]
+    return None
+
+
 def _baseline_values(seed: int) -> PlantValues:
     values: dict[str, float] = {}
     for index, variable in enumerate(StateVariable):
@@ -608,8 +730,105 @@ def _pump_components(
     )
 
 
+def _trip_flow_drop(seed: int) -> float:
+    """Return the sole seed-derived abrupt G07 process step."""
+
+    return round(Random(seed * 6_000_017 + 131).uniform(0.096, 0.12), 6)  # noqa: S311
+
+
+def _trip_action_ramp(tick: int) -> float:
+    if tick < _PUMP_TRIP_ACTION_TICK:
+        return 0.0
+    return min(0.036, 0.012 * (tick - _PUMP_TRIP_ACTION_TICK + 1))
+
+
+def _trip_values(scenario: ScenarioDefinition, tick: int) -> PlantValues:
+    context = scenario.standby_context
+    if context is None:
+        raise ValueError("pump-trip values require standby context")
+    baseline = _baseline_values(scenario.seed)
+    values = baseline.model_dump()
+    if tick >= _PUMP_TRIP_FLOW_TICK:
+        flow = baseline.primary_flow - _trip_flow_drop(scenario.seed)
+        if context.standby_state is ComponentState.AVAILABLE and tick >= _PUMP_TRIP_RECOVERY_TICK:
+            flow += min(0.054, 0.018 * (tick - _PUMP_TRIP_RECOVERY_TICK + 1))
+        values[StateVariable.PRIMARY_FLOW.value] = _clip(flow)
+    if tick >= _PUMP_TRIP_THERMAL_TICK:
+        values[StateVariable.PRIMARY_THERMAL_STATE.value] = _clip(
+            baseline.primary_thermal_state + 0.018
+        )
+    if tick >= _PUMP_TRIP_STEAM_TICK:
+        values[StateVariable.STEAM_STATE.value] = _clip(baseline.steam_state - 0.018)
+        values[StateVariable.TURBINE_OUTPUT.value] = _clip(baseline.turbine_output - 0.016)
+        values[StateVariable.ELECTRICAL_OUTPUT.value] = _clip(baseline.electrical_output - 0.016)
+    if context.standby_state is ComponentState.UNAVAILABLE:
+        action_ramp = _trip_action_ramp(tick)
+        if action_ramp:
+            values[StateVariable.LOAD_DEMAND.value] = _clip(baseline.load_demand - action_ramp)
+            values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(
+                baseline.heat_source_level - action_ramp
+            )
+    return PlantValues(**values)
+
+
+def _trip_components(
+    *, scenario: ScenarioDefinition, tick: int
+) -> tuple[ComponentLatentState, ...]:
+    context = scenario.standby_context
+    if context is None:
+        raise ValueError("pump-trip components require standby context")
+
+    def state_for(component_id: str) -> ComponentState:
+        if component_id == context.active_train_id:
+            return (
+                ComponentState.AVAILABLE
+                if tick < _PUMP_TRIP_ONSET_TICK
+                else ComponentState.UNAVAILABLE
+            )
+        if component_id != context.standby_train_id:
+            return ComponentState.AVAILABLE
+        if context.standby_state is ComponentState.UNAVAILABLE:
+            return ComponentState.UNAVAILABLE
+        if tick < _PUMP_TRIP_ACTION_TICK:
+            return ComponentState.AVAILABLE
+        if tick < _PUMP_TRIP_RECOVERY_TICK:
+            return ComponentState.STARTING
+        return ComponentState.RECOVERING
+
+    return tuple(
+        ComponentLatentState(
+            component_id=component.component_id,
+            state=state_for(component.component_id),
+            health=1.0,
+        )
+        for component in ASTER_A_SPEC.components
+    )
+
+
 def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]:
     baseline = _baseline_values(scenario.seed)
+    trip = _pump_trip_injection(scenario)
+    if trip is not None:
+        context = scenario.standby_context
+        if context is None:
+            raise ValueError("pump-trip latent states require standby context")
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _PUMP_TRIP_ONSET_TICK
+                    else OperatingMode.DISTURBED
+                    if tick < _PUMP_TRIP_RECOVERY_TICK
+                    else OperatingMode.RECOVERY
+                    if context.standby_state is ComponentState.AVAILABLE
+                    else OperatingMode.STABILIZED
+                ),
+                values=_trip_values(scenario, tick),
+                components=_trip_components(scenario=scenario, tick=tick),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
     pump = _pump_degradation_injection(scenario)
     if pump is not None:
         step = _pump_health_step(scenario.seed)
@@ -738,6 +957,45 @@ def _pump_overall_status(tick: int) -> ObservationStatus:
     return ObservationStatus.WATCH if tick <= 5 else ObservationStatus.ABNORMAL
 
 
+def _trip_channel_status(
+    scenario: ScenarioDefinition, tick: int, variable: StateVariable
+) -> ObservationStatus:
+    context = scenario.standby_context
+    if context is None:
+        raise ValueError("pump-trip status requires standby context")
+    if variable is StateVariable.PRIMARY_FLOW:
+        if tick < _PUMP_TRIP_FLOW_TICK:
+            return ObservationStatus.NORMAL
+        if context.standby_state is ComponentState.AVAILABLE and tick >= _PUMP_TRIP_RECOVERY_TICK:
+            return ObservationStatus.WATCH
+        return ObservationStatus.ABNORMAL
+    if variable is StateVariable.PRIMARY_THERMAL_STATE:
+        if tick < _PUMP_TRIP_THERMAL_TICK:
+            return ObservationStatus.NORMAL
+        return (
+            ObservationStatus.WATCH
+            if tick == _PUMP_TRIP_THERMAL_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.STEAM_STATE:
+        if tick < _PUMP_TRIP_STEAM_TICK:
+            return ObservationStatus.NORMAL
+        return (
+            ObservationStatus.WATCH if tick == _PUMP_TRIP_STEAM_TICK else ObservationStatus.ABNORMAL
+        )
+    if variable in {StateVariable.TURBINE_OUTPUT, StateVariable.ELECTRICAL_OUTPUT}:
+        if tick < _PUMP_TRIP_STEAM_TICK:
+            return ObservationStatus.NORMAL
+        return (
+            ObservationStatus.WATCH if tick == _PUMP_TRIP_STEAM_TICK else ObservationStatus.ABNORMAL
+        )
+    return ObservationStatus.NORMAL
+
+
+def _trip_overall_status(tick: int) -> ObservationStatus:
+    return ObservationStatus.NORMAL if tick < _PUMP_TRIP_ONSET_TICK else ObservationStatus.ABNORMAL
+
+
 def _selected_channel_status(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ObservationStatus:
@@ -798,6 +1056,7 @@ def _observations(
 ) -> tuple[ObservationFrame, ...]:
     frames: list[ObservationFrame] = []
     pump = _pump_degradation_injection(scenario)
+    trip = _pump_trip_injection(scenario)
     stuck = _sensor_stuck_injection(scenario)
     sensor_noise = _sensor_noise_injection(scenario)
     for latent in latent_states:
@@ -834,13 +1093,15 @@ def _observations(
                         observed_value + _sensor_noise_offset(seed=scenario.seed, tick=latent.tick)
                     )
                 channel_status = (
-                    _pump_channel_status(latent.tick, variable)
+                    _trip_channel_status(scenario, latent.tick, variable)
+                    if trip is not None
+                    else _pump_channel_status(latent.tick, variable)
                     if pump is not None
                     else _selected_channel_status(scenario, latent.tick, channel.channel_id)
                 )
                 channel_quality = (
                     ChannelQuality.GOOD
-                    if pump is not None
+                    if pump is not None or trip is not None
                     else _selected_channel_quality(scenario, latent.tick, channel.channel_id)
                 )
                 channels.append(
@@ -853,9 +1114,13 @@ def _observations(
                     )
                 )
         overall_status = (
-            _pump_overall_status(latent.tick) if pump is not None else ObservationStatus.NORMAL
+            _trip_overall_status(latent.tick)
+            if trip is not None
+            else _pump_overall_status(latent.tick)
+            if pump is not None
+            else ObservationStatus.NORMAL
         )
-        if pump is None and scenario.fault_injections:
+        if pump is None and trip is None and scenario.fault_injections:
             selected = scenario.fault_injections[0].channel_id or _INSTRUMENTATION
             overall_status = _selected_channel_status(scenario, latent.tick, selected)
         frames.append(
@@ -904,6 +1169,260 @@ def _observed_value(
     if value is None:
         raise ValueError("pump process observations must remain available")
     return value
+
+
+def _pump_trip_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit the matched G07 trip chain and its context-driven action branch."""
+
+    injection = _pump_trip_injection(scenario)
+    context = scenario.standby_context
+    if injection is None or context is None:
+        raise ValueError("pump-trip event generation requires injection and context")
+    standby_available = context.standby_state is ComponentState.AVAILABLE
+    context_slot = (
+        EvidenceSlot.STANDBY_AVAILABLE if standby_available else EvidenceSlot.COMPONENT_UNAVAILABLE
+    )
+    events: list[CanonicalEvent] = []
+    context_fact = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=context.standby_train_id,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, context_slot),
+    )
+    active_unavailable = _event(
+        events,
+        sim_time=_PUMP_TRIP_ONSET_TICK,
+        event_type=EventType.COMPONENT_STATE_CHANGED,
+        subject_id=context.active_train_id,
+        component_state_before=ComponentState.AVAILABLE,
+        component_state_after=ComponentState.UNAVAILABLE,
+        evidence_slots=(EvidenceSlot.COMPONENT_UNAVAILABLE,),
+        related_event_ids=(context_fact.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_PUMP_TRIP_ONSET_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=_PUMP_MODE_SUBJECT,
+        operating_mode_before=OperatingMode.STABLE,
+        operating_mode_after=OperatingMode.DISTURBED,
+        related_event_ids=(active_unavailable.event_id,),
+    )
+    flow = _event(
+        events,
+        sim_time=_PUMP_TRIP_FLOW_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.PRIMARY_FLOW),
+        variable=StateVariable.PRIMARY_FLOW,
+        value_before=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_FLOW_TICK - 1,
+            variable=StateVariable.PRIMARY_FLOW,
+        ),
+        value_after=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_FLOW_TICK,
+            variable=StateVariable.PRIMARY_FLOW,
+        ),
+        observation_status=ObservationStatus.ABNORMAL,
+        evidence_slots=(EvidenceSlot.FLOW_DECLINING, EvidenceSlot.MULTIPLE_CHANNELS_AGREE),
+        related_event_ids=(active_unavailable.event_id,),
+    )
+    thermal = _event(
+        events,
+        sim_time=_PUMP_TRIP_THERMAL_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.PRIMARY_THERMAL_STATE),
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        value_before=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_THERMAL_TICK - 1,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+        ),
+        value_after=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_THERMAL_TICK,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+        ),
+        observation_status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+        related_event_ids=(flow.event_id,),
+    )
+    steam = _event(
+        events,
+        sim_time=_PUMP_TRIP_STEAM_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.STEAM_STATE),
+        variable=StateVariable.STEAM_STATE,
+        value_before=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_STEAM_TICK - 1,
+            variable=StateVariable.STEAM_STATE,
+        ),
+        value_after=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_STEAM_TICK,
+            variable=StateVariable.STEAM_STATE,
+        ),
+        observation_status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        related_event_ids=(thermal.event_id,),
+    )
+    electrical = _event(
+        events,
+        sim_time=_PUMP_TRIP_STEAM_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.ELECTRICAL_OUTPUT),
+        variable=StateVariable.ELECTRICAL_OUTPUT,
+        value_before=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_STEAM_TICK - 1,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+        ),
+        value_after=_observed_value(
+            observations,
+            tick=_PUMP_TRIP_STEAM_TICK,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+        ),
+        observation_status=ObservationStatus.WATCH,
+        evidence_slots=(
+            EvidenceSlot.CORRELATED_STATE_CHANGE,
+            EvidenceSlot.DEPENDENT_TREND_DELAY,
+        ),
+        related_event_ids=(steam.event_id,),
+    )
+    evidence_slots = (
+        *((context_slot,) if context_slot is EvidenceSlot.STANDBY_AVAILABLE else ()),
+        EvidenceSlot.COMPONENT_UNAVAILABLE,
+        EvidenceSlot.FLOW_DECLINING,
+        EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+        EvidenceSlot.CORRELATED_STATE_CHANGE,
+        EvidenceSlot.DEPENDENT_TREND_DELAY,
+    )
+    action = (
+        ActionLabel.SELECT_SYNTHETIC_STANDBY_TRAIN
+        if standby_available
+        else ActionLabel.REDUCE_SIMULATED_LOAD
+    )
+    evidence_event_ids = (
+        context_fact.event_id,
+        active_unavailable.event_id,
+        flow.event_id,
+        thermal.event_id,
+        steam.event_id,
+        electrical.event_id,
+    )
+    decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_PUMP_TRIP_DECISION_TICK,
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=(FaultFamily.PUMP_TRIP,),
+        evidence_event_ids=evidence_event_ids,
+        evidence_slots=evidence_slots,
+        immediate_action=action,
+    )
+    decisions = [decision]
+    applied = _event(
+        events,
+        sim_time=_PUMP_TRIP_ACTION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=(context.standby_train_id if standby_available else _PUMP_LOAD_SUBJECT),
+        action_label=action,
+        related_event_ids=(electrical.event_id,),
+    )
+    if standby_available:
+        starting = _event(
+            events,
+            sim_time=_PUMP_TRIP_ACTION_TICK,
+            event_type=EventType.COMPONENT_STATE_CHANGED,
+            subject_id=context.standby_train_id,
+            component_state_before=ComponentState.AVAILABLE,
+            component_state_after=ComponentState.STARTING,
+            related_event_ids=(applied.event_id,),
+        )
+        recovering = _event(
+            events,
+            sim_time=_PUMP_TRIP_RECOVERY_TICK,
+            event_type=EventType.COMPONENT_STATE_CHANGED,
+            subject_id=context.standby_train_id,
+            component_state_before=ComponentState.STARTING,
+            component_state_after=ComponentState.RECOVERING,
+            related_event_ids=(starting.event_id,),
+        )
+        recovery_flow = _event(
+            events,
+            sim_time=_PUMP_TRIP_RECOVERY_TICK,
+            event_type=EventType.OBSERVATION_CHANGED,
+            subject_id=_first_channel_id(StateVariable.PRIMARY_FLOW),
+            variable=StateVariable.PRIMARY_FLOW,
+            value_before=_observed_value(
+                observations,
+                tick=_PUMP_TRIP_RECOVERY_TICK - 1,
+                variable=StateVariable.PRIMARY_FLOW,
+            ),
+            value_after=_observed_value(
+                observations,
+                tick=_PUMP_TRIP_RECOVERY_TICK,
+                variable=StateVariable.PRIMARY_FLOW,
+            ),
+            observation_status=ObservationStatus.WATCH,
+            evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+            related_event_ids=(recovering.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_PUMP_TRIP_RECOVERY_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id=_PUMP_MODE_SUBJECT,
+            operating_mode_before=OperatingMode.DISTURBED,
+            operating_mode_after=OperatingMode.RECOVERY,
+            related_event_ids=(recovery_flow.event_id,),
+        )
+    else:
+        target = _event(
+            events,
+            sim_time=_PUMP_TRIP_ACTION_TICK,
+            event_type=EventType.TARGET_CHANGED,
+            subject_id=_PUMP_LOAD_SUBJECT,
+            variable=StateVariable.LOAD_DEMAND,
+            value_before=_trip_values(scenario, _PUMP_TRIP_ACTION_TICK - 1).load_demand,
+            value_after=_trip_values(scenario, _PUMP_TRIP_ACTION_TICK).load_demand,
+            related_event_ids=(applied.event_id,),
+        )
+        decisions.append(
+            DecisionTarget(
+                scenario_id=scenario.scenario_id,
+                decision_tick=_PUMP_TRIP_ACTION_TICK,
+                diagnosis_status=DiagnosisStatus.DIAGNOSED,
+                fault_labels=(FaultFamily.PUMP_TRIP,),
+                evidence_event_ids=(*evidence_event_ids, target.event_id),
+                evidence_slots=evidence_slots,
+                immediate_action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            )
+        )
+        stabilize = _event(
+            events,
+            sim_time=_PUMP_TRIP_RECOVERY_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=_PUMP_MODE_SUBJECT,
+            action_label=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            related_event_ids=(target.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_PUMP_TRIP_RECOVERY_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id=_PUMP_MODE_SUBJECT,
+            operating_mode_before=OperatingMode.DISTURBED,
+            operating_mode_after=OperatingMode.STABILIZED,
+            related_event_ids=(stabilize.event_id,),
+        )
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id, decisions=tuple(decisions)
+    )
 
 
 def _pump_events_and_targets(
@@ -1149,6 +1668,10 @@ def _events_and_targets(
                 ),
             ),
         )
+
+    trip = _pump_trip_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and trip is not None:
+        return _pump_trip_events_and_targets(scenario, observations)
 
     pump = _pump_degradation_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and pump is not None:
@@ -1654,6 +2177,27 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
                 _require_uint32(injection.duration_ticks, name="fault duration")
         except ValueError as error:
             raise UnsupportedScenarioError(str(error)) from error
+    is_pump_trip = (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_TRIP
+    )
+    if is_pump_trip:
+        context = scenario.standby_context
+        if type(context) is not StandbyContext:
+            raise UnsupportedScenarioError("pump trip requires canonical standby context")
+        if (
+            type(context.context_id) is not str
+            or type(context.active_train_id) is not str
+            or type(context.standby_train_id) is not str
+            or type(context.standby_support_bus_id) is not str
+            or type(context.standby_state) is not ComponentState
+            or type(context.support_bus_state) is not ComponentState
+            or isinstance(context.standby_start_delay_ticks, bool)
+            or type(context.standby_start_delay_ticks) is not int
+        ):
+            raise UnsupportedScenarioError("pump-trip standby context is noncanonical")
+    elif scenario.standby_context is not None:
+        raise UnsupportedScenarioError("standby context is only supported for pump trip")
     if not scenario.fault_injections:
         expected: tuple[ScenarioAction, ...] = (
             ScenarioAction(
@@ -1716,6 +2260,68 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             raise UnsupportedScenarioError("sensor-stuck load scenario id is noncanonical")
         return
     injection = scenario.fault_injections[0]
+    if injection.fault_family is FaultFamily.PUMP_TRIP:
+        context = scenario.standby_context
+        if type(context) is not StandbyContext:
+            raise UnsupportedScenarioError("pump trip requires canonical standby context")
+        if (
+            type(injection.component_id) is not str
+            or injection.component_id not in ASTER_A_SPEC.primary_train_ids
+        ):
+            raise UnsupportedScenarioError("pump trip requires an Aster-A primary train")
+        if context.standby_state not in {
+            ComponentState.AVAILABLE,
+            ComponentState.UNAVAILABLE,
+        }:
+            raise UnsupportedScenarioError("unsupported standby state for pump trip")
+        expected_context = _trip_standby_context(
+            active_train_id=injection.component_id,
+            standby_state=context.standby_state,
+        )
+        trip_expected_actions = (
+            (
+                ScenarioAction(
+                    decision_tick=_PUMP_TRIP_DECISION_TICK,
+                    action=ActionLabel.SELECT_SYNTHETIC_STANDBY_TRAIN,
+                ),
+            )
+            if context.standby_state is ComponentState.AVAILABLE
+            else (
+                ScenarioAction(
+                    decision_tick=_PUMP_TRIP_DECISION_TICK,
+                    action=ActionLabel.REDUCE_SIMULATED_LOAD,
+                ),
+                ScenarioAction(
+                    decision_tick=_PUMP_TRIP_ACTION_TICK,
+                    action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+                ),
+            )
+        )
+        if (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or type(injection.component_id) is not str
+            or injection.component_id not in ASTER_A_SPEC.primary_train_ids
+            or injection.channel_id is not None
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _PUMP_TRIP_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.action_sequence != trip_expected_actions
+            or scenario.duration_ticks < _PUMP_TRIP_MIN_DURATION
+            or context != expected_context
+            or context.support_bus_state is not ComponentState.AVAILABLE
+            or context.standby_start_delay_ticks != ASTER_A_SPEC.standby_start_delay_ticks
+            or ASTER_A_SPEC.primary_train_support_bus_pairs
+            != tuple(zip(_PRIMARY_TRAINS, _SUPPORT_BUSES, strict=True))
+        ):
+            raise UnsupportedScenarioError("unsupported pump-trip scenario")
+        expected_id = (
+            f"aster-a-pump-trip-{scenario.seed}-{scenario.duration_ticks}-"
+            f"{_PUMP_TRIP_ONSET_TICK}-low-{injection.component_id}-"
+            f"{context.standby_state.value.lower()}"
+        )
+        if scenario.scenario_id != expected_id:
+            raise UnsupportedScenarioError("pump-trip scenario id is noncanonical")
+        return
     if injection.fault_family is FaultFamily.PUMP_DEGRADATION:
         pump_expected_actions = (
             ScenarioAction(
@@ -1741,6 +2347,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             or injection.duration_ticks is not None
             or scenario.action_sequence != pump_expected_actions
             or scenario.duration_ticks < _PUMP_MIN_DURATION
+            or scenario.standby_context is not None
         ):
             raise UnsupportedScenarioError("unsupported pump-degradation scenario")
         expected_id = (
@@ -1779,6 +2386,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             or injection.duration_ticks is not None
             or scenario.action_sequence != noise_expected_actions
             or _SENSOR_NOISE_FLAG_APPLY_TICK >= scenario.duration_ticks
+            or scenario.standby_context is not None
         ):
             raise UnsupportedScenarioError("unsupported sensor-noise scenario")
         expected_id = (

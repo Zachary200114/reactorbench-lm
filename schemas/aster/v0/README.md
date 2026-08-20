@@ -11,7 +11,7 @@ the seven JSON Schema documents, including the aggregate
 `structured-trajectory.schema.json`, plus a SHA-256 `manifest.json`. Contract tests
 verify repeatable bytes, self-consistent hashes, and the present local root mapping.
 
-Generated schema files are local review artifacts at this checkpoint, not committed
-or released assets while local Git remains uninitialized. They should be
-regenerated and reviewed after any contract change; `frozen` must remain `false`
-until the pre-build schema review is complete.
+The generated files are reviewed, version-controlled developmental artifacts, not a
+released stable interface. They must be regenerated and reviewed after every
+contract change; `frozen` remains `false` until the pre-build schema review and
+freeze gate are complete.
