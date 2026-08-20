@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy
+import pydantic
 import safetensors
 import sentencepiece
 import torch
@@ -59,6 +61,8 @@ class ModelTierParameterCounts(ContractModel):
 
 
 class DependencyVersions(ContractModel):
+    numpy: str = Field(min_length=1, max_length=32)
+    pydantic: str = Field(min_length=1, max_length=32)
     torch: str = Field(min_length=1, max_length=32)
     sentencepiece: str = Field(min_length=1, max_length=32)
     safetensors: str = Field(min_length=1, max_length=32)
@@ -68,6 +72,7 @@ class SmokeRunReport(ContractModel):
     report_version: Literal["0.1.0"] = "0.1.0"
     run_status: Literal["phase4_smoke_passed"] = "phase4_smoke_passed"
     source_commit: str = Field(pattern=r"^[0-9a-f]{7,64}$")
+    dependency_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     phase4_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     dataset_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -215,6 +220,7 @@ def _report(
     *,
     config: Phase4Config,
     source_commit: str,
+    dependency_lock_sha256: str,
     candidate_sha256: str,
     corpus_sha256: str,
     tokenizer_sha256: str,
@@ -233,6 +239,7 @@ def _report(
     tokens_seen = target_tokens * config.smoke_training.steps
     draft = SmokeRunReport.model_construct(
         source_commit=source_commit,
+        dependency_lock_sha256=dependency_lock_sha256,
         phase4_config_sha256=canonical_sha256(config.model_dump(mode="json", round_trip=True)),
         dataset_candidate_sha256=candidate_sha256,
         corpus_sha256=corpus_sha256,
@@ -241,6 +248,8 @@ def _report(
         smoke_inputs_sha256=smoke_inputs_sha256,
         evaluation_logits_sha256=logits_sha256,
         dependency_versions=DependencyVersions(
+            numpy=numpy.__version__,
+            pydantic=pydantic.__version__,
             torch=torch.__version__,
             sentencepiece=sentencepiece.__version__,
             safetensors=safetensors.__version__,
@@ -291,6 +300,8 @@ def run_phase4_smoke(
         raise ValueError("source_commit must be a lowercase hexadecimal Git revision")
     verified, approval = _load_approved_candidate(config, project_root)
     corpus = approved_training_corpus(verified, approval)
+    lock_path = resolve_project_path(project_root, "uv.lock", must_exist=True)
+    dependency_lock_sha256 = _sha256(lock_path)
     run_root = resolve_project_path(project_root, config.phase4.run_root, must_exist=False)
     run_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     if run_root.is_symlink() or not run_root.is_dir():
@@ -411,6 +422,7 @@ def run_phase4_smoke(
         report = _report(
             config=config,
             source_commit=source_commit,
+            dependency_lock_sha256=dependency_lock_sha256,
             candidate_sha256=verified.candidate.checksum_sha256,
             corpus_sha256=corpus.manifest.corpus_sha256,
             tokenizer_sha256=tokenizer_manifest.checksum_sha256,
@@ -466,6 +478,9 @@ def verify_phase4_run(
         config.model_dump(mode="json", round_trip=True)
     ):
         raise ValueError("Phase 4 report is bound to a different configuration")
+    lock_path = resolve_project_path(project_root, "uv.lock", must_exist=True)
+    if report.dependency_lock_sha256 != _sha256(lock_path):
+        raise ValueError("Phase 4 report is bound to a different dependency lockfile")
     if report.dataset_candidate_sha256 != verified.candidate.checksum_sha256:
         raise ValueError("Phase 4 report is bound to a different candidate")
     if report.corpus_sha256 != corpus.manifest.corpus_sha256:

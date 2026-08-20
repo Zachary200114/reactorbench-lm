@@ -74,6 +74,7 @@ def test_smoke_report_binds_measurements_dependencies_and_parameter_tiers() -> N
     report = _report(
         config=config,
         source_commit="abcdef0",
+        dependency_lock_sha256="0" * 64,
         candidate_sha256="1" * 64,
         corpus_sha256="2" * 64,
         tokenizer_sha256="3" * 64,
