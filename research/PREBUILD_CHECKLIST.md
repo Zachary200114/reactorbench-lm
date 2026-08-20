@@ -4,9 +4,10 @@ This began as a pre-implementation gate. It now records which research and Phase
 foundation items are complete and which later gates remain open. The local Phase 2
 structured generator is complete through developmental G01–G15. Phase 3's technical
 projection, split, renderer, audit, review-contract, and artifact pipeline is
-technically complete through the mandatory project-owner pre-render review checkpoint;
-the intended-repository verification gate passed. No real owner-approved corpus or
-pilot exists.
+technically complete through the mandatory project-owner post-render review checkpoint;
+the intended-repository verification gate passed, the bound pre-render review was
+approved, and the real local candidate was generated and typed-verified. No
+post-render-approved corpus or pilot exists.
 
 ## Workspace
 
@@ -40,15 +41,15 @@ pilot exists.
 - [x] Exclude six `component_test` continuation projections whose held-out alias would otherwise identify the next-event target within that task; record that the split now has no continuation coverage and supports no component-generalization claim for `continue_log`.
 - [x] Define provenance fields and dataset-versioning rules.
 - [x] Make `generate-full-development` the sole write command, fixed by the validated config to `data/generated/<artifact_name>` with no arbitrary output root; implement canonical non-overwriting JSONL manifests, explicit file/record/byte limits, read-only config-selected typed verification, complete config/schema/bundle/split/review/report provenance, and packaged dataset-schema snapshots.
-- [ ] Record the project owner's hash-bound pre-render catalog approval for the current 176-entry packet.
-- [ ] Generate the real local candidate only after that approval and record the separate full post-render owner review.
+- [x] Record the project owner's hash-bound pre-render catalog approval for the current 176-entry packet.
+- [ ] Generate the real local candidate only after that approval and record the separate full post-render owner review. Candidate generation and verification are complete; the post-render review remains open.
 - [ ] Freeze the developmental dataset/task/split contracts after pilot evidence and before the main experiment.
 - [x] Record the intended-repository Phase 3 implementation gate: commit
   `d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`; Ruff format for 106 files; Ruff lint;
   strict mypy for 80 source files; 649 tests on Python 3.12.11 in 297.78 seconds with
   87.24% branch coverage; build and isolated no-network artifact verification passed.
-  Exact hashes are recorded in `docs/IMPLEMENTATION_STATUS.md`; candidate/post-render
-  hashes do not exist because mandatory human review remains open.
+  Exact implementation and generated-candidate hashes are recorded in
+  `docs/IMPLEMENTATION_STATUS.md`; post-render owner approval remains open.
 
 ## Model contracts
 

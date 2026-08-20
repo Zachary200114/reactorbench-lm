@@ -1,10 +1,9 @@
 # ReactorBench-LM Phase 3 development candidate
 
-Status: Phase 3 is technically complete at the mandatory project-owner pre-render
-review checkpoint, and the intended-repository verification gate passed. No real
-pre-render owner approval is recorded, no narrative candidate has been generated or
-committed for training, and this document is not an approved dataset release or a
-measured model result.
+Status: the exact pre-render packet was approved by the project owner, and the real
+local Phase 3 development candidate was generated and independently typed-verified.
+It remains `candidate_pending_postrender_review`; this document is not an approved
+dataset release or a measured model result.
 
 ## Purpose
 
@@ -27,11 +26,10 @@ projections, and 14 atomic counterfactual pairs. Its trajectory distribution is 
 `next_action`, and `incident_summary`; the 14 paired `counterfactual_compare`
 records are assembled separately.
 
-Under an explicit automated test-only approval fixture, the complete gated path yields
-553 distinct render candidates, 1,776 task examples, and 18 bounded corruption
-records. This is test evidence for contracts and counts, not a real approved corpus.
-It must not be used to bypass the project-owner review. The formal 5K–10K
-experimental pilot is a later phase and is not represented here.
+The approved local candidate contains 553 distinct render candidates, 1,776 task
+examples, and 18 bounded corruption records. Its automated quality report passed, but
+the complete rendered inventory still requires project-owner review. The formal
+5K–10K experimental pilot is a later phase and is not represented here.
 
 The development matrix uses disjoint seed cohorts, split-first renderer and alias
 assignments, held-out composition/template/component cohorts, and atomic
@@ -134,13 +132,13 @@ The intended-repository gate established these exact implementation and review r
   `000a4e7c09eed0cc20c45101afcbde452b14f91d28e2bb151e2d7d2d8c4c2347`;
 - structured-target inventory:
   `8b4b5a576516d9963b3008274b805f151eeb20a414622669f812566444393951`;
-- current unapproved packet internal checksum:
+- pre-render packet internal checksum:
   `faa50900db2890b3bc167a44aabcb416b0a3eaa756cb578978f8e58fc3a24b8a`;
   and
-- current unapproved packet raw-file SHA-256:
+- pre-render packet raw-file SHA-256:
   `2bc3e226e202a4c5c9baddaef512cf195e6086db7194b158856a782bb880dfce`.
 
-The strict-parsed packet is the ignored 896,151-byte local file
+The approved strict-parsed packet is the ignored 896,151-byte local file
 `artifacts/review/catalog-review-v0.1.0.json`; it contains 176 catalog entries and binds
 all 1,776 targets. The verified wheel SHA-256 is
 `c9cfdb87b71a44e1b5bc6dbc6cda69104d740d8c6fe115df0198f1faa4fe3470`,
@@ -148,11 +146,19 @@ and the source-distribution SHA-256 is
 `c6154e00cb9f592f43cd8a7aca013963c9d6549e7397f244422ca833c9484572`.
 
 The pre-render packet binds all of those applicable roots, the complete structured
-target inventory, and every authored renderer/corruption language surface. Any bound
-change invalidates a prior record and requires the project owner to review the new
-packet in full. The real candidate, quality report, post-render packet, and candidate
-artifact manifest have intentionally not been created because mandatory owner review
-remains unsatisfied; no approved record or hashes for those artifacts exist.
+target inventory, and every authored renderer/corruption language surface. Its approved
+record has internal checksum
+`528b46e378e83da25e0a6c92c8ea24824d01cf1a00d6aeb764b6203bf4c26bb4`.
+The generated candidate has bundle checksum
+`3bba04bdb2030425ef67845332540fa2d148d0a318ab1d9e658f52bb890bf10c`,
+artifact-manifest checksum
+`222141b3ab7c9e77c4eac544f1433da067e3725057039f3bb1603be56f98bf55`,
+quality-report checksum
+`2549e0b0d4512424959f687834208c5572ceae98dfb2ae2edc2274268fac26e6`,
+and post-render packet checksum
+`b0d4c3cf11a2877e030d062efed0bebe1e53c5c87d7218402beb9bfe19f86684`.
+Any bound change invalidates the approval. The candidate is not training-approved until
+the project owner completes the separate post-render review.
 
 With placeholder test commit `abcdef0`, the corrected fixture audits all 1,776 task
 records and 1,977,422 rendered UTF-8 bytes. It reports 402 contingencies (358
@@ -191,8 +197,8 @@ The denylist, pattern scan, and copied-span fingerprints are deliberately
 non-exhaustive. A clean report is evidence for a reviewer, not proof that the text is
 safe or source-free. The `project-owner` must review the complete bound renderer,
 corruption, target, catalog, and guard packet before rendering, then separately review
-the full post-render packet. No real packet has been approved and no real narrative
-candidate exists.
+the full post-render packet. The first review is approved; the generated candidate is
+still awaiting the second review.
 
 Known limitations include synthetic grammar artifacts, a small developmental sample,
 low-severity-dominant simulator coverage, no training-compound examples, an unfrozen

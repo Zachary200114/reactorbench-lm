@@ -57,7 +57,7 @@ The verified implementation and review roots are:
 - guard manifest:
   `000a4e7c09eed0cc20c45101afcbde452b14f91d28e2bb151e2d7d2d8c4c2347`.
 
-The deterministic **unapproved** packet has been prepared as the ignored local file
+The deterministic packet was prepared as the ignored local file
 `artifacts/review/catalog-review-v0.1.0.json`. Its strict parse passed; it is 896,151
 bytes, its raw-file SHA-256 is
 `2bc3e226e202a4c5c9baddaef512cf195e6086db7194b158856a782bb880dfce`,
@@ -65,9 +65,10 @@ and its internal packet checksum is
 `faa50900db2890b3bc167a44aabcb416b0a3eaa756cb578978f8e58fc3a24b8a`.
 It contains all 176 catalog entries and binds all 1,776 targets. Review that file and
 compare every bound field; do not approve from counts or documentation alone. Any
-difference requires regeneration and a complete new review. No real owner approval
-record exists at this checkpoint. Test fixtures that construct an approved record
-exist only to prove fail-closed contract behavior and are not human evidence.
+difference requires regeneration and a complete new review. The project owner approved
+this exact packet on 2026-08-20. The strict approval record is
+`artifacts/review/catalog-review-record-v0.1.0.json`; its internal checksum is
+`528b46e378e83da25e0a6c92c8ea24824d01cf1a00d6aeb764b6203bf4c26bb4`.
 
 If deterministic regeneration is needed for comparison, pin the implementation commit
 rather than the later documentation `HEAD` and avoid overwriting the reviewed packet:
@@ -118,7 +119,9 @@ does not record a decision.
    `data/generated/phase3-development-v0.1.0-candidate` path, which must not already
    exist.
 
-Only after the project owner has created the approved record, run:
+The following generation and verification commands completed successfully for this
+candidate. Do not rerun them in the occupied non-overwriting output path; they are
+recorded for clean-checkout reproduction:
 
 ```bash
 uv run --frozen python -m reactorbench.dataset generate-full-development \
@@ -148,12 +151,15 @@ against the same boundary and record its checksum in a separate status record. T
 candidate artifact remains
 `candidate_pending_postrender_review` until this step is complete.
 
-The current implementation deliberately presents the full distinct render inventory,
-not a hidden subset. The test-only path reports 553 candidates, 1,776 task records, and
-18 corruption records. Those numbers are an inventory expectation, not approval and
-not permission to train. The real packet checksum must come from the owner-approved,
-locally generated candidate. No real narrative candidate or approval exists at this
-checkpoint.
+The generated candidate presents the full distinct render inventory, not a hidden
+subset: 553 candidates, 1,776 task records, and 18 corruption records. Its packet
+checksum is
+`b0d4c3cf11a2877e030d062efed0bebe1e53c5c87d7218402beb9bfe19f86684`;
+the raw packet file SHA-256 is
+`1ad8a07e01d748046c8eadff1a953dafecf56d36e0e787e9e707fc9aad70c390`.
+These measured inventory values and a passing automated report are not permission to
+train. The project owner must inspect the complete packet and record a separate
+post-render decision.
 
 Promotion creates a new status record; it never rewrites generated data. An approved
 development candidate is still not a public release, training result, operational
@@ -165,9 +171,13 @@ path must not exist. File count, record count, per-file bytes, and total bytes a
 bounded. Before review, the verifier must strictly re-parse every typed JSONL file,
 check cross-file IDs/counts/hashes, and confirm the manifest binds the resolved config,
 structured/split bundles, both schema snapshots, catalog, guard, both review packets,
-pre-render review record, and quality report. The candidate, quality report,
-post-render packet, and candidate artifact manifest have intentionally not been created
-because the first mandatory human review is still open; their hashes do not yet exist.
+pre-render review record, and quality report. Typed generation and a separate read-only
+verification both passed. The candidate bundle checksum is
+`3bba04bdb2030425ef67845332540fa2d148d0a318ab1d9e658f52bb890bf10c`;
+the artifact-manifest checksum is
+`222141b3ab7c9e77c4eac544f1433da067e3725057039f3bb1603be56f98bf55`;
+and the quality-report checksum is
+`2549e0b0d4512424959f687834208c5572ceae98dfb2ae2edc2274268fac26e6`.
 
 ## Automated evidence
 

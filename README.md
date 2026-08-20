@@ -15,8 +15,9 @@ audit fixture. It separates latent truth from observations/events and applies
 fail-closed validation, bounded deterministic transitions, and a narrow redacting
 prohibited-content scanner.
 
-Phase 3 is technically complete at the mandatory project-owner pre-render review
-checkpoint. Its deterministic, split-first development audit contains **204 structured
+Phase 3 has generated and independently verified its real local development candidate
+and is paused at the mandatory project-owner post-render review checkpoint. Its
+deterministic, split-first development audit contains **204 structured
 trajectories**, **1,762 single-input task projections**, and **14 atomic counterfactual
 pairs**. Strict
 `ModelInput` projection removes source IDs, latent truth, targets, evidence annotations,
@@ -43,12 +44,12 @@ The pre-render owner packet binds the exact resolved configuration, generator co
 structured bundle and target inventory to the complete project-authored renderer and
 corruption language surfaces. Its catalog has four template families and four alias
 families across eleven event types (**176 required catalog-review entries**).
-Automated test-only review fixtures demonstrate that the gated path would produce
+The project owner approved the exact pre-render packet, and the gated path generated
 **553 distinct render candidates**, **1,776 task examples**, and **18 corruption
-records**. Those fixtures are not human approval and are not an approved corpus. No
-real owner approval is recorded, so no narrative candidate artifact has been generated
-or committed for training. The separate pre-render and post-render human gates remain
-mandatory, and the golden suite is still a draft pending human review and freeze.
+records**. Typed reconstruction and a separate read-only verifier both passed. The
+candidate remains `candidate_pending_postrender_review`: it is not approved training
+data until the project owner inspects and approves the complete post-render packet.
+The golden suite is still a draft pending separate human review and freeze.
 
 At implementation commit
 `d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`, the intended-repository gate passed
@@ -56,13 +57,13 @@ Ruff formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 6
 on Python 3.12.11 in 297.78 seconds with 87.24% branch coverage. The same 649-test suite
 passed in staging in 307.07 seconds; the sdist/wheel build and isolated no-network
 artifact verification also passed. A fresh independent SHIP review passed 58 focused
-tests in 173.95 seconds. These gates establish the technical checkpoint, not either
-mandatory human review or an approved corpus. Exact hashes and evolving status are
+tests in 173.95 seconds. These gates establish the technical checkpoint, not post-render
+approval or a released corpus. Exact hashes and evolving status are
 recorded in the implementation handoff.
 
 There is currently:
 
-- no human-approved or generated training dataset;
+- a generated but not yet post-render-approved development candidate;
 - no trained tokenizer;
 - no trained model or checkpoint;
 - no measured model result or benchmark;
