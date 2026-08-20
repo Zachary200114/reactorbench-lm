@@ -2,7 +2,7 @@ UV ?= uv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify phase6-verify-golden phase6-selection phase6-verify-selection phase6-evaluate phase6-verify
+.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify phase6-verify-golden phase6-selection phase6-verify-selection phase6-evaluate phase6-verify phase6-rescore phase6-verify-rescore
 
 help: ## Show the available development commands.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,3 +68,9 @@ phase6-evaluate: phase6-verify-golden phase6-verify-selection ## Run the single 
 
 phase6-verify: ## Verify Phase 6 reports, predictions, access record, and checkpoints.
 	$(UV) run --frozen python -m reactorbench.training verify-phase6-evaluation --config configs/experiments/phase6-main-v0.1.0.toml
+
+phase6-rescore: phase6-verify ## Mechanically reparse stored generations after the v0.1.0 delimiter defect.
+	$(UV) run --frozen python scripts/phase6_rescore_v0_1_1.py run --config configs/experiments/phase6-main-v0.1.0.toml --correction-source-commit "$$(git rev-parse --verify HEAD)"
+
+phase6-verify-rescore: ## Reconstruct and verify the delimiter-aware Phase 6 rescore.
+	$(UV) run --frozen python scripts/phase6_rescore_v0_1_1.py verify --config configs/experiments/phase6-main-v0.1.0.toml

@@ -1021,6 +1021,111 @@ def _failure_gallery(
     return tuple(selected[key] for key in sorted(selected))
 
 
+def _acceptance_checks(
+    config: Phase6Config,
+    *,
+    baselines: tuple[BaselineSplitResult, ...],
+    model_results: tuple[ModelSplitEvaluation, ...],
+    prediction_metrics: tuple[MainPredictionMetrics, ...],
+    selection_thresholds_passed: bool,
+) -> tuple[tuple[str, bool], ...]:
+    """Apply the frozen acceptance policy to one complete evaluation result graph."""
+
+    checks = {
+        "golden_suite_approved": True,
+        "heldout_access_after_selection": True,
+        "main_selection_thresholds": selection_thresholds_passed,
+        "parse_success": all(
+            result.parse_success_rate >= config.evaluation.minimum_parse_success_rate
+            for result in prediction_metrics
+        ),
+        "schema_validity": all(
+            result.schema_validity_rate >= config.evaluation.minimum_schema_validity_rate
+            for result in prediction_metrics
+        ),
+        "evidence_f1": all(
+            result.evidence is None or result.evidence.f1 >= config.evaluation.minimum_evidence_f1
+            for result in prediction_metrics
+        ),
+        "no_fault_false_positive": all(
+            result.no_fault_false_positive_rate
+            <= config.evaluation.maximum_no_fault_false_positive_rate
+            for result in prediction_metrics
+        ),
+        "required_abstention": all(
+            result.required_abstention_accuracy
+            >= config.evaluation.minimum_required_abstention_accuracy
+            for result in prediction_metrics
+        ),
+        "calibration": all(
+            result.calibration.expected_calibration_error
+            <= config.evaluation.maximum_expected_calibration_error
+            for result in prediction_metrics
+        ),
+        "selective_risk": all(
+            result.calibration.selective_risk <= config.evaluation.maximum_selective_risk
+            for result in prediction_metrics
+        ),
+    }
+    for split in TEST_SPLITS:
+        if split is SplitName.COMPOSITION_TEST:
+            continue
+        main_result = next(
+            item
+            for item in model_results
+            if item.experiment_id == "E3_main_transformer" and item.split_name is split
+        )
+        main_by_task = {item.task_name: item for item in main_result.classification}
+        split_baselines = tuple(item.result for item in baselines if item.split_name is split)
+        for task, margin in (
+            (
+                TaskName.FAULT_FAMILY,
+                config.evaluation.minimum_fault_macro_f1_margin_over_best_simple,
+            ),
+            (
+                TaskName.NEXT_ACTION,
+                config.evaluation.minimum_next_action_macro_f1_margin_over_best_simple,
+            ),
+        ):
+            if task not in main_by_task:
+                continue
+            simple = tuple(
+                item.classification.macro_f1
+                for item in split_baselines
+                if item.classification is not None
+                and item.classification.task_name is task
+                and item.baseline_name
+                in {
+                    "majority_frequency",
+                    "deterministic_keyword_rules",
+                    "bag_of_words_logistic_regression",
+                }
+            )
+            checks[f"{split.value}:{task.value}:simple_margin"] = bool(
+                simple and main_by_task[task].macro_f1 >= max(simple) + margin
+            )
+        if TaskName.CONTINUE_LOG in main_by_task:
+            checks[f"{split.value}:continue_log:minimum_macro_f1"] = (
+                main_by_task[TaskName.CONTINUE_LOG].macro_f1
+                >= config.evaluation.minimum_continue_log_macro_f1
+            )
+        trigram = next(
+            (
+                item.language_model
+                for item in split_baselines
+                if item.baseline_name == "token_trigram_additive"
+            ),
+            None,
+        )
+        if trigram is not None and main_result.language_model is not None:
+            checks[f"{split.value}:target_nll:trigram_fraction"] = (
+                main_result.language_model.negative_log_likelihood
+                <= config.evaluation.maximum_target_nll_fraction_of_trigram
+                * trigram.negative_log_likelihood
+            )
+    return tuple(sorted(checks.items()))
+
+
 def _write_jsonl(path: Path, values: tuple[ContractModel, ...]) -> str:
     payload = b"".join(
         canonical_json_bytes(value.model_dump(mode="json", round_trip=True)) + b"\n"
@@ -1484,99 +1589,14 @@ def run_phase6_evaluation(
     ) / len(golden_examples)
     all_records = tuple(record for split in TEST_SPLITS for record in data.by_split[split])
     gallery = _failure_gallery(all_records, tuple(predictions))
-    checks = {
-        "golden_suite_approved": True,
-        "heldout_access_after_selection": True,
-        "main_selection_thresholds": selection.selection_thresholds_passed,
-        "parse_success": all(
-            result.parse_success_rate >= config.evaluation.minimum_parse_success_rate
-            for result in prediction_metrics
-        ),
-        "schema_validity": all(
-            result.schema_validity_rate >= config.evaluation.minimum_schema_validity_rate
-            for result in prediction_metrics
-        ),
-        "evidence_f1": all(
-            result.evidence is None or result.evidence.f1 >= config.evaluation.minimum_evidence_f1
-            for result in prediction_metrics
-        ),
-        "no_fault_false_positive": all(
-            result.no_fault_false_positive_rate
-            <= config.evaluation.maximum_no_fault_false_positive_rate
-            for result in prediction_metrics
-        ),
-        "required_abstention": all(
-            result.required_abstention_accuracy
-            >= config.evaluation.minimum_required_abstention_accuracy
-            for result in prediction_metrics
-        ),
-        "calibration": all(
-            result.calibration.expected_calibration_error
-            <= config.evaluation.maximum_expected_calibration_error
-            for result in prediction_metrics
-        ),
-        "selective_risk": all(
-            result.calibration.selective_risk <= config.evaluation.maximum_selective_risk
-            for result in prediction_metrics
-        ),
-    }
-    for split in TEST_SPLITS:
-        if split is SplitName.COMPOSITION_TEST:
-            continue
-        main_result = next(
-            item
-            for item in model_results
-            if item.experiment_id == "E3_main_transformer" and item.split_name is split
-        )
-        main_by_task = {item.task_name: item for item in main_result.classification}
-        split_baselines = tuple(item.result for item in baselines if item.split_name is split)
-        for task, margin in (
-            (
-                TaskName.FAULT_FAMILY,
-                config.evaluation.minimum_fault_macro_f1_margin_over_best_simple,
-            ),
-            (
-                TaskName.NEXT_ACTION,
-                config.evaluation.minimum_next_action_macro_f1_margin_over_best_simple,
-            ),
-        ):
-            if task not in main_by_task:
-                continue
-            simple = tuple(
-                item.classification.macro_f1
-                for item in split_baselines
-                if item.classification is not None
-                and item.classification.task_name is task
-                and item.baseline_name
-                in {
-                    "majority_frequency",
-                    "deterministic_keyword_rules",
-                    "bag_of_words_logistic_regression",
-                }
-            )
-            checks[f"{split.value}:{task.value}:simple_margin"] = bool(
-                simple and main_by_task[task].macro_f1 >= max(simple) + margin
-            )
-        if TaskName.CONTINUE_LOG in main_by_task:
-            checks[f"{split.value}:continue_log:minimum_macro_f1"] = (
-                main_by_task[TaskName.CONTINUE_LOG].macro_f1
-                >= config.evaluation.minimum_continue_log_macro_f1
-            )
-        trigram = next(
-            (
-                item.language_model
-                for item in split_baselines
-                if item.baseline_name == "token_trigram_additive"
-            ),
-            None,
-        )
-        if trigram is not None and main_result.language_model is not None:
-            checks[f"{split.value}:target_nll:trigram_fraction"] = (
-                main_result.language_model.negative_log_likelihood
-                <= config.evaluation.maximum_target_nll_fraction_of_trigram
-                * trigram.negative_log_likelihood
-            )
-    negative = tuple(name for name, passed in sorted(checks.items()) if not passed)
+    checks = _acceptance_checks(
+        config,
+        baselines=tuple(baselines),
+        model_results=tuple(model_results),
+        prediction_metrics=tuple(prediction_metrics),
+        selection_thresholds_passed=selection.selection_thresholds_passed,
+    )
+    negative = tuple(name for name, passed in checks if not passed)
     run_root = resolve_project_path(project_root, config.phase6.run_root, must_exist=False)
     output = run_root / config.phase6.run_name
     if output.exists() or output.is_symlink():
@@ -1604,7 +1624,7 @@ def run_phase6_evaluation(
             golden_case_count=15,
             golden_example_count=len(golden_examples),
             golden_exact_match_rate=golden_exact,
-            acceptance_checks=tuple(sorted(checks.items())),
+            acceptance_checks=checks,
             negative_results=negative,
             failure_gallery=gallery,
             predictions_sha256=predictions_sha,

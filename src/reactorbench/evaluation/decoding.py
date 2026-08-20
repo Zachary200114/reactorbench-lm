@@ -74,11 +74,25 @@ def parse_structured_prediction(
     generated_text: str,
     *,
     task_name: TaskName,
+    record_separator: str | None = None,
 ) -> tuple[bool, bool, ProjectionTaskTargetValue | None, str | None]:
-    """Parse one exact JSON object, then apply the task-specific strict contract."""
+    """Parse one serialized target, then apply the task-specific strict contract.
+
+    Training deliberately includes the configured record separator in the supervised
+    target.  Generation therefore reproduces that transport delimiter before EOS.  It
+    is not part of the task JSON and must be removed only when it is the exact terminal
+    ``"\\n" + record_separator`` suffix.  Keeping this rule here makes training and
+    inference serialization symmetric without accepting arbitrary trailing content.
+    """
 
     if type(generated_text) is not str or type(task_name) is not TaskName:
         raise TypeError("prediction parsing requires exact text and TaskName")
+    if record_separator is not None:
+        if type(record_separator) is not str or not record_separator:
+            raise TypeError("record_separator must be a non-empty exact string or None")
+        suffix = f"\n{record_separator}"
+        if generated_text.endswith(suffix):
+            generated_text = generated_text[: -len(suffix)]
     try:
         decoded = _strict_json(generated_text)
     except (UnicodeError, ValueError, json.JSONDecodeError):
@@ -105,9 +119,12 @@ def _prediction(
     prompt_truncated: bool,
     generation_truncated: bool,
     confidence: float,
+    record_separator: str | None = None,
 ) -> DecodedPrediction:
     parsed, valid, target, canonical = parse_structured_prediction(
-        generated_text, task_name=example.task_name
+        generated_text,
+        task_name=example.task_name,
+        record_separator=record_separator,
     )
     label = None if target is None else _classification_label(example.task_name, target)
     draft = DecodedPrediction.model_construct(
@@ -251,6 +268,7 @@ def greedy_decode_predictions(
                                 prompt_truncated=truncated,
                                 generation_truncated=exhausted and not finished[row],
                                 confidence=confidence,
+                                record_separator=serialization.record_separator,
                             )
                         )
     finally:

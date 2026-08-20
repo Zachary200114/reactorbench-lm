@@ -65,6 +65,29 @@ def test_strict_prediction_parser_rejects_wrong_tasks_and_duplicate_keys() -> No
     assert target is not None
     assert canonical == valid
 
+    serialized = f"{valid}\n<|sep|>"
+    assert parse_structured_prediction(
+        serialized,
+        task_name=TaskName.NEXT_ACTION,
+        record_separator="<|sep|>",
+    )[:2] == (True, True)
+    assert parse_structured_prediction(
+        serialized,
+        task_name=TaskName.NEXT_ACTION,
+    )[:2] == (False, False)
+    assert parse_structured_prediction(
+        f"{serialized} trailing",
+        task_name=TaskName.NEXT_ACTION,
+        record_separator="<|sep|>",
+    )[:2] == (False, False)
+    for separator in ("", cast(Any, b"<|sep|>")):
+        with pytest.raises(TypeError, match="record_separator"):
+            parse_structured_prediction(
+                serialized,
+                task_name=TaskName.NEXT_ACTION,
+                record_separator=separator,
+            )
+
     assert parse_structured_prediction(valid, task_name=TaskName.FAULT_FAMILY)[:2] == (
         True,
         False,
