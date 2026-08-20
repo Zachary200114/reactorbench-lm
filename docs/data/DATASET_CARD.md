@@ -9,8 +9,9 @@ tokenizer/model work; it is not a public dataset release or a measured model res
 
 The candidate exercises the deterministic path from wholly fictional Aster Station
 audit trajectories to leakage-resistant task projections, split-first manifests,
-project-authored narrative rendering, and reproducible local artifacts. It is intended
-for schema, renderer, data-integrity, and future tokenizer smoke tests.
+project-authored narrative rendering, and reproducible local artifacts. It supplied
+only its `iid_train` prose to the completed Phase 4 tokenizer/smoke gate; broader
+training and every evaluation split remain future Phase 5–6 work.
 
 It is not suitable for operational, engineering, licensing, emergency, maintenance,
 security, safety, or real-facility decisions.

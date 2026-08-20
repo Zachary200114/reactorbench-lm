@@ -6,7 +6,10 @@ structured generator is complete through developmental G01–G15. Phase 3's tech
 projection, split, renderer, audit, review-contract, and artifact pipeline is complete
 locally; the intended-repository verification gate passed, both bound project-owner
 reviews were approved, and the real local candidate was generated and typed-verified.
-The approved development candidate is not a public release or the later pilot tier.
+Phase 4 tokenizer/model correctness is also complete locally: the project-trained
+tokenizer, random-init Transformer, tiny-shard overfit, causal-mask/target tests, and
+safe checkpoint reload gate passed. The approved candidate and smoke checkpoint are
+not public releases or the later pilot tier.
 
 ## Workspace
 
@@ -52,17 +55,22 @@ The approved development candidate is not a public release or the later pilot ti
 
 ## Model contracts
 
-- [ ] Calculate exact parameter counts for smoke, pilot, and main configs.
-- [ ] Define causal-mask and next-token target tests.
-- [ ] Define checkpoint save/reload equivalence tests.
-- [ ] Define the tokenizer corpus and special tokens.
+- [x] Calculate exact parameter counts for smoke, pilot, and main configs: 675,328,
+  5,328,896, and 15,179,520 with vocabulary 2,048.
+- [x] Define and pass causal-mask, exact shifted-target, and padding-loss tests.
+- [x] Define and pass safetensors checkpoint save/reload exact-logit equivalence tests.
+- [x] Define the tokenizer corpus and special tokens. Only the approved `iid_train`
+  render inventory is used; IDs are UNK/BOS/EOS/PAD 0/1/2/3 plus the three project
+  prompt/target/separator symbols.
 - [ ] Fix baseline implementations and metrics before test evaluation.
 - [ ] Define validation-only checkpoint selection.
 
 ## Compute
 
-- [ ] Verify the installed PyTorch build supports MPS.
-- [ ] Run smoke overfit on a tiny generated shard.
+- [x] Verify the installed PyTorch build includes MPS support. Torch 2.13.0 reports it
+  compiled in, but the backend is unavailable to the sandboxed process; no MPS
+  performance claim is made.
+- [x] Run and independently verify smoke overfit on four approved training documents.
 - [ ] Run a 500–1,000-step pilot microbenchmark.
 - [ ] Record tokens/sec, peak memory, checkpoint size, and throttling behavior.
 - [ ] Estimate local main-run duration from measurements.
@@ -89,8 +97,9 @@ The approved development candidate is not a public release or the later pilot ti
 - [ ] Experiment/results report template.
 - [x] Source and attribution manifest.
 - [x] Known limitations and prohibited-use section.
-- [ ] Reproduction instructions and artifact checksums.
-- [ ] Implement and verify a fast smoke-reproduction command in a clean environment.
+- [x] Record Phase 4 reproduction instructions and tokenizer/checkpoint/report checksums.
+- [x] Implement `make reproduce-smoke` and the independent `make phase4-verify` command.
+  A fully separate clean-machine reproduction remains a later release gate.
 - [ ] Link commit, generator, dataset, tokenizer, checkpoint, evaluation, report, and deployment identifiers.
 - [ ] Record training/inference time, throughput, memory, artifact sizes, and cost.
 - [ ] Prepare the paper-style experiment report after results stabilize.

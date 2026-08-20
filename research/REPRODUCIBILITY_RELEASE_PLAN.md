@@ -1,6 +1,7 @@
 # Reproducibility, artifacts, and release plan
 
-Status: pre-implementation contract
+Status: Phase 4 smoke reproduction implemented locally; main-experiment and release
+levels remain planned.
 
 ## 1. Reproduction levels
 
@@ -26,6 +27,14 @@ One documented command, such as `make reproduce-smoke`, should:
 
 This command must run on an ordinary development machine in a practical amount of time measured during implementation.
 
+Implemented Phase 4 commands are `make reproduce-smoke` and the independent read-only
+`make phase4-verify`. The final local run used the already approved Phase 3 candidate,
+trained the tokenizer, optimized 300 CPU steps, wrote checksum-bound safetensors and a
+report, then passed independent reload/logit verification. Its timed optimization loop
+was 3.815 seconds; end-to-end command time also includes candidate reconstruction,
+tokenizer training, and I/O. Exact hashes and the scope of that timing are recorded in
+`docs/model/PHASE4_SMOKE.md`.
+
 ### Level 3 — main experiment
 
 Document exact data generation, tokenizer training, model training, checkpoint selection, and evaluation commands. The full run may require substantial time, but every input configuration and artifact relationship must be available.
@@ -47,6 +56,12 @@ Git commit
 ```
 
 Every arrow must be machine-verifiable through identifiers or checksums.
+
+The implemented chain currently reaches the Phase 4 checkpoint: source commit,
+generator/candidate/reviews, `iid_train` corpus inventory, tokenizer, reviewed model
+config, dependency lock, smoke inputs, safetensors checkpoint, evaluation logits, and
+smoke report are checksum-bound. Evaluation, figures, deployment, and release
+identifiers remain absent rather than represented by placeholders.
 
 ## 3. Required metadata
 

@@ -315,8 +315,9 @@ golden review, or model result. The schema/generator remain `0.1.0`, `frozen=fal
   prohibited-content scanning, duplicate/leakage checks, and a tiny pilot dataset.
 - Expand scenario coverage without using real records or hosted-LLM corpus text.
 
-**Local checkpoint:** Phase 3 is technically complete at the mandatory project-owner
-pre-render review checkpoint, and the intended-repository verification gate passed.
+**Local checkpoint:** Phase 3 is complete locally. Both exact project-owner review
+packets were approved, the config-selected candidate was generated, and typed plus
+independent verification passed.
 The deterministic split-first audit has 204 trajectories, 1,762 single-input
 projections, and 14 atomic counterfactual comparisons. `ModelInput` permits only
 task-cut observation/event/context facts and strips source IDs, evidence annotations,
@@ -355,31 +356,30 @@ Five explicit pre-freeze alias-plan overrides rebalance the measured joint nuisa
 cues. They are keyed only by split, seed, and case, never by runtime target lookup, so
 the corrected plan remains deterministic and split-first rather than answer-selected.
 
-No real owner approval is recorded. The exact hash-bound authored-language and
-structured-target packet must be reviewed before local candidate generation, and a
-separate full post-render human review is required afterward. Non-exhaustive
-denylist/pattern/fingerprint scans cannot
-prove safety. Phase 3 therefore stops safely at this review gate; no tokenizer, model,
-training, service, or UI work may begin. The sole write command uses the validated
-config-selected `data/generated/<artifact_name>` path, accepts no arbitrary output
-root, and is non-overwriting, size/count bounded, and provenance-complete. Read-only
-verification strictly re-parses typed records and cross-file links.
+The project owner approved both exact hash-bound review packets on 2026-08-20. The
+config-selected local candidate was then generated, strictly reconstructed, and
+independently verified. It contains 553 distinct rendered candidates, 1,776 task
+examples, and 18 bounded corruptions; the real task-scoped quality report passes with
+zero shortcut, duplicate, forbidden-skeleton, target-text, or provenance findings.
+Non-exhaustive denylist/pattern/fingerprint scans still cannot prove safety. The
+candidate is approved for local model work, not public release.
 
-At generator implementation commit
-`d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`, the intended repository passed Ruff
-formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 649 tests on
-Python 3.12.11 in 297.78 seconds with 87.24% branch coverage. Build and isolated
-no-network artifact verification passed. The exact implementation, schema, config,
-lineage, packet, and package hashes are recorded in `docs/IMPLEMENTATION_STATUS.md`.
-The unapproved packet is prepared and checksum-known; the real candidate, quality
-report, post-render packet, and candidate artifact manifest have intentionally not been
-created because mandatory project-owner review remains open.
+Phase 4 subsequently trained a deterministic 2,048-token SentencePiece BPE only on
+the 195 approved `iid_train` documents, implemented the decoder-only causal Transformer
+from PyTorch primitives, calculated exact 675,328/5,328,896/15,179,520 parameter tiers,
+and passed causal masking, shifted targets, padding, deterministic evaluation,
+tiny-shard overfit, and safetensors save/reload equivalence. The final smoke report is
+bound to source commit `f636f2b2b9f7f5915bef78903611aa047aaecc30`, the approved data
+chain, reviewed config, exact dependency lock, checkpoint, inputs, and logits. Exact
+measurements and hashes are recorded in `docs/model/PHASE4_SMOKE.md` and
+`docs/IMPLEMENTATION_STATUS.md`. No baseline, pilot, holdout evaluation, service, UI,
+push, or deployment has begun.
 
 ### Phase 4 — Model correctness
 
-- Implement the project tokenizer and decoder-only Transformer.
-- Overfit a tiny shard and validate causal masking, next-token targets, and
-  checkpoint save/reload behavior.
+- **Complete locally.** The project tokenizer and decoder-only Transformer are
+  implemented; the tiny-shard overfit, causal-mask, next-token-target, deterministic
+  evaluation, and safe checkpoint save/reload gates passed.
 
 ### Phase 5 — Baselines and pilot
 

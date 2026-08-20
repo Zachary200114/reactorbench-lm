@@ -2,8 +2,9 @@
 
 Status: Phase 3 is complete locally, the intended-repository verification gate passed,
 and the exact pre-render and post-render packets were approved by the project owner.
-The approved development candidate is not a public release; no tokenizer or model
-exists.
+The approved development candidate is not a public release. Phase 4 has trained a
+project tokenizer only on its `iid_train` prose and produced a local smoke checkpoint;
+no Phase 5 baseline, pilot, holdout evaluation, or released model exists.
 
 ## 1. Dataset purpose
 
