@@ -1,12 +1,12 @@
 # ReactorBench-LM implementation status
 
 Last updated: 2026-08-20 America/New_York
-Current phase: **Phase 3 candidate generated and verified — mandatory project-owner post-render review checkpoint**
-Current objective: have the project owner inspect and decide the exact hash-bound
-post-render packet before approving the candidate for tokenizer/model work.
-Checkpoint reason: the project owner approved the exact pre-render packet; generation,
-quality audit, typed reconstruction, and a separate read-only verification passed; work
-stops before the second mandatory human data gate.
+Current phase: **Phase 3 complete locally — development candidate approved**
+Current objective: preserve the immutable Phase 3 evidence and hand off cleanly to a
+future Phase 4 tokenizer/model-correctness audit.
+Checkpoint reason: the project owner approved both exact hash-bound review packets;
+generation, quality audit, typed reconstruction, separate read-only verification, and
+strict post-render approval-record verification all passed. Phase 4 has not started.
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Completed work
@@ -63,8 +63,8 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   configuration, generator commit, structured bundle, split manifest, catalog, and
   guard. The project owner approved that exact packet on 2026-08-20. The gated path
   generated 553 distinct render candidates, 1,776 task examples, and 18 corruption
-  records. A separate post-render owner review remains mandatory; the candidate is not
-  yet approved training data.
+  records. The project owner approved the complete post-render packet on 2026-08-20;
+  the candidate is approved for local Phase 4 tokenizer/model work, not public release.
 - Candidate artifacts use canonical JSONL. The sole write-capable command resolves the
   validated project checkout from the config and targets
   `data/generated/<artifact_name>`; it accepts no arbitrary output root or directory and
@@ -125,6 +125,11 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   report has 553 candidate records, 1,776 task records, 402 contingencies, and zero
   exact-duplicate, forbidden-skeleton, shortcut, target-text, or provenance findings;
   `passed=true`.
+- The project-owner post-render approval record strict-parsed and verified against the
+  unchanged 553-entry packet with `require_approved=True`. Its internal checksum is
+  `e066d5944839423fdd6e49491dfa5b57867b0c753ac465afb4ac196e7a87958d`;
+  its raw-file SHA-256 is
+  `001eca9925d9d6c5b8a50c9bd524cbe990b17b6a675b53200f16cf379d9b7af7`.
 - Documentation stale-value and trailing-whitespace checks passed for the 12 reconciled
   Phase 3 documents on 2026-08-20. Rerun them after any subsequent documentation
   change.
@@ -155,8 +160,9 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   the exact plan is recorded in D-059.
 - Corruptions are balanced across target outcomes and never change ground truth.
 - Human pre-render and post-render approval are mandatory and cannot be replaced by
-  scanners or automated approval fixtures. The pre-render owner record is bound to the
-  exact structured bundle, target inventory, and complete authored language surface.
+  scanners or automated approval fixtures. Both owner approvals were completed on
+  2026-08-20 and are bound to their exact packets. The pre-render record also binds the
+  structured bundle, target inventory, and complete authored language surface.
 - Canonical JSONL is the developmental format; a binary table dependency requires a
   later measured need.
 - Artifact verification is bounded, typed, cross-file, and config-selected, not
@@ -171,14 +177,14 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   project-authored, wholly fictional, normalized, and non-operational.
 - Exact account usage percentage is not observable in this environment. Conservative
   phase checkpoints are used; no claimed 1% account cutoff has been measured.
-- The project owner, not an automated fixture or agent, will decide whether the exact
-  catalog and candidate packets are approved.
+- The project owner explicitly approved the exact catalog and candidate packets on
+  2026-08-20; the agent only serialized and verified the supplied decisions.
 
 ## Known failures and residual risks
 
-- No known technical Phase 3 failure remains after the intended-repository gate,
-  independent SHIP review, candidate generation, and separate typed verification.
-  Post-render human approval, not an implementation failure, is the active gate.
+- No known technical or human-review Phase 3 gate remains after the intended-repository
+  gate, independent SHIP review, candidate generation, separate typed verification,
+  and both project-owner approvals.
 - The denylist, pattern suite, and copied-span fingerprint registry are non-exhaustive.
   Zero automated findings cannot prove the absence of prohibited or source-derived
   content.
@@ -191,13 +197,16 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 
 ## Open blockers
 
-- The complete post-render packet has not been approved. It contains all 553 rendered
-  candidates and the passing quality report. Until the project owner personally reviews
-  that exact packet and records approval, the candidate remains
-  `candidate_pending_postrender_review` and cannot be used for tokenizer/model work.
+- No blocker remains for beginning local Phase 4 tokenizer/model-correctness work.
 - Code and dataset licenses must be selected before any distribution.
-- Pilot/model work cannot begin until the real candidate passes both human gates and
-  the relevant contracts/manifests are approved for that use.
+- Developmental dataset/task schemas and the golden suite remain unfrozen; they must be
+  reviewed and frozen at their documented later gates before main evaluation/release.
+
+## Uncommitted work
+
+- No tracked source or documentation work should remain after the local closeout
+  commit. The approved review packets/records and generated candidate remain ignored
+  local artifacts by design; their exact paths and hashes are recorded below.
 
 ## Repository state
 
@@ -205,39 +214,35 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   `codex/foundation`.
 - Verified Phase 3 implementation commit:
   `d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`.
-- The Phase 3 documentation reconciliation is committed in the local checkpoint that
-  follows the implementation commit. The tracked worktree is expected to be clean;
-  verify the exact current documentation commit with `git rev-parse --verify HEAD`.
-  The approved pre-render packet/record and generated candidate remain intentionally
-  ignored local artifacts. No remote, push, publication, or deployment exists.
+- Last known pre-closeout documentation checkpoint:
+  `ff23e88593a87ddf647e28c0902d6e9280497639`.
+- This handoff is part of the subsequent local Phase 3 closeout commit. The tracked
+  worktree is expected to be clean after that commit; verify it with `git status` and
+  obtain the exact closeout hash with `git rev-parse --verify HEAD`. Both approved
+  review packets/records and the generated candidate remain intentionally ignored local
+  artifacts. No remote, push, publication, or deployment exists.
 
 ## Immediate next step
 
-The project owner should inspect the complete post-render packet at
-`data/generated/phase3-development-v0.1.0-candidate/postrender-review.jsonl`. It is
-3,041,014 bytes, contains all 553 distinct rendered candidates, and has raw-file
-SHA-256 `1ad8a07e01d748046c8eadff1a953dafecf56d36e0e787e9e707fc9aad70c390`
-and internal packet checksum
-`b0d4c3cf11a2877e030d062efed0bebe1e53c5c87d7218402beb9bfe19f86684`.
-If and only if that exact packet is acceptable, the owner creates a separate hash-bound
-post-render `APPROVED` record. Do not begin Phase 4 before that record is created and
-verified.
+On a future turn, begin Phase 4 with a read-only tokenizer/model-correctness design
+audit. Re-read `research/PROJECT_REQUIREMENTS.md`, the Phase 4 sections of
+`research/RESEARCH_BLUEPRINT.md`, and this handoff; verify the clean Git checkpoint and
+both local approval records before changing code. Do not repeat Phase 3 generation or
+rewrite the approved candidate.
 
 ## Exact recommended next command
 
-First confirm that the generated post-render packet is the recorded file, then review
-its complete candidate inventory:
+At the start of Phase 4, verify the local checkpoint and approval artifacts before the
+read-only design audit:
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-shasum -a 256 data/generated/phase3-development-v0.1.0-candidate/postrender-review.jsonl
+git status --short --branch
+shasum -a 256 artifacts/review/postrender-review-record-v0.1.0.json
 ```
 
-The expected raw-file hash is
-`1ad8a07e01d748046c8eadff1a953dafecf56d36e0e787e9e707fc9aad70c390`.
-Follow `docs/data/PHASE3_REVIEW.md`; do not create a post-render `APPROVED` record unless
-the project owner actually reviews all 553 candidate entries and the bound quality
-report.
+The expected approval-record raw-file hash is
+`001eca9925d9d6c5b8a50c9bd524cbe990b17b6a675b53200f16cf379d9b7af7`.
 
 ## Relevant artifacts and configuration
 
@@ -284,6 +289,11 @@ report.
 - Generated post-render packet raw-file SHA-256:
   `1ad8a07e01d748046c8eadff1a953dafecf56d36e0e787e9e707fc9aad70c390`
   (3,041,014 bytes; strict parse passed)
+- Approved post-render review-record internal SHA-256:
+  `e066d5944839423fdd6e49491dfa5b57867b0c753ac465afb4ac196e7a87958d`
+- Approved post-render review-record raw-file SHA-256:
+  `001eca9925d9d6c5b8a50c9bd524cbe990b17b6a675b53200f16cf379d9b7af7`
+  (strict parse and exact-packet verification passed; ignored local review artifact)
 - The `abcdef0` fixture quality hash above remains test-only evidence and is not a
   candidate, approval, artifact, or release hash.
 - Development configuration: `configs/dataset/development-v0.1.0.toml`
@@ -296,8 +306,11 @@ report.
   `data/generated/phase3-development-v0.1.0-candidate`
 - Post-render review packet path:
   `data/generated/phase3-development-v0.1.0-candidate/postrender-review.jsonl`
-- No post-render approval record exists; the candidate is not yet approved training
-  data.
+- Approved post-render owner-record path (ignored, not committed):
+  `artifacts/review/postrender-review-record-v0.1.0.json`
+- The candidate's embedded `candidate_pending_postrender_review` value remains unchanged
+  as generation-time state; the separate verified record approves it for local Phase 4
+  work without making it a public release.
 
 ## Exact resume prompt
 

@@ -15,8 +15,9 @@ audit fixture. It separates latent truth from observations/events and applies
 fail-closed validation, bounded deterministic transitions, and a narrow redacting
 prohibited-content scanner.
 
-Phase 3 has generated and independently verified its real local development candidate
-and is paused at the mandatory project-owner post-render review checkpoint. Its
+Phase 3 is complete locally. Its real development candidate was generated,
+independently typed-verified, reviewed in full by the project owner, and approved by a
+separate hash-bound post-render record. Its
 deterministic, split-first development audit contains **204 structured
 trajectories**, **1,762 single-input task projections**, and **14 atomic counterfactual
 pairs**. Strict
@@ -47,8 +48,10 @@ families across eleven event types (**176 required catalog-review entries**).
 The project owner approved the exact pre-render packet, and the gated path generated
 **553 distinct render candidates**, **1,776 task examples**, and **18 corruption
 records**. Typed reconstruction and a separate read-only verifier both passed. The
-candidate remains `candidate_pending_postrender_review`: it is not approved training
-data until the project owner inspects and approves the complete post-render packet.
+project owner then approved the exact post-render packet on 2026-08-20. That approval
+is recorded separately so the generated candidate bytes and their historical
+`candidate_pending_postrender_review` status remain immutable. The candidate is now
+approved for local Phase 4 tokenizer/model work; it is not a public dataset release.
 The golden suite is still a draft pending separate human review and freeze.
 
 At implementation commit
@@ -57,13 +60,13 @@ Ruff formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 6
 on Python 3.12.11 in 297.78 seconds with 87.24% branch coverage. The same 649-test suite
 passed in staging in 307.07 seconds; the sdist/wheel build and isolated no-network
 artifact verification also passed. A fresh independent SHIP review passed 58 focused
-tests in 173.95 seconds. These gates establish the technical checkpoint, not post-render
-approval or a released corpus. Exact hashes and evolving status are
+tests in 173.95 seconds. Together with both human review records, these gates close
+Phase 3 locally; they do not establish a released corpus. Exact hashes and status are
 recorded in the implementation handoff.
 
 There is currently:
 
-- a generated but not yet post-render-approved development candidate;
+- an approved local Phase 3 development candidate that is not publicly released;
 - no trained tokenizer;
 - no trained model or checkpoint;
 - no measured model result or benchmark;

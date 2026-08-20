@@ -161,7 +161,17 @@ These measured inventory values and a passing automated report are not permissio
 train. The project owner must inspect the complete packet and record a separate
 post-render decision.
 
-Promotion creates a new status record; it never rewrites generated data. An approved
+Promotion creates a new status record; it never rewrites generated data. The project
+owner explicitly approved this exact packet on 2026-08-20 and instructed Phase 3
+closeout. The canonical record is the ignored local file
+`artifacts/review/postrender-review-record-v0.1.0.json`; its internal checksum is
+`e066d5944839423fdd6e49491dfa5b57867b0c753ac465afb4ac196e7a87958d`
+and its raw-file SHA-256 is
+`001eca9925d9d6c5b8a50c9bd524cbe990b17b6a675b53200f16cf379d9b7af7`.
+Strict re-parsing and `verify_review_record(..., require_approved=True)` passed against
+the unchanged post-render packet. The candidate's embedded
+`candidate_pending_postrender_review` value is intentionally retained as historical
+generation state; the separate approval record closes the gate. An approved
 development candidate is still not a public release, training result, operational
 dataset, or the later 5K–10K experimental pilot tier.
 

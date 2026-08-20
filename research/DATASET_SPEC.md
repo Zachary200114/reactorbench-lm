@@ -1,9 +1,9 @@
 # ReactorBench-LM dataset specification
 
-Status: Phase 3 is technically complete at the mandatory project-owner pre-render
-review checkpoint, and the intended-repository verification gate passed.
-Developmental structured projections and split manifests exist; no real owner-approved
-narrative candidate, tokenizer, or model exists.
+Status: Phase 3 is complete locally, the intended-repository verification gate passed,
+and the exact pre-render and post-render packets were approved by the project owner.
+The approved development candidate is not a public release; no tokenizer or model
+exists.
 
 ## 1. Dataset purpose
 
@@ -460,11 +460,10 @@ its quality report. Automated test-only approval fixtures are never human eviden
 ## 9.1 Development checkpoint and artifact policy
 
 The current configuration fixes 204 structured trajectories, 1,762 single-input
-projections, and 14 counterfactual comparisons. When exercised under an explicit
-test-only approval fixture, the full path creates 553 distinct render candidates, 1,776
-task examples, and 18 bounded corruption records. No real owner approval exists, so
-those test counts do not identify an approved corpus and no candidate artifact is
-committed for training.
+projections, and 14 counterfactual comparisons. The approved local path creates 553
+distinct render candidates, 1,776 task examples, and 18 bounded corruption records.
+The candidate and both review records are ignored local artifacts rather than committed
+or distributed data.
 
 With placeholder test commit `abcdef0`, the corrected fixture audits all 1,776 task
 records and 1,977,422 rendered UTF-8 bytes. It reports 402 contingencies (358
@@ -492,14 +491,21 @@ Ruff formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 6
 on Python 3.12.11 in 297.78 seconds with 87.24% branch coverage; build and isolated
 no-network artifact verification also passed. The exact config, structured, split,
 schema, catalog, authored-surface, guard, target-inventory, packet, and package hashes
-are recorded in `docs/IMPLEMENTATION_STATUS.md`. The strict-parsed unapproved packet is
+are recorded in `docs/IMPLEMENTATION_STATUS.md`. The strict-parsed pre-render packet is
 the ignored 896,151-byte local file
 `artifacts/review/catalog-review-v0.1.0.json`, with raw-file SHA-256
 `2bc3e226e202a4c5c9baddaef512cf195e6086db7194b158856a782bb880dfce`
 and internal checksum
 `faa50900db2890b3bc167a44aabcb416b0a3eaa756cb578978f8e58fc3a24b8a`.
-The real candidate, quality report, post-render packet, and candidate artifact manifest
-have intentionally not been created because mandatory owner review remains open.
+The real candidate, passing quality report, post-render packet, and candidate artifact
+manifest were created and typed-verified without overwrite. The project owner approved
+the exact post-render packet on 2026-08-20. The separate approval record has internal
+checksum
+`e066d5944839423fdd6e49491dfa5b57867b0c753ac465afb4ac196e7a87958d`
+and raw-file SHA-256
+`001eca9925d9d6c5b8a50c9bd524cbe990b17b6a675b53200f16cf379d9b7af7`.
+It closes Phase 3 for local tokenizer/model work without rewriting the candidate or
+granting public distribution permission.
 
 ## 10. Data documentation
 

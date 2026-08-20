@@ -1,9 +1,9 @@
 # ReactorBench-LM Phase 3 development candidate
 
-Status: the exact pre-render packet was approved by the project owner, and the real
-local Phase 3 development candidate was generated and independently typed-verified.
-It remains `candidate_pending_postrender_review`; this document is not an approved
-dataset release or a measured model result.
+Status: the exact pre-render and post-render packets were approved by the project
+owner, and the real local Phase 3 development candidate was generated and independently
+typed-verified. Phase 3 is complete locally. This candidate is approved for local
+tokenizer/model work; it is not a public dataset release or a measured model result.
 
 ## Purpose
 
@@ -27,8 +27,8 @@ projections, and 14 atomic counterfactual pairs. Its trajectory distribution is 
 records are assembled separately.
 
 The approved local candidate contains 553 distinct render candidates, 1,776 task
-examples, and 18 bounded corruption records. Its automated quality report passed, but
-the complete rendered inventory still requires project-owner review. The formal
+examples, and 18 bounded corruption records. Its automated quality report passed, and
+the project owner approved its complete rendered inventory on 2026-08-20. The formal
 5K–10K experimental pilot is a later phase and is not represented here.
 
 The development matrix uses disjoint seed cohorts, split-first renderer and alias
@@ -157,8 +157,13 @@ quality-report checksum
 `2549e0b0d4512424959f687834208c5572ceae98dfb2ae2edc2274268fac26e6`,
 and post-render packet checksum
 `b0d4c3cf11a2877e030d062efed0bebe1e53c5c87d7218402beb9bfe19f86684`.
-Any bound change invalidates the approval. The candidate is not training-approved until
-the project owner completes the separate post-render review.
+The separate post-render approval record has internal checksum
+`e066d5944839423fdd6e49491dfa5b57867b0c753ac465afb4ac196e7a87958d`
+and raw-file SHA-256
+`001eca9925d9d6c5b8a50c9bd524cbe990b17b6a675b53200f16cf379d9b7af7`.
+Any bound change invalidates the approval. Promotion did not rewrite the candidate;
+its embedded `candidate_pending_postrender_review` value records its generation-time
+state, while the separate immutable review record authorizes local Phase 4 use.
 
 With placeholder test commit `abcdef0`, the corrected fixture audits all 1,776 task
 records and 1,977,422 rendered UTF-8 bytes. It reports 402 contingencies (358
@@ -197,8 +202,7 @@ The denylist, pattern scan, and copied-span fingerprints are deliberately
 non-exhaustive. A clean report is evidence for a reviewer, not proof that the text is
 safe or source-free. The `project-owner` must review the complete bound renderer,
 corruption, target, catalog, and guard packet before rendering, then separately review
-the full post-render packet. The first review is approved; the generated candidate is
-still awaiting the second review.
+the full post-render packet. Both reviews were completed and approved on 2026-08-20.
 
 Known limitations include synthetic grammar artifacts, a small developmental sample,
 low-severity-dominant simulator coverage, no training-compound examples, an unfrozen
