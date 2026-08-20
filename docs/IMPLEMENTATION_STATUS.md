@@ -1,215 +1,200 @@
 # ReactorBench-LM implementation status
 
 Last updated: 2026-08-20 America/New_York
-Current phase: **Phase 4 complete locally — tokenizer and model-correctness gate passed**
-Current objective: preserve the verified Phase 4 evidence and begin Phase 5 only with a
-read-only baseline/pilot design audit.
-Checkpoint reason: the approved Phase 3 candidate produced a project-trained tokenizer
-and a from-scratch smoke Transformer that passed the preregistered overfit, causal-mask,
-deterministic-evaluation, and safe checkpoint reload gates.
+Current phase: **Phase 5 complete locally — baselines, MPS pilot, and pre-test freeze passed**
+Current objective: preserve the verified Phase 5 evidence and begin Phase 6 only with a
+read-only golden/test-manifest and evaluator-contract audit.
+Checkpoint reason: every preregistered Phase 5 comparison completed, both Transformer
+tiers passed their learning and safe-reload gates, and pilot-informed Phase 6 settings
+were frozen before any test access.
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Completed work
 
 - Phases 0–2 and the developmental G01–G15 Aster Station generator are complete locally.
-- Phase 3 is complete locally. Its project-owner-approved candidate contains 204 audit
-  trajectories, 1,762 single-input projections, 14 counterfactual pairs, 553 distinct
-  rendered candidates, 1,776 task examples, and 18 bounded corruption records. It is
-  approved for local research use, not public release.
-- The tokenizer corpus is derived only from the approved `iid_train` render split: 195
-  documents, 685,978 UTF-8 bytes, corpus SHA-256
-  `e8433ec549df79d274ebee6ffa32f1fe7810df3db256a7db5bf817dac4ccdc6e`.
-  Validation, IID test, template, component, severity, composition, counterfactual, and
-  noise holdouts never enter tokenizer training.
-- A deterministic project SentencePiece BPE tokenizer was trained with vocabulary 2,048,
-  identity normalization, byte fallback, and fixed IDs `UNK=0`, `BOS=1`, `EOS=2`,
-  `PAD=3`. Project symbols are `<|prompt|>`, `<|target|>`, and `<|sep|>`.
-- The decoder-only causal Transformer is project-defined from PyTorch primitives: token
-  and learned position embeddings, explicit multi-head masked self-attention, pre-norm
-  residual blocks, GELU feed-forward layers, tied output embeddings, and random normal
-  initialization. No pretrained weight, hosted LLM, model hub, or remote data source is
-  used.
-- Reviewed model tiers calculate to exactly 675,328 smoke parameters, 5,328,896 pilot
-  parameters, and 15,179,520 main parameters with the 2,048-token vocabulary.
-- The real Phase 4 smoke run used four approved training documents, batch size four,
-  context 128, 508 scored target tokens per step, seed 4404, and 300 CPU steps. Loss
-  changed from `7.6617279052734375` to `0.011601113714277744`, a measured reduction of
-  `0.998485835850906`. The timed loop took `3.8152835840010084` seconds and measured
-  `39,944.60612025628` target tokens/second.
-- The smoke run passed future-token isolation, exact one-token target shifting,
-  padding-mask loss exclusion, deterministic repeated evaluation, tiny-shard overfit,
-  safetensors save/reload logit equality, checksum verification, and non-overwriting
-  artifact publication.
-- The checkpoint loader accepts only the fixed `manifest.json` plus
-  `model.safetensors` inventory. It rejects symlinks, unknown files, oversized data,
-  wrong tokenizer bindings, manifest mismatch, and weight checksum/size mismatch. It
-  never accepts pickle or a user-supplied checkpoint path through the Phase 4 CLI.
-- `make phase4-smoke`, `make phase4-verify`, and `make reproduce-smoke` are implemented.
-  The config-selected run is local and ignored by Git; it does not publish or deploy.
+- Phase 3 is complete locally. Its owner-approved candidate contains 204 audit
+  trajectories, 1,762 single-input projections, 14 counterfactual pairs, 553 rendered
+  candidates, 1,776 task examples, and 18 bounded corruption records.
+- Phase 4 is complete locally: a project-trained 2,048-token SentencePiece BPE and a
+  from-scratch decoder-only causal Transformer passed tokenizer isolation, causal mask,
+  shifted-target, padding, deterministic evaluation, tiny-shard overfit, safetensors,
+  and independent smoke-verification gates.
+- Phase 5 behavior, serialization, validation-only selection, training schedules,
+  resource limits, and learning thresholds were preregistered before fitting. Only 630
+  `iid_train` examples fit models; only 252 `iid_validation` examples selected
+  checkpoints or informed the Phase 6 freeze. Prohibited-split count is zero.
+- Implemented majority/frequency, deterministic rules, word/token trigram,
+  project-defined bag-of-words softmax regression, project-defined GRU, smaller
+  Transformer, and pilot Transformer comparisons.
+- The first pilot invocation stopped atomically before fitting because complete targets
+  exceeded the Phase 4 128/256 contexts. It wrote no output. Before any result existed,
+  both Phase 5 contexts were fixed at 512 to preserve every target; width, depth, seeds,
+  optimizer, and step counts remained unchanged.
+- The real run completed 10 baseline result rows, a 300-step 724,480-parameter smaller
+  Transformer, and a 500-step 5,394,432-parameter pilot Transformer on Apple MPS. An
+  independent invocation re-parsed, re-hashed, and reloaded both checkpoints.
+- A strict packaged `phase6-main-v0.1.0.toml` now freezes the 15,179,520-parameter
+  8×384 model, context 512, batch four, 1,500 MPS steps, E0–E7 matrix, seeded bootstrap,
+  validation selection, and numerical capability gates before test evaluation.
+
+## Measured Phase 5 results
+
+- Majority fault/action accuracy: 0.3448 / 0.3448; macro-F1: 0.0641 / 0.0641.
+- Deterministic-rule fault/action accuracy: 0.6379 / 0.4828; macro-F1: 0.6626 / 0.4132.
+- Next-event majority and word-trigram macro-F1: 0.4444 and 0.8667.
+- Token trigram validation NLL/perplexity: 1.0955 / 2.9906.
+- Bag-of-words fault accuracy/macro-F1: 0.5000 / 0.2610.
+- GRU fault accuracy/macro-F1: 0.6034 / 0.5050; GRU next-event accuracy/macro-F1:
+  1.0000 / 1.0000 on only 20 validation examples.
+- Smaller Transformer initial/selected validation NLL: 7.6093 / 0.5343, a 92.98%
+  reduction. It selected step 300, ran 20.27 seconds, measured 15,335.62 target
+  tokens/second, and wrote 3,949,312-byte weights.
+- Pilot Transformer initial/selected validation NLL: 7.7257 / 0.1593, a 97.94%
+  reduction. It selected step 500, ran 268.70 seconds, measured 1,909.38 target
+  tokens/second, and wrote 23,682,552-byte weights.
+- Pilot peak current/driver MPS allocation: 143,629,312 / 3,401,547,776 bytes. Recorded
+  process peak RSS: 994,131,968 bytes. Thermal throttling was not observable.
+- Context 512 preserved every complete target but truncated the oldest prompt prefix in
+  491/630 training and 198/252 validation examples. This is a material limitation.
 
 ## Files created or changed
 
-- Model code: `src/reactorbench/model/`.
-- Tokenizer/corpus boundary: `src/reactorbench/tokenizer/`.
-- Smoke orchestration and narrow CLI: `src/reactorbench/training/`.
-- Reviewed config: `configs/model/phase4-smoke-v0.1.0.toml`.
-- Locked dependencies: `pyproject.toml` and `uv.lock` now include NumPy, PyTorch,
-  SentencePiece, and safetensors.
-- Package resources/build verification: `src/reactorbench/resources.py`,
-  `tests/contract/test_package_resources.py`, and
-  `tests/contract/verify_distribution_artifacts.py`.
-- Phase 4 unit tests: `tests/unit/test_phase4_*.py` and
-  `tests/unit/test_transformer.py`.
-- Phase 4 evidence: `docs/model/PHASE4_SMOKE.md` plus the reconciled README,
-  architecture, security, checklist, decision, and reproducibility documents.
+- Phase 5 evaluation: `src/reactorbench/evaluation/`.
+- Pilot runner/verifier and CLI: `src/reactorbench/training/pilot.py`, training package,
+  and `Makefile`.
+- Reviewed contracts: `configs/experiments/phase5-pilot-v0.1.0.toml` and
+  `configs/experiments/phase6-main-v0.1.0.toml`.
+- Phase 5 tests: `tests/unit/test_phase5_*.py` plus package/artifact contract updates.
+- Evidence: `docs/model/PHASE5_PILOT.md` and reconciled README, architecture, security,
+  research, checklist, acceptance, decision, and reproducibility documents.
+- Local ignored evidence: `runs/phase5-pilot-v0.1.0/`.
 
 ## Tests and checks run
 
-- Python baseline: CPython 3.12.11.
-- Intended-repository final suite: **677 passed in 300.44 seconds** with **85.37%
-  branch coverage**; the required floor remains 85% and was not weakened.
-- Ruff format check: **123 files formatted**. Ruff lint: passed.
-- Strict mypy: **96 source files**, no issues.
+- Python: CPython 3.12.11.
+- Intended-repository final suite: **687 passed in 299.71 seconds** with **85.07%
+  branch coverage**. The required 85% floor was not weakened.
+- Ruff format check: **136 files formatted**. Ruff lint: passed.
+- Strict mypy: **107 source files**, no issues.
 - `git diff --check`: passed.
-- Compile check passed with `PYTHONPYCACHEPREFIX` redirected to `/private/tmp`; the
-  initial compile-only attempt was blocked only because the sandbox disallowed writing
-  external-repository `__pycache__` files.
-- Wheel and sdist build passed. Isolated local wheel install and byte-for-byte packaged
-  config/schema/guard resource verification passed.
-- Real smoke run status: `phase4_smoke_passed`. A separate read-only
-  `verify-smoke` invocation re-parsed, re-hashed, reloaded, and reproduced the exact
-  evaluation-logit hash.
-- PyTorch 2.13.0 reports MPS support compiled in, but MPS was unavailable to the current
-  sandboxed process. No MPS throughput or memory result is claimed; Phase 5 must measure
-  the actual local backend before selecting pilot settings.
+- Independent `verify-pilot`: `phase5_pilot_passed`, 10 baseline rows, selected pilot
+  validation NLL 0.15928723867008093, exact report checksum reproduced.
+- Wheel and sdist build passed. Isolated no-network wheel install and byte-for-byte
+  packaged config/schema/guard verification passed, including both experiment configs.
 
 ## Decisions made
 
-- Use deterministic project-trained SentencePiece BPE with vocabulary 2,048 for the
-  Phase 4 path; an optional custom BPE comparison remains deferred.
-- Keep smoke training on CPU for deterministic correctness evidence. MPS is a measured
-  Phase 5 benchmark, not a Phase 4 assumption.
-- Keep the smoke/pilot/main configurations at 2×128, 6×256, and 8×384 respectively,
-  with contexts 128/256/512. Pilot evidence may still change provisional main settings
-  before the experiment freeze.
-- Store model weights only as safetensors and bind the checkpoint to its tokenizer,
-  approved corpus/candidate, source commit, configuration, seed, and checksums.
-- Bind the smoke report to the exact `uv.lock` hash and record NumPy, Pydantic, PyTorch,
-  SentencePiece, and safetensors versions.
-- Tiny-shard overfit is a correctness proof, not evidence of generalization or model
-  usefulness. No Phase 5 baseline, validation, holdout, or benchmark claim has been
-  made.
+- Preserve complete targets and expand only Phase 5 learned position embeddings to
+  context 512 after the first pre-fit sizing failure.
+- Report simple-baseline wins honestly; added model complexity is not automatic value.
+- Keep the main architecture at 8 layers, width 384, 8 heads, context 512, exactly
+  15,179,520 parameters. Use batch four, fixed seed 6601, 1,500 MPS steps, no silent
+  CPU fallback, and validation-only checkpoint selection.
+- Freeze the numerical and E0–E7 experiment contract from validation evidence before
+  test access. Composition has no pass threshold and must be reported even when poor.
+- Keep checkpoints safetensors-only and bind reports/configs/checkpoints to data,
+  tokenizer, dependency lock, and source checksums.
 
 ## Assumptions
 
 - All model inputs remain project-authored, synthetic, fictional, normalized, and
   non-operational.
-- The Phase 3 candidate and both owner approvals remain immutable local inputs.
+- The approved Phase 3 candidate/reviews, Phase 4 tokenizer, and Phase 5 run remain
+  immutable local inputs.
 - Exact account-usage percentage is not observable. No claim is made that a 1% account
-  cutoff was measured; conservative phase checkpointing was used.
+  cutoff was measured; conservative phase checkpoints were used.
 
 ## Known failures and residual risks
 
-- MPS is compiled into the installed Torch build but unavailable inside this process;
-  local MPS operation, memory, thermal throttling, and throughput are unmeasured.
-- The smoke model deliberately memorizes four short training prefixes. It has not been
-  evaluated on validation, IID test, compositional, robustness, behavioral, abstention,
-  or golden cases.
-- The golden suite, dataset/task schemas, and experiment thresholds remain
-  developmental and unfrozen.
-- The Phase 3 content guard remains non-exhaustive. Human approvals reduce risk but do
-  not prove the absence of all prohibited or source-derived material.
+- The 512-token window truncates substantial prompt prefixes, although never targets.
+  Phase 6 must classify insufficient-context failures and cannot conceal this rate.
+- Both Transformer validation curves selected the final scheduled step. The pilot was
+  nearly flat at steps 450–500, but longer-run behavior is still unknown.
+- The perfect GRU next-event score uses only 20 validation examples and is not a test or
+  generalization result. Rules outperform the GRU on current fault-family macro-F1.
+- Apple MPS execution is not guaranteed bitwise deterministic, and thermal throttling
+  is not directly observable.
+- No IID test, strict holdout, robustness, compositional, calibration, abstention,
+  behavioral, or golden-suite model metric has been accessed.
+- Golden scenarios remain developmental pending final human review. The Phase 3 content
+  guard is non-exhaustive; human approvals reduce but do not eliminate risk.
 - Code and data licenses remain `TBD`, blocking distribution but not local work.
-- The superseded first smoke run was preserved under
-  `runs/phase4-smoke-v0.1.0-pre-lock-binding-882c8d9`; it is not the config-selected
-  final artifact and must not be cited.
 
 ## Open blockers
 
-- No blocker remains for beginning a read-only Phase 5 baseline/pilot audit.
-- Before pilot training, preregister exact baseline behavior, task serialization,
-  validation-only checkpoint selection, throughput/memory measurement, stopping rules,
-  and pilot acceptance thresholds.
-- Before main experiments, freeze the approved manifests, golden cases, split/task
-  contracts, acceptance thresholds, and test-use policy.
-- Before distribution, choose code/data licenses and complete release/SBOM/security
+- Before Phase 6 main/test work: complete and record human review for every golden
+  scenario; freeze exact test manifests and checksums; implement the E0–E7 evaluator,
+  decoding, calibration, abstention, bootstrap, ablation, and error-artifact contracts;
+  then reverify the Phase 5 chain.
+- Phase 6 may begin with read-only/design work, but main training and test access must
+  not begin until those gates pass.
+- Before distribution: choose code/data licenses and complete release/SBOM/security
   gates. GitHub push and Vercel deployment remain owner-managed and unauthorized here.
 
 ## Uncommitted work
 
-- No implementation code is uncommitted. This documentation reconciliation is the
-  final atomic Phase 4 closeout edit; the expected handoff state after its commit is a
-  clean tracked worktree.
-- Approved Phase 3 data/review artifacts and Phase 4 run artifacts remain ignored local
-  evidence by design. They are not deleted, published, or added to Git.
+- Expected handoff state after the documentation closeout commit: no tracked
+  modifications. Phase 3–5 data/run artifacts remain ignored local evidence by design.
+- No artifact was deleted, pushed, published, or deployed.
 
 ## Repository state
 
-- Phase 3 closeout commit: `1d2401b8a56ae06b151b70d4cd912547af77f2c0`.
-- Phase 4 implementation commit: `882c8d9c13a62373f45080864f595748e2bc1db9`.
-- Phase 4 dependency-provenance hardening commit:
-  `f636f2b2b9f7f5915bef78903611aa047aaecc30`.
+- Phase 5 preregistration commit: `566346d`.
+- Phase 5 implementation commit: `04652092859a3dce75a10eb9e68d8bc9431c667d`.
+- Complete-target sizing correction/source commit:
+  `a2c180ec35e1c916f4e5068a7c932c5d6d2fec18`.
+- Phase 5 evidence and Phase 6 freeze commit:
+  `a58abf4e8c4c3ef0f629fae3a6045f03fb49ae94`.
 - Branch: `codex/foundation`.
 - No Git remote, push, publication, or deployment exists.
 
 ## Immediate next step
 
-Begin Phase 5 with a read-only audit. Verify the Phase 4 run, then preregister baseline
-contracts and a bounded pilot benchmark before implementing or training anything. Do
-not run test splits, main training, inference, or UI work.
+Begin Phase 6 with a read-only freeze audit. Verify the Phase 5 report, enumerate the
+remaining golden/test-manifest prerequisites, and define acceptance tests for the
+evaluator before implementing or running main/test experiments. Do not repeat Phase 5,
+start training, access test metrics, or build the UI.
 
 ## Exact recommended next command
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 git status --short --branch
-.venv/bin/python -m reactorbench.training verify-smoke \
-  --config configs/model/phase4-smoke-v0.1.0.toml
+.venv/bin/python -m reactorbench.training verify-pilot \
+  --config configs/experiments/phase5-pilot-v0.1.0.toml
 ```
 
 ## Relevant artifacts and configuration
 
-- Phase 4 config: `configs/model/phase4-smoke-v0.1.0.toml`
-- Phase 4 config canonical SHA-256:
-  `af55961930cf856e9953d9b27f2d3f270307bc3bb55e60e73bd31b53cae4bee9`
-- Phase 4 config raw SHA-256:
-  `05b73499995d13073942f6396d37401fe34c8fab100d9ce9406d94fb6bef439c`
-- Dependency lock raw SHA-256:
-  `dc09fe5e44a7a08f314558b92776f2ca77153842770524ea1818c6a41c6269e6`
-- Approved Phase 3 candidate bundle SHA-256:
+- Phase 5 config canonical/raw SHA-256:
+  `5e75ccc0c5dfab1ba1a34c37ba490ff55b53c49d6596d956efd037369bee7bc3` /
+  `84a4dfef27bdb30f6ab36cf974dd7b059bc30dc36eb93f6d5db1cc6db8a8868f`
+- Phase 5 report internal/raw SHA-256:
+  `5c21a4ff93701cdaa73e59e5b9a488cc171009dd1c35ac1f2a234dc7db029ffc` /
+  `67d89bf24ea6b3d739b29c4253d7f9cd53843096750961e43d0c2033682eb28a`
+- Experiment inventory SHA-256:
+  `94b8ea55d804c7a48726a3a135b89aea5f15a471d0b84bb1d19b947d09015fe0`
+- Smaller checkpoint manifest/weights SHA-256:
+  `917425dad7c6995cb99cc7bc19fc821bbd921dbd98931ee2efd8b502748495ce` /
+  `d2a0bd783d82dce684742e40de88d3c8f325900cc65d086f3764867ff0355318`
+- Pilot checkpoint manifest/weights SHA-256:
+  `8d4b93d29cd1c4becf2062cff8e3eb810259601d1685eb565ced5f5382da2daa` /
+  `2b2b60205e77ddf8cedf8c41bfa0761814eb82eeef51db2bb8d586fe5afd319f`
+- Phase 6 config canonical/raw SHA-256:
+  `d50089cd85863a411e93417df6448110e2d021bf96547f7e6ae471e880c4ab1c` /
+  `0dbbab59962fac4f4a90c981a613e6b223eacd7c21f77550339c64f78ed989cc`
+- Dataset candidate SHA-256:
   `3bba04bdb2030425ef67845332540fa2d148d0a318ab1d9e658f52bb890bf10c`
-- Approved post-render review record internal SHA-256:
-  `e066d5944839423fdd6e49491dfa5b57867b0c753ac465afb4ac196e7a87958d`
-- Training-corpus SHA-256:
-  `e8433ec549df79d274ebee6ffa32f1fe7810df3db256a7db5bf817dac4ccdc6e`
-- Final run directory (ignored): `runs/phase4-smoke-v0.1.0`
-- Tokenizer manifest internal SHA-256:
+- Tokenizer manifest SHA-256:
   `ef80afa52030c764598663b0f51b90e7b753b91377b47b4a5648d729e0011ef8`
-- Tokenizer model SHA-256 / size:
-  `b2ced4e9699f019a053516c9ff4a6c698d1bd17f9b070632ac3e03b565a2af6c`
-  / 33,586 bytes.
-- Tokenizer vocabulary SHA-256 / size:
-  `a1eb163398d042f2d5741d2a96fa2520a879a3bb887c6ab028889ea112a02e91`
-  / 26,693 bytes.
-- Checkpoint manifest internal SHA-256:
-  `0d969c046e95f76c270b6f6d01a8331ef540a2bf52ab2d15ac57b566c697260e`
-- Safetensors weights SHA-256 / size:
-  `f085fff20bfe14df785b23a43630516228890aa38868cafb3ef478ac30cac241`
-  / 3,752,704 bytes.
-- Smoke input SHA-256:
-  `52cfcc1b5e288c85d0aac6f075f14e216397f20d2082cc77f10f2d940a1f0548`
-- Evaluation-logit SHA-256:
-  `e1f726f6a89e6dd987c30f496008a49d2c3d74af672444097f92c91975fc2d5a`
-- Smoke report internal SHA-256:
-  `b2b28c6b4d95661ef67698f5a2eb4752c2c5f8d26c7541a503f3e71ddecd4683`
-- Smoke report raw SHA-256:
-  `9be65be363bcc8b02bd04b49ca1dd08615f22fd5eac615fa1d29239674fa095b`
-- Built wheel SHA-256 / size:
-  `74507469fc60404245c29ca20642a572bdb5d3c7a7f8f4a0f393385b127723b4`
-  / 207,751 bytes.
-- Built source distribution SHA-256 / size:
-  `b7cd43432ada840cccfdc4772d88de295029bf4bffb18a15466822c957fbc024`
-  / 164,019 bytes.
+- Dependency lock SHA-256:
+  `dc09fe5e44a7a08f314558b92776f2ca77153842770524ea1818c6a41c6269e6`
+- Final wheel SHA-256 / size:
+  `94b0d4bf210eb4ed61d6dcccbd35271685b029a0af7bd78dce9ef44a0b085ac1` /
+  230,963 bytes.
+- Final sdist SHA-256 / size:
+  `dcc4753389e07bb99422f4655fc02dde3b65a6acd11860c003881487f7682199` /
+  180,303 bytes.
 
 ## Exact resume prompt
 
