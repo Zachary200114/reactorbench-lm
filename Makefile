@@ -2,7 +2,7 @@ UV ?= uv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review
+.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke
 
 help: ## Show the available development commands.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -39,3 +39,11 @@ phase3-audit: ## Build the structured Phase 3 graph in memory and print its audi
 
 phase3-prepare-review: ## Print the hash-bound pre-render catalog review packet; does not approve it.
 	$(UV) run --frozen python -m reactorbench.dataset prepare-review --config configs/dataset/development-v0.1.0.toml --generator-commit "$$(git rev-parse --verify HEAD)"
+
+phase4-smoke: ## Train the project tokenizer and prove the smoke model can overfit a tiny shard.
+	$(UV) run --frozen python -m reactorbench.training run-smoke --config configs/model/phase4-smoke-v0.1.0.toml --source-commit "$$(git rev-parse --verify HEAD)"
+
+phase4-verify: ## Independently verify the tokenizer, safetensors checkpoint, and smoke report.
+	$(UV) run --frozen python -m reactorbench.training verify-smoke --config configs/model/phase4-smoke-v0.1.0.toml
+
+reproduce-smoke: phase4-smoke ## Reproduce the Phase 4 smoke milestone in a clean checkout.
