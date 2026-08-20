@@ -12,7 +12,7 @@ Aster Station: a wholly fictional causal environment.
 
 ## Current status
 
-Phases 0–4 are complete locally.
+Phases 0–5 are complete locally.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -27,22 +27,29 @@ Phases 0–4 are complete locally.
 - The project now contains a decoder-only causal Transformer implemented from PyTorch
   tensor/autograd primitives and initialized entirely from random weights. No hosted
   LLM, pretrained checkpoint, model hub, or remote corpus is used.
-- Exact tier sizes are 675,328 smoke parameters, 5,328,896 pilot parameters, and
-  15,179,520 provisional main parameters.
+- Phase 5 extended the two measured tier contexts to 512 tokens, producing 724,480
+  smaller and 5,394,432 pilot parameters; the frozen Phase 6 main tier is 15,179,520
+  parameters.
 - The real smoke model overfit four approved training prefixes in 300 CPU steps. Loss
   changed from 7.6617 to 0.01160, causal-mask and deterministic-evaluation probes
   passed, and a checksum-bound safetensors checkpoint reloaded with identical logits.
+- All preregistered Phase 5 baselines completed. The 300-step smaller Transformer
+  selected validation target NLL 0.5343; the 500-step pilot selected 0.1593. Both used
+  MPS and passed independent safetensors/report verification. No test split was opened.
+- Pilot-informed Phase 6 model, training, comparison, bootstrap, and numerical
+  acceptance gates are frozen in `configs/experiments/phase6-main-v0.1.0.toml` before
+  main or test evaluation.
 - The intended-repository gate passed 677 tests with 85.37% branch coverage, Ruff
   formatting/lint, strict mypy for 96 source files, package build, and isolated artifact
   verification.
 
-This is a model-correctness milestone, not an evaluation result. No baseline, validation,
-IID-test, compositional, robustness, behavioral, abstention, or golden-suite model
-claim exists yet. The golden suite and experimental thresholds remain unfrozen. There
-is no inference service or web interface.
+This is a validation-only pilot milestone, not a test-generalization result. No IID-test,
+compositional, robustness, behavioral, abstention, or golden-suite model claim exists
+yet. The golden suite remains unfrozen. There is no inference service or web interface.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
+[the baseline/pilot report](docs/model/PHASE5_PILOT.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -132,10 +139,17 @@ make phase4-verify
 The smoke write is non-overwriting. Exact evolving command outcomes belong in
 [the implementation status](docs/IMPLEMENTATION_STATUS.md).
 
+The existing Phase 5 artifact is independently verifiable with:
+
+```bash
+make phase5-verify
+```
+
 ## Documentation map
 
 - [Implementation status and resumable handoff](docs/IMPLEMENTATION_STATUS.md)
 - [Phase 4 tokenizer and smoke evidence](docs/model/PHASE4_SMOKE.md)
+- [Phase 5 baseline and pilot evidence](docs/model/PHASE5_PILOT.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)

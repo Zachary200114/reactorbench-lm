@@ -13,10 +13,12 @@ from reactorbench.dataset.contracts import PromptContinuationTarget
 from reactorbench.evaluation import (
     ExperimentExample,
     Phase5Config,
+    Phase6Config,
     batch_tensors,
     classification_metrics,
     examples_for_task,
     load_phase5_config,
+    load_phase6_config,
     materialize_experiment_data,
     supervised_causal_loss,
     tokenize_example,
@@ -34,6 +36,7 @@ from reactorbench.schemas.target import FaultDiagnosisTarget, NextActionTarget
 from reactorbench.tokenizer import ProjectTokenizer
 
 CONFIG_PATH = Path("configs/experiments/phase5-pilot-v0.1.0.toml")
+PHASE6_CONFIG_PATH = Path("configs/experiments/phase6-main-v0.1.0.toml")
 
 
 def _fake_tokenizer(monkeypatch: pytest.MonkeyPatch) -> ProjectTokenizer:
@@ -94,6 +97,35 @@ def test_phase5_config_rejects_coercion_unknown_fields_and_split_omissions() -> 
     payload["unknown"] = True
     with pytest.raises(ValidationError, match="extra_forbidden"):
         Phase5Config.model_validate(payload)
+
+
+def test_phase6_config_freezes_the_pilot_informed_contract() -> None:
+    config = load_phase6_config(PHASE6_CONFIG_PATH)
+
+    assert type(config) is Phase6Config
+    assert config.phase6.phase5_report_sha256 == (
+        "5c21a4ff93701cdaa73e59e5b9a488cc171009dd1c35ac1f2a234dc7db029ffc"
+    )
+    assert config.model.context_length == 512
+    assert config.training.steps == 1500
+    assert config.training.batch_size == 4
+    assert config.selection.maximum_selected_validation_nll == 0.50
+    assert config.evaluation.minimum_parse_success_rate == 0.99
+    assert config.evaluation.composition_has_pass_threshold is False
+    assert len(config.experiments.required) == 8
+
+
+def test_phase6_config_rejects_unknown_fields_and_schedule_drift() -> None:
+    config = load_phase6_config(PHASE6_CONFIG_PATH)
+    payload = config.model_dump(mode="python", round_trip=True)
+    cast(dict[str, object], payload["phase6"])["unknown"] = True
+    with pytest.raises(ValidationError):
+        Phase6Config.model_validate(payload)
+
+    payload = config.model_dump(mode="python", round_trip=True)
+    cast(dict[str, object], payload["training"])["steps"] = 1400
+    with pytest.raises(ValidationError, match="frozen pilot decision"):
+        Phase6Config.model_validate(payload)
 
 
 def test_classification_metrics_are_exact_and_checksum_bound() -> None:

@@ -1,7 +1,7 @@
 # ReactorBench-LM research dossier
 
-Status: **research complete; Phases 0–4 implemented and verified locally; Phase 5
-baseline/pilot audit is next**
+Status: **research complete; Phases 0–5 implemented and verified locally; Phase 6
+experiment/golden freeze is next**
 Prepared: 2026-08-18; implementation status reconciled 2026-08-20.
 
 ## Recommended project
@@ -83,23 +83,29 @@ parameters. The 300-step CPU smoke run passed causal masking, target shifting,
 padding, deterministic evaluation, tiny-shard overfit, and checksum-bound safetensors
 reload equality. The repository gate passed 677 tests with 85.37% branch coverage.
 
+Phase 5 completed all preregistered baselines plus 300-step smaller and 500-step pilot
+Transformers. The pilot used MPS, selected validation target NLL 0.1593, and produced a
+checksum-bound 23,682,552-byte safetensors checkpoint. Only train/validation views were
+used. The 15,179,520-parameter Phase 6 main configuration and numerical gates are now
+frozen before test access.
+
 Exact implementation state, measurements, limitations, and hashes are in
-`../docs/IMPLEMENTATION_STATUS.md` and `../docs/model/PHASE4_SMOKE.md`.
+`../docs/IMPLEMENTATION_STATUS.md`, `../docs/model/PHASE4_SMOKE.md`, and
+`../docs/model/PHASE5_PILOT.md`.
 
 ## Hardware evidence
 
 The target computer is an Apple M3 MacBook Air with 16 GB unified memory. Torch 2.13.0
-reports MPS compiled in, but MPS was unavailable to the current sandboxed process.
-Only the deterministic CPU smoke loop is measured. Phase 5 must benchmark actual local
-CPU/MPS throughput, memory, and throttling before pilot/main choices are frozen.
+ran the Phase 5 pilot on MPS. The pilot measured 1,909.38 target tokens/second and
+3,401,547,776 peak driver-allocated bytes. Thermal throttling is not directly
+observable and remains an explicit limitation.
 
 ## Immediate next step
 
-Begin Phase 5 with a read-only baseline and pilot audit. Preregister the exact majority,
-rule, n-gram, bag-of-words, optional recurrent, and smaller-Transformer contracts;
-validation-only checkpoint selection; task serialization; backend/memory/throughput
-measurements; stopping rules; and acceptance thresholds before implementing baselines
-or starting a pilot run. Do not use test splits, start main training, or build the UI.
+Begin Phase 6 with a read-only freeze audit. Complete the human golden-suite review,
+freeze test manifests, implement the E0–E7 evaluator/calibration/ablation contracts,
+and verify the approved Phase 5 artifact before main training or any test access. Do
+not build inference or UI work yet.
 
 GitHub pushing and Vercel deployment remain reserved for Zachary. Code/data licensing
 must be resolved before distribution.

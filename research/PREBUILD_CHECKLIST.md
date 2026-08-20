@@ -62,8 +62,8 @@ not public releases or the later pilot tier.
 - [x] Define the tokenizer corpus and special tokens. Only the approved `iid_train`
   render inventory is used; IDs are UNK/BOS/EOS/PAD 0/1/2/3 plus the three project
   prompt/target/separator symbols.
-- [ ] Fix baseline implementations and metrics before test evaluation.
-- [ ] Define validation-only checkpoint selection.
+- [x] Fix baseline implementations and metrics before test evaluation.
+- [x] Define validation-only checkpoint selection.
 
 ## Compute
 
@@ -71,21 +71,23 @@ not public releases or the later pilot tier.
   compiled in, but the backend is unavailable to the sandboxed process; no MPS
   performance claim is made.
 - [x] Run and independently verify smoke overfit on four approved training documents.
-- [ ] Run a 500–1,000-step pilot microbenchmark.
-- [ ] Record tokens/sec, peak memory, checkpoint size, and throttling behavior.
-- [ ] Estimate local main-run duration from measurements.
+- [x] Run a 500-step pilot benchmark after a 300-step smaller tier.
+- [x] Record tokens/sec, peak memory, checkpoint size, and the fact that thermal
+  throttling is not directly observable.
+- [x] Estimate local main-run feasibility from measurements and freeze batch four for
+  the 15,179,520-parameter main tier.
 - [ ] Set a cloud budget only if local training is impractical.
 
 ## Evaluation preregistration
 
-- [ ] Lock IID and strict holdout definitions.
-- [ ] Lock primary metrics for every task.
-- [ ] Lock E0–E7 experiment comparisons.
-- [ ] Define bootstrap confidence-interval procedure.
+- [x] Lock IID and strict holdout definitions in the Phase 3 manifest contract.
+- [x] Lock primary metrics for every task in the Phase 6 experiment contract.
+- [x] Lock E0–E7 experiment comparisons.
+- [x] Define the seeded 2,000-resample, 95% bootstrap confidence-interval procedure.
 - [ ] Freeze test splits before the main training run.
 - [ ] Commit to reporting negative results and IID-to-composition gaps.
-- [ ] Freeze pilot-informed numerical acceptance thresholds before main test evaluation.
-- [ ] Freeze majority, rule, n-gram, bag-of-words, recurrent, and smaller-Transformer baseline definitions.
+- [x] Freeze pilot-informed numerical acceptance thresholds before main test evaluation.
+- [x] Freeze majority, rule, n-gram, bag-of-words, recurrent, and smaller-Transformer baseline definitions.
 - [ ] Freeze the robustness/OOD suite and error taxonomy.
 - [ ] Complete and record human review for every golden scenario.
 - [ ] Define the public failure-gallery selection procedure.

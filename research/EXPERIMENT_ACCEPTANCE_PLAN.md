@@ -1,7 +1,7 @@
 # Experiment acceptance and error-analysis plan
 
-Status: pre-implementation measurement contract
-Rule: numerical thresholds will be frozen after pilot measurements and before final test evaluation
+Status: Phase 5 pilot measured; Phase 6 numerical thresholds frozen before test access
+Rule: changing a frozen threshold requires a versioned amendment and cannot use test results
 
 ## 1. Purpose
 
@@ -62,7 +62,10 @@ Never merge these into one headline number without also showing the individual r
 
 ## 6. Acceptance gates
 
-Exact numerical values remain `TBD-PILOT` until the pilot is complete. Before main training, replace them with justified frozen thresholds.
+The pilot-informed values below are frozen in
+`configs/experiments/phase6-main-v0.1.0.toml`. They are acceptance gates, not
+predictions. A failure remains a negative result and may not be repaired by changing a
+threshold after test access.
 
 | Gate | Required condition |
 |---|---|
@@ -76,6 +79,25 @@ Exact numerical values remain `TBD-PILOT` until the pilot is complete. Before ma
 | Output validity | structured responses meet the frozen parse/schema-validity threshold |
 | Reproducibility | smoke reproduction and release checksum verification pass in a clean environment |
 | Deployment parity | deployed inference matches offline checkpoint outputs within the declared deterministic tolerance |
+
+Numerical Phase 6 gates are:
+
+- selected validation NLL reduction at least 90%, selected NLL at most 0.50, and at
+  least 10% relative improvement over the smaller Transformer;
+- fault-family and next-action macro-F1 each at least 0.02 above the strongest
+  preregistered simple comparator on the same split;
+- next-event macro-F1 at least 0.90 and target-token NLL at most 75% of trigram NLL;
+- evidence F1 at least 0.70, parse success and schema validity each at least 0.99;
+- no-fault false-positive rate at most 0.10 and required-abstention accuracy at least
+  0.80;
+- expected calibration error at most 0.15 and selective risk at 80% coverage at most
+  0.20; and
+- no pass threshold for composition: the result and 95% interval must be reported even
+  when poor.
+
+Every proportion/score comparison uses 2,000 deterministic bootstrap resamples with
+seed 6602 and a 95% interval. Small supports and interval width must be shown; a point
+estimate cannot conceal uncertainty.
 
 If a gate fails, the result may still be published as a research finding, but the site and README must not imply that the capability passed.
 

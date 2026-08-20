@@ -1,6 +1,6 @@
 # Reproducibility, artifacts, and release plan
 
-Status: Phase 4 smoke reproduction implemented locally; main-experiment and release
+Status: Phase 4 smoke and Phase 5 pilot verification implemented locally; main-experiment and release
 levels remain planned.
 
 ## 1. Reproduction levels
@@ -35,6 +35,12 @@ was 3.815 seconds; end-to-end command time also includes candidate reconstructio
 tokenizer training, and I/O. Exact hashes and the scope of that timing are recorded in
 `docs/model/PHASE4_SMOKE.md`.
 
+Implemented Phase 5 commands are `make phase5-pilot` and the independent read-only
+`make phase5-verify`. The final local run completed every preregistered baseline, trained
+300-step smaller and 500-step pilot Transformers on MPS, and wrote two checksum-bound
+safetensors checkpoints plus a strict report. Exact timings, memory, curves, metrics,
+limitations, and hashes are in `docs/model/PHASE5_PILOT.md`.
+
 ### Level 3 — main experiment
 
 Document exact data generation, tokenizer training, model training, checkpoint selection, and evaluation commands. The full run may require substantial time, but every input configuration and artifact relationship must be available.
@@ -57,11 +63,13 @@ Git commit
 
 Every arrow must be machine-verifiable through identifiers or checksums.
 
-The implemented chain currently reaches the Phase 4 checkpoint: source commit,
+The implemented chain currently reaches the Phase 5 checkpoints: source commit,
 generator/candidate/reviews, `iid_train` corpus inventory, tokenizer, reviewed model
 config, dependency lock, smoke inputs, safetensors checkpoint, evaluation logits, and
-smoke report are checksum-bound. Evaluation, figures, deployment, and release
-identifiers remain absent rather than represented by placeholders.
+smoke report, baseline inventory, validation curves, MPS measurements, pilot
+checkpoints/report, and frozen Phase 6 config are checksum-bound. Test evaluation,
+figures, deployment, and release identifiers remain absent rather than represented by
+placeholders.
 
 ## 3. Required metadata
 

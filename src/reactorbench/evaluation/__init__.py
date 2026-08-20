@@ -1,6 +1,6 @@
 """Phase 5 baseline, serialization, and metric interfaces."""
 
-from .config import Phase5Config, load_phase5_config
+from .config import Phase5Config, Phase6Config, load_phase5_config, load_phase6_config
 from .data import ExperimentData, ExperimentExample, examples_for_task, materialize_experiment_data
 from .metrics import (
     ClassificationMetrics,
@@ -22,12 +22,14 @@ __all__ = [
     "ExperimentExample",
     "LanguageModelMetrics",
     "Phase5Config",
+    "Phase6Config",
     "TokenizedExample",
     "batch_tensors",
     "classification_metrics",
     "examples_for_task",
     "language_model_metrics",
     "load_phase5_config",
+    "load_phase6_config",
     "materialize_experiment_data",
     "serialized_parts",
     "supervised_causal_loss",

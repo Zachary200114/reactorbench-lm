@@ -383,9 +383,12 @@ push, or deployment has begun.
 
 ### Phase 5 — Baselines and pilot
 
-- Run preregistered baselines and the pilot model on fixed development splits.
-- Measure local throughput, memory, and learning behavior before freezing main
-  scale choices.
+- **Complete locally.** Preregistered baselines, a 300-step smaller Transformer, and a
+  500-step pilot Transformer ran only on fixed train/validation views. The pilot
+  selected validation NLL 0.1593 on MPS; measured compute and negative results are in
+  `docs/model/PHASE5_PILOT.md`.
+- The 15,179,520-parameter main tier, training schedule, E0–E7 matrix, bootstrap
+  method, and numerical gates are frozen before any test access.
 
 ### Phase 6 — Main experiments
 

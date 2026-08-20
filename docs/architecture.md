@@ -1,7 +1,7 @@
 # ReactorBench-LM architecture
 
-Status: Phases 0–4 implemented and verified locally on 2026-08-20. Phase 5 baselines
-and pilot training have not started.
+Status: Phases 0–5 implemented and verified locally on 2026-08-20. Phase 6 main
+evaluation has not started.
 
 ## Design objective
 
@@ -14,7 +14,7 @@ scenario definition -> latent Aster state -> observations -> canonical events
                     -> audit trajectory -> split-first task projection -> renderer
                     -> approved candidate -> IID-train tokenizer corpus
                     -> project tokenizer -> random-init causal Transformer
-                    -> future baselines/evaluation -> future narrow service/UI
+                    -> baselines/pilot -> future main evaluation -> future narrow service/UI
 ```
 
 ## Contracts and boundaries
@@ -32,7 +32,8 @@ scenario definition -> latent Aster state -> observations -> canonical events
 | Tokenizer | Train deterministic BPE from the selected project corpus | Load pretrained vocabulary/model assets |
 | Transformer | Learn next-token behavior from random initialization | Load pretrained weights or hosted-model behavior |
 | Checkpoint | Preserve data-only tensors and strict provenance | Deserialize pickle or accept arbitrary user paths |
-| Evaluation/UI | Future measured comparison and presentation | Use test results for training or claim operational utility |
+| Evaluation | Train-only fitting and validation-only selection with frozen test gates | Use test results for training, checkpoint choice, or threshold changes |
+| UI | Future measured presentation | Claim operational utility or render untrusted output as HTML |
 
 The generator, dataset, tokenizer, and checkpoint formats remain developmental
 `0.1.0` artifacts, not frozen version-1 releases.
@@ -91,10 +92,11 @@ Exact reviewed configurations are:
 | Tier | Layers | Width | Heads | Context | Parameters |
 |---|---:|---:|---:|---:|---:|
 | Smoke | 2 | 128 | 4 | 128 | 675,328 |
-| Pilot | 6 | 256 | 8 | 256 | 5,328,896 |
+| Phase 4 pilot definition | 6 | 256 | 8 | 256 | 5,328,896 |
+| Phase 5 measured pilot | 6 | 256 | 8 | 512 | 5,394,432 |
 | Main | 8 | 384 | 8 | 512 | 15,179,520 |
 
-Pilot/main values remain provisional until Phase 5 measurements.
+The Phase 6 main tier is frozen by the measured Phase 5 contract.
 
 ## Checkpoint and run boundary
 
@@ -112,6 +114,13 @@ binds the reviewed config, `uv.lock`, dependency versions, smoke inputs, and eva
 logits. Output is config-selected, atomic, and non-overwriting under
 `runs/phase4-smoke-v0.1.0`.
 
+`src/reactorbench/evaluation/` and `src/reactorbench/training/pilot.py` add the Phase 5
+boundary. They materialize only train/validation task records, run fixed baselines,
+mask Transformer loss to complete canonical targets, select checkpoints only by
+validation NLL, measure MPS resources, and publish two safetensors checkpoints plus a
+strict checksum-bound report under `runs/phase5-pilot-v0.1.0`. The verifier reconstructs
+the data/tokenizer/config/lock relationships before loading either checkpoint.
+
 ## Artifact lineage
 
 ```text
@@ -123,11 +132,12 @@ Git commit
   -> Transformer/training config and exact parameter count
   -> safetensors checkpoint manifest and weight hash
   -> smoke inputs, logits, report, dependency lock, and source commit
-  -> future evaluation artifacts
+  -> Phase 5 baseline metrics, validation curves, MPS measurements, and checkpoints
+  -> frozen Phase 6 configuration -> future test evaluation artifacts
 ```
 
-The final Phase 4 report and hashes are in
-`docs/model/PHASE4_SMOKE.md` and `docs/IMPLEMENTATION_STATUS.md`.
+The Phase 4/5 reports and hashes are in `docs/model/PHASE4_SMOKE.md`,
+`docs/model/PHASE5_PILOT.md`, and `docs/IMPLEMENTATION_STATUS.md`.
 
 ## Future service boundary
 

@@ -11,12 +11,14 @@ from reactorbench.resources import (
     default_config_resource,
     phase4_smoke_config_resource,
     phase5_pilot_config_resource,
+    phase6_main_config_resource,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "configs" / "default.toml"
 PHASE4_CONFIG_PATH = ROOT / "configs" / "model" / "phase4-smoke-v0.1.0.toml"
 PHASE5_CONFIG_PATH = ROOT / "configs" / "experiments" / "phase5-pilot-v0.1.0.toml"
+PHASE6_CONFIG_PATH = ROOT / "configs" / "experiments" / "phase6-main-v0.1.0.toml"
 SNAPSHOT_DIRECTORY = ROOT / "schemas" / "aster" / "v0"
 DATASET_SNAPSHOT_DIRECTORY = ROOT / "schemas" / "dataset" / "v0"
 DATASET_GUARD_DIRECTORY = ROOT / "src" / "reactorbench" / "dataset" / "resources"
@@ -48,6 +50,7 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
     assert default_config_resource().read_bytes() == CONFIG_PATH.read_bytes()
     assert phase4_smoke_config_resource().read_bytes() == PHASE4_CONFIG_PATH.read_bytes()
     assert phase5_pilot_config_resource().read_bytes() == PHASE5_CONFIG_PATH.read_bytes()
+    assert phase6_main_config_resource().read_bytes() == PHASE6_CONFIG_PATH.read_bytes()
     assert _resource_file_tree(canonical_schema_snapshot_resource()) == _source_file_tree(
         SNAPSHOT_DIRECTORY
     )
@@ -76,6 +79,9 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         ),
         "configs/experiments/phase5-pilot-v0.1.0.toml": (
             "reactorbench/_data/configs/experiments/phase5-pilot-v0.1.0.toml"
+        ),
+        "configs/experiments/phase6-main-v0.1.0.toml": (
+            "reactorbench/_data/configs/experiments/phase6-main-v0.1.0.toml"
         ),
         "schemas/aster/v0": "reactorbench/_data/schemas/aster/v0",
         "schemas/dataset/v0": "reactorbench/_data/schemas/dataset/v0",

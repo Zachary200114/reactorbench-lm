@@ -41,6 +41,7 @@ packages = ["src/reactorbench"]
 "configs/default.toml" = "reactorbench/_data/configs/default.toml"
 "configs/model/phase4-smoke-v0.1.0.toml" = "reactorbench/_data/configs/model/phase4-smoke-v0.1.0.toml"
 "configs/experiments/phase5-pilot-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase5-pilot-v0.1.0.toml"
+"configs/experiments/phase6-main-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase6-main-v0.1.0.toml"
 "schemas/aster/v0" = "reactorbench/_data/schemas/aster/v0"
 "schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
 

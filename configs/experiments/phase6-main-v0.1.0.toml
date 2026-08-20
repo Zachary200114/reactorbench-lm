@@ -1,0 +1,85 @@
+[phase6]
+contract_version = "0.1.0"
+phase4_config_path = "configs/model/phase4-smoke-v0.1.0.toml"
+phase5_report_path = "runs/phase5-pilot-v0.1.0/report.json"
+phase5_report_sha256 = "5c21a4ff93701cdaa73e59e5b9a488cc171009dd1c35ac1f2a234dc7db029ffc"
+phase5_config_sha256 = "5e75ccc0c5dfab1ba1a34c37ba490ff55b53c49d6596d956efd037369bee7bc3"
+run_root = "runs"
+run_name = "phase6-main-v0.1.0"
+
+[data]
+train_split = "iid_train"
+validation_split = "iid_validation"
+prohibited_splits = [
+  "iid_test",
+  "template_test",
+  "component_test",
+  "severity_test",
+  "composition_test",
+  "counterfactual_test",
+  "noise_test",
+]
+classification_tasks = ["fault_family", "next_action", "continue_log"]
+
+[model]
+model_version = "0.1.0"
+layers = 8
+width = 384
+heads = 8
+context_length = 512
+feed_forward_multiplier = 4
+dropout = 0.1
+tie_embeddings = true
+bias = true
+
+[training]
+seed = 6601
+device = "mps"
+allow_cpu_fallback = false
+steps = 1500
+batch_size = 4
+learning_rate = 0.00025
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+evaluation_interval = 100
+
+[selection]
+metric = "iid_validation_target_nll"
+direction = "lower"
+tie_break = "earlier_step"
+early_stopping = false
+minimum_validation_nll_reduction_fraction = 0.90
+maximum_selected_validation_nll = 0.50
+minimum_relative_nll_improvement_over_smaller = 0.10
+
+[evaluation]
+bootstrap_resamples = 2000
+bootstrap_seed = 6602
+confidence_level = 0.95
+minimum_fault_macro_f1_margin_over_best_simple = 0.02
+minimum_next_action_macro_f1_margin_over_best_simple = 0.02
+minimum_continue_log_macro_f1 = 0.90
+maximum_target_nll_fraction_of_trigram = 0.75
+minimum_evidence_f1 = 0.70
+minimum_parse_success_rate = 0.99
+minimum_schema_validity_rate = 0.99
+maximum_no_fault_false_positive_rate = 0.10
+minimum_required_abstention_accuracy = 0.80
+maximum_expected_calibration_error = 0.15
+selective_risk_coverage = 0.80
+maximum_selective_risk = 0.20
+composition_has_pass_threshold = false
+report_every_split_separately = true
+require_golden_suite_approval_before_test = true
+
+[experiments]
+required = [
+  "E0_simple_baselines",
+  "E1_recurrent_baselines",
+  "E2_smaller_transformer",
+  "E3_main_transformer",
+  "E4_event_order_ablation",
+  "E5_renderer_diversity_ablation",
+  "E6_abstention_ablation",
+  "E7_compound_training_ablation",
+]

@@ -36,6 +36,9 @@ def _expected_resource_files() -> dict[str, bytes]:
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase5-pilot-v0.1.0.toml": (
             ROOT / "configs" / "experiments" / "phase5-pilot-v0.1.0.toml"
         ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-main-v0.1.0.toml": (
+            ROOT / "configs" / "experiments" / "phase6-main-v0.1.0.toml"
+        ).read_bytes(),
     }
     for snapshot_family in ("aster", "dataset"):
         snapshot_root = ROOT / "schemas" / snapshot_family / "v0"
