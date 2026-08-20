@@ -33,6 +33,9 @@ def _expected_resource_files() -> dict[str, bytes]:
         f"{PACKAGE_DATA_PREFIX}/configs/model/phase4-smoke-v0.1.0.toml": (
             ROOT / "configs" / "model" / "phase4-smoke-v0.1.0.toml"
         ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase5-pilot-v0.1.0.toml": (
+            ROOT / "configs" / "experiments" / "phase5-pilot-v0.1.0.toml"
+        ).read_bytes(),
     }
     for snapshot_family in ("aster", "dataset"):
         snapshot_root = ROOT / "schemas" / snapshot_family / "v0"
@@ -124,6 +127,7 @@ from reactorbench.resources import (
     canonical_schema_snapshot_resource,
     default_config_resource,
     phase4_smoke_config_resource,
+    phase5_pilot_config_resource,
 )
 from reactorbench.schemas import load_snapshot, schema_documents
 
@@ -133,6 +137,8 @@ with as_file(default_config_resource()) as config_path:
     assert load_project_config(config_path).project_name == "ReactorBench-LM"
 with as_file(phase4_smoke_config_resource()) as config_path:
     assert config_path.read_bytes().startswith(b'[phase4]')
+with as_file(phase5_pilot_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'[phase5]')
 with as_file(canonical_schema_snapshot_resource()) as snapshot_path:
     documents, _manifest = load_snapshot(snapshot_path)
     assert documents == schema_documents()

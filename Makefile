@@ -2,7 +2,7 @@ UV ?= uv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke
+.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify
 
 help: ## Show the available development commands.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -47,3 +47,9 @@ phase4-verify: ## Independently verify the tokenizer, safetensors checkpoint, an
 	$(UV) run --frozen python -m reactorbench.training verify-smoke --config configs/model/phase4-smoke-v0.1.0.toml
 
 reproduce-smoke: phase4-smoke ## Reproduce the Phase 4 smoke milestone in a clean checkout.
+
+phase5-pilot: ## Run all preregistered baselines and the validation-selected pilot.
+	$(UV) run --frozen python -m reactorbench.training run-pilot --config configs/experiments/phase5-pilot-v0.1.0.toml --source-commit "$$(git rev-parse --verify HEAD)"
+
+phase5-verify: ## Verify the complete Phase 5 report and safe checkpoints.
+	$(UV) run --frozen python -m reactorbench.training verify-pilot --config configs/experiments/phase5-pilot-v0.1.0.toml

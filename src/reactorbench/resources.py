@@ -36,6 +36,12 @@ def phase4_smoke_config_resource() -> Traversable:
     return _reviewed_resource("configs", "model", "phase4-smoke-v0.1.0.toml", directory=False)
 
 
+def phase5_pilot_config_resource() -> Traversable:
+    """Return the reviewed Phase 5 baseline and pilot configuration."""
+
+    return _reviewed_resource("configs", "experiments", "phase5-pilot-v0.1.0.toml", directory=False)
+
+
 def canonical_schema_snapshot_resource() -> Traversable:
     """Return the current reviewed Aster schema snapshot directory as a resource."""
 
@@ -53,4 +59,5 @@ __all__ = [
     "canonical_schema_snapshot_resource",
     "default_config_resource",
     "phase4_smoke_config_resource",
+    "phase5_pilot_config_resource",
 ]
