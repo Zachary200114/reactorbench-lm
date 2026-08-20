@@ -100,6 +100,20 @@ _VALVE_DECISIVE_TICK = 6
 _VALVE_ACTION_TICK = 7
 _VALVE_LAG_DURATION_TICKS = 4
 _VALVE_MIN_DURATION = 8
+_TRANSFER_ONSET_TICK = 2
+_TRANSFER_THERMAL_TICK = 3
+_TRANSFER_STEAM_TICK = 4
+_TRANSFER_OUTPUT_TICK = 5
+_TRANSFER_LOAD_DECISION_TICK = 5
+_TRANSFER_LOAD_APPLY_TICK = 6
+_TRANSFER_MIN_DURATION = 8
+_FLOW_IMBALANCE_ONSET_TICK = 2
+_FLOW_IMBALANCE_INVENTORY_TICK = 3
+_FLOW_IMBALANCE_COMPARE_TICK = 4
+_FLOW_IMBALANCE_STEAM_TICK = 5
+_FLOW_IMBALANCE_OUTPUT_TICK = 6
+_FLOW_IMBALANCE_STABILIZE_APPLY_TICK = 7
+_FLOW_IMBALANCE_MIN_DURATION = 8
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -366,6 +380,122 @@ def build_pump_degradation_scenario(
             ScenarioAction(
                 decision_tick=_PUMP_LOAD_DECISION_TICK,
                 action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def _process_scenario_id(
+    *,
+    spec: AsterVariantSpec,
+    family: FaultFamily,
+    seed: int,
+    duration_ticks: int,
+    component_id: str,
+) -> str:
+    return (
+        f"{spec.plant_variant.value.lower()}-{family.value.lower().replace('_', '-')}-"
+        f"{seed}-{duration_ticks}-{_TRANSFER_ONSET_TICK}-low-{component_id}"
+    )
+
+
+def build_transfer_efficiency_loss_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    plant_variant: PlantVariant = PlantVariant.ASTER_A,
+) -> ScenarioDefinition:
+    """Build G10's normalized, gradual transfer-efficiency-loss scenario."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if type(plant_variant) is not PlantVariant:
+        raise ValueError("plant_variant must be a PlantVariant")
+    if duration_ticks < _TRANSFER_MIN_DURATION:
+        raise ValueError("transfer-efficiency loss needs at least 8 ticks")
+    spec = get_variant_spec(plant_variant)
+    component_id = spec.transfer_unit_id
+    scenario = ScenarioDefinition(
+        scenario_id=_process_scenario_id(
+            spec=spec,
+            family=FaultFamily.TRANSFER_EFFICIENCY_LOSS,
+            seed=seed,
+            duration_ticks=duration_ticks,
+            component_id=component_id,
+        ),
+        plant_variant_id=spec.plant_variant,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.TRANSFER_EFFICIENCY_LOSS,
+                component_id=component_id,
+                onset_tick=_TRANSFER_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_TRANSFER_THERMAL_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_TRANSFER_LOAD_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_flow_imbalance_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    plant_variant: PlantVariant = PlantVariant.ASTER_A,
+) -> ScenarioDefinition:
+    """Build G11's normalized secondary-flow-imbalance scenario."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if type(plant_variant) is not PlantVariant:
+        raise ValueError("plant_variant must be a PlantVariant")
+    if duration_ticks < _FLOW_IMBALANCE_MIN_DURATION:
+        raise ValueError("flow imbalance needs at least 8 ticks")
+    spec = get_variant_spec(plant_variant)
+    component_id = spec.secondary_feed_id
+    scenario = ScenarioDefinition(
+        scenario_id=_process_scenario_id(
+            spec=spec,
+            family=FaultFamily.FLOW_IMBALANCE,
+            seed=seed,
+            duration_ticks=duration_ticks,
+            component_id=component_id,
+        ),
+        plant_variant_id=spec.plant_variant,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.FLOW_IMBALANCE,
+                component_id=component_id,
+                onset_tick=_FLOW_IMBALANCE_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_FLOW_IMBALANCE_COMPARE_TICK,
+                action=ActionLabel.COMPARE_RELATED_TRENDS,
+            ),
+            ScenarioAction(
+                decision_tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+                action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
             ),
         ),
     )
@@ -752,6 +882,14 @@ def _pump_trip_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
     return _single_injection_for(scenario, FaultFamily.PUMP_TRIP)
 
 
+def _transfer_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    return _single_injection_for(scenario, FaultFamily.TRANSFER_EFFICIENCY_LOSS)
+
+
+def _flow_imbalance_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    return _single_injection_for(scenario, FaultFamily.FLOW_IMBALANCE)
+
+
 def _valve_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
     signature = _fault_signature(scenario)
     if signature == (FaultFamily.VALVE_LAG,):
@@ -882,6 +1020,74 @@ def _pump_health_step(seed: int) -> float:
     """Return a seed-derived fictional health step in the closed [0.010, 0.014] range."""
 
     return round(Random(seed * 4_000_019 + 97).uniform(0.010, 0.014), 6)  # noqa: S311
+
+
+def _process_loss_step(seed: int, *, stream_offset: int) -> float:
+    """Return one local, seed-derived normalized process step in [0.010, 0.014]."""
+
+    return round(Random(seed * 7_000_013 + stream_offset).uniform(0.010, 0.014), 6)  # noqa: S311
+
+
+def _transfer_values(seed: int, tick: int) -> PlantValues:
+    """G10 latent values; untouched variables remain exactly at baseline."""
+
+    baseline = _baseline_values(seed)
+    values = baseline.model_dump()
+    step = _process_loss_step(seed, stream_offset=211)
+    if tick >= _TRANSFER_ONSET_TICK:
+        values[StateVariable.TRANSFER_EFFICIENCY.value] = _clip(
+            baseline.transfer_efficiency - min(0.12, step * (tick - 1))
+        )
+    if tick >= _TRANSFER_THERMAL_TICK:
+        values[StateVariable.PRIMARY_THERMAL_STATE.value] = _clip(
+            baseline.primary_thermal_state + min(0.10, 0.8 * step * (tick - 2))
+        )
+    if tick >= _TRANSFER_STEAM_TICK:
+        values[StateVariable.STEAM_STATE.value] = _clip(
+            baseline.steam_state - min(0.10, 0.8 * step * (tick - 3))
+        )
+    if tick >= _TRANSFER_OUTPUT_TICK:
+        loss = min(0.09, 0.7 * step * (tick - 4))
+        values[StateVariable.TURBINE_OUTPUT.value] = _clip(baseline.turbine_output - loss)
+        values[StateVariable.ELECTRICAL_OUTPUT.value] = _clip(baseline.electrical_output - loss)
+    if tick >= _TRANSFER_LOAD_APPLY_TICK:
+        reduction = min(0.036, 0.012 * (tick - 5))
+        values[StateVariable.LOAD_DEMAND.value] = _clip(baseline.load_demand - reduction)
+        values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(
+            baseline.heat_source_level - reduction
+        )
+    return PlantValues(**values)
+
+
+def _flow_imbalance_values(seed: int, tick: int) -> PlantValues:
+    """G11 latent values; secondary effects arrive after the initiating flow loss."""
+
+    baseline = _baseline_values(seed)
+    values = baseline.model_dump()
+    step = _process_loss_step(seed, stream_offset=307)
+    if tick >= _FLOW_IMBALANCE_ONSET_TICK:
+        values[StateVariable.SECONDARY_FLOW.value] = _clip(
+            baseline.secondary_flow - min(0.12, step * (tick - 1))
+        )
+    if tick >= _FLOW_IMBALANCE_INVENTORY_TICK:
+        values[StateVariable.SECONDARY_INVENTORY.value] = _clip(
+            baseline.secondary_inventory - min(0.10, 0.85 * step * (tick - 2))
+        )
+    if tick >= _FLOW_IMBALANCE_STEAM_TICK:
+        values[StateVariable.STEAM_STATE.value] = _clip(
+            baseline.steam_state - min(0.09, 0.75 * step * (tick - 4))
+        )
+    if tick >= _FLOW_IMBALANCE_OUTPUT_TICK:
+        loss = min(0.09, 0.7 * step * (tick - 5))
+        values[StateVariable.TURBINE_OUTPUT.value] = _clip(baseline.turbine_output - loss)
+        values[StateVariable.ELECTRICAL_OUTPUT.value] = _clip(baseline.electrical_output - loss)
+    if tick >= _FLOW_IMBALANCE_STABILIZE_APPLY_TICK:
+        reduction = min(0.036, 0.012 * (tick - 6))
+        values[StateVariable.LOAD_DEMAND.value] = _clip(baseline.load_demand - reduction)
+        values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(
+            baseline.heat_source_level - reduction
+        )
+    return PlantValues(**values)
 
 
 def _pump_health_loss(*, step: float, tick: int) -> float:
@@ -1034,6 +1240,24 @@ def _trip_components(
     )
 
 
+def _healthy_components(
+    *, scenario: ScenarioDefinition, tick: int, spec: AsterVariantSpec
+) -> tuple[ComponentLatentState, ...]:
+    """Return the fully available component topology for process-only G10/G11 cases."""
+
+    return tuple(
+        ComponentLatentState(
+            component_id=component.component_id,
+            state=ComponentState.AVAILABLE,
+            health=1.0,
+            **_component_positions(
+                scenario=scenario, tick=tick, component_id=component.component_id
+            ),
+        )
+        for component in spec.components
+    )
+
+
 def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]:
     spec = _spec_for(scenario)
     baseline = _baseline_values(scenario.seed)
@@ -1056,6 +1280,40 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
                 ),
                 values=_trip_values(scenario, tick),
                 components=_trip_components(scenario=scenario, tick=tick),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
+    transfer = _transfer_injection(scenario)
+    if transfer is not None:
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _TRANSFER_ONSET_TICK
+                    else OperatingMode.DISTURBED
+                    if tick < _TRANSFER_LOAD_APPLY_TICK
+                    else OperatingMode.RECOVERY
+                ),
+                values=_transfer_values(scenario.seed, tick),
+                components=_healthy_components(scenario=scenario, tick=tick, spec=spec),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
+    flow_imbalance = _flow_imbalance_injection(scenario)
+    if flow_imbalance is not None:
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _FLOW_IMBALANCE_ONSET_TICK
+                    else OperatingMode.DISTURBED
+                    if tick < _FLOW_IMBALANCE_STABILIZE_APPLY_TICK
+                    else OperatingMode.STABILIZED
+                ),
+                values=_flow_imbalance_values(scenario.seed, tick),
+                components=_healthy_components(scenario=scenario, tick=tick, spec=spec),
             )
             for tick in range(scenario.duration_ticks)
         )
@@ -1253,6 +1511,90 @@ def _trip_overall_status(tick: int) -> ObservationStatus:
     return ObservationStatus.NORMAL if tick < _PUMP_TRIP_ONSET_TICK else ObservationStatus.ABNORMAL
 
 
+def _transfer_channel_status(tick: int, variable: StateVariable) -> ObservationStatus:
+    if variable is StateVariable.TRANSFER_EFFICIENCY:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _TRANSFER_ONSET_TICK
+            else ObservationStatus.WATCH
+            if tick <= 4
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.PRIMARY_THERMAL_STATE:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _TRANSFER_THERMAL_TICK
+            else ObservationStatus.WATCH
+            if tick <= 4
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.STEAM_STATE:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _TRANSFER_STEAM_TICK
+            else ObservationStatus.WATCH
+            if tick == _TRANSFER_STEAM_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    if variable in {StateVariable.TURBINE_OUTPUT, StateVariable.ELECTRICAL_OUTPUT}:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _TRANSFER_OUTPUT_TICK
+            else ObservationStatus.WATCH
+            if tick == _TRANSFER_OUTPUT_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    return ObservationStatus.NORMAL
+
+
+def _transfer_overall_status(tick: int) -> ObservationStatus:
+    if tick < _TRANSFER_ONSET_TICK:
+        return ObservationStatus.NORMAL
+    return ObservationStatus.WATCH if tick <= 4 else ObservationStatus.ABNORMAL
+
+
+def _flow_imbalance_channel_status(tick: int, variable: StateVariable) -> ObservationStatus:
+    if variable is StateVariable.SECONDARY_FLOW:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _FLOW_IMBALANCE_ONSET_TICK
+            else ObservationStatus.WATCH
+            if tick <= 3
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.SECONDARY_INVENTORY:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _FLOW_IMBALANCE_INVENTORY_TICK
+            else ObservationStatus.WATCH
+            if tick <= 4
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.STEAM_STATE:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _FLOW_IMBALANCE_STEAM_TICK
+            else ObservationStatus.WATCH
+            if tick == _FLOW_IMBALANCE_STEAM_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    if variable in {StateVariable.TURBINE_OUTPUT, StateVariable.ELECTRICAL_OUTPUT}:
+        return (
+            ObservationStatus.NORMAL
+            if tick < _FLOW_IMBALANCE_OUTPUT_TICK
+            else ObservationStatus.WATCH
+            if tick == _FLOW_IMBALANCE_OUTPUT_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    return ObservationStatus.NORMAL
+
+
+def _flow_imbalance_overall_status(tick: int) -> ObservationStatus:
+    if tick < _FLOW_IMBALANCE_ONSET_TICK:
+        return ObservationStatus.NORMAL
+    return ObservationStatus.WATCH if tick <= 3 else ObservationStatus.ABNORMAL
+
+
 def _valve_channel_status(
     scenario: ScenarioDefinition, tick: int, variable: StateVariable
 ) -> ObservationStatus:
@@ -1339,6 +1681,8 @@ def _observations(
     frames: list[ObservationFrame] = []
     pump = _pump_degradation_injection(scenario)
     trip = _pump_trip_injection(scenario)
+    transfer = _transfer_injection(scenario)
+    flow_imbalance = _flow_imbalance_injection(scenario)
     valve = _valve_injection(scenario)
     stuck = _sensor_stuck_injection(scenario)
     sensor_noise = _sensor_noise_injection(scenario)
@@ -1381,13 +1725,23 @@ def _observations(
                     if trip is not None
                     else _pump_channel_status(latent.tick, variable)
                     if pump is not None
+                    else _transfer_channel_status(latent.tick, variable)
+                    if transfer is not None
+                    else _flow_imbalance_channel_status(latent.tick, variable)
+                    if flow_imbalance is not None
                     else _valve_channel_status(scenario, latent.tick, variable)
                     if valve is not None
                     else _selected_channel_status(scenario, latent.tick, channel.channel_id)
                 )
                 channel_quality = (
                     ChannelQuality.GOOD
-                    if pump is not None or trip is not None or valve is not None
+                    if (
+                        pump is not None
+                        or trip is not None
+                        or transfer is not None
+                        or flow_imbalance is not None
+                        or valve is not None
+                    )
                     else _selected_channel_quality(scenario, latent.tick, channel.channel_id)
                 )
                 channels.append(
@@ -1404,11 +1758,22 @@ def _observations(
             if trip is not None
             else _pump_overall_status(latent.tick)
             if pump is not None
+            else _transfer_overall_status(latent.tick)
+            if transfer is not None
+            else _flow_imbalance_overall_status(latent.tick)
+            if flow_imbalance is not None
             else _valve_overall_status(scenario, latent.tick)
             if valve is not None
             else ObservationStatus.NORMAL
         )
-        if pump is None and trip is None and valve is None and scenario.fault_injections:
+        if (
+            pump is None
+            and trip is None
+            and transfer is None
+            and flow_imbalance is None
+            and valve is None
+            and scenario.fault_injections
+        ):
             selected = scenario.fault_injections[0].channel_id or spec.instrumentation_id
             overall_status = _selected_channel_status(scenario, latent.tick, selected)
         frames.append(
@@ -2113,6 +2478,530 @@ def _valve_events_and_targets(
     )
 
 
+def _process_observation_event(
+    events: list[CanonicalEvent],
+    *,
+    observations: tuple[ObservationFrame, ...],
+    tick: int,
+    variable: StateVariable,
+    status: ObservationStatus,
+    evidence_slots: tuple[EvidenceSlot, ...],
+    related_event_ids: tuple[str, ...],
+    spec: AsterVariantSpec,
+) -> CanonicalEvent:
+    return _event(
+        events,
+        sim_time=tick,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(variable, spec=spec),
+        variable=variable,
+        value_before=_observed_value(observations, tick=tick - 1, variable=variable),
+        value_after=_observed_value(observations, tick=tick, variable=variable),
+        observation_status=status,
+        evidence_slots=evidence_slots,
+        related_event_ids=related_event_ids,
+    )
+
+
+def _decision_from_process_evidence(
+    *,
+    scenario_id: str,
+    decision_tick: int,
+    events: tuple[CanonicalEvent, ...],
+) -> DecisionTarget:
+    """Infer only G10/G11 conclusions from a canonical visible-event prefix.
+
+    This deliberately has no access to a scenario, injection, latent state, or
+    hidden family hint.  Anything other than a complete, internally canonical
+    prefix is treated as insufficient evidence instead of being guessed from.
+    """
+
+    if type(scenario_id) is not str or type(decision_tick) is not int or decision_tick < 0:
+        raise ValueError("scenario_id and decision_tick must be canonical non-negative inputs")
+    if type(events) is not tuple:
+        raise TypeError("process evidence must use a tuple of canonical events")
+    prior_ids: set[str] = set()
+    for index, event in enumerate(events):
+        if type(event) is not CanonicalEvent:
+            raise TypeError("process evidence must contain canonical events")
+        if (
+            event.event_index != index
+            or event.event_id != f"e-{index:04d}"
+            or event.sim_time > decision_tick
+            or any(related_id not in prior_ids for related_id in event.related_event_ids)
+        ):
+            raise ValueError("process evidence must be an ordered visible-event prefix")
+        prior_ids.add(event.event_id)
+
+    def observed(
+        *, tick: int, variable: StateVariable, slots: tuple[EvidenceSlot, ...]
+    ) -> CanonicalEvent | None:
+        for event in events:
+            if (
+                event.sim_time == tick
+                and event.event_type is EventType.OBSERVATION_CHANGED
+                and event.variable is variable
+                and all(slot in event.evidence_slots for slot in slots)
+            ):
+                return event
+        return None
+
+    def note(*, tick: int, slot: EvidenceSlot) -> CanonicalEvent | None:
+        return next(
+            (
+                event
+                for event in events
+                if event.sim_time == tick
+                and event.event_type is EventType.BENIGN_NOTE
+                and slot in event.evidence_slots
+            ),
+            None,
+        )
+
+    g10_events = (
+        observed(
+            tick=_TRANSFER_ONSET_TICK,
+            variable=StateVariable.TRANSFER_EFFICIENCY,
+            slots=(EvidenceSlot.MULTIPLE_CHANNELS_AGREE,),
+        ),
+        observed(
+            tick=_TRANSFER_THERMAL_TICK,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+            slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+        ),
+        observed(
+            tick=_TRANSFER_STEAM_TICK,
+            variable=StateVariable.STEAM_STATE,
+            slots=(
+                EvidenceSlot.DEPENDENT_TREND_DELAY,
+                EvidenceSlot.UPSTREAM_DOWNSTREAM_DIVERGENCE,
+            ),
+        ),
+        observed(
+            tick=_TRANSFER_OUTPUT_TICK,
+            variable=StateVariable.TURBINE_OUTPUT,
+            slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        ),
+        observed(
+            tick=_TRANSFER_OUTPUT_TICK,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+            slots=(
+                EvidenceSlot.CORRELATED_STATE_CHANGE,
+                EvidenceSlot.DEPENDENT_TREND_DELAY,
+            ),
+        ),
+        note(tick=_TRANSFER_OUTPUT_TICK, slot=EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    if decision_tick == _TRANSFER_LOAD_DECISION_TICK and all(g10_events):
+        return DecisionTarget(
+            scenario_id=scenario_id,
+            decision_tick=decision_tick,
+            diagnosis_status=DiagnosisStatus.DIAGNOSED,
+            fault_labels=(FaultFamily.TRANSFER_EFFICIENCY_LOSS,),
+            evidence_event_ids=tuple(event.event_id for event in g10_events if event is not None),
+            evidence_slots=(
+                EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+                EvidenceSlot.CORRELATED_STATE_CHANGE,
+                EvidenceSlot.DEPENDENT_TREND_DELAY,
+                EvidenceSlot.UPSTREAM_DOWNSTREAM_DIVERGENCE,
+                EvidenceSlot.RELATED_STATE_STABLE,
+            ),
+            immediate_action=ActionLabel.REDUCE_SIMULATED_LOAD,
+        )
+
+    g11_initial = (
+        observed(
+            tick=_FLOW_IMBALANCE_ONSET_TICK,
+            variable=StateVariable.SECONDARY_FLOW,
+            slots=(EvidenceSlot.SECONDARY_TREND_MISMATCH, EvidenceSlot.MULTIPLE_CHANNELS_AGREE),
+        ),
+        observed(
+            tick=_FLOW_IMBALANCE_INVENTORY_TICK,
+            variable=StateVariable.SECONDARY_INVENTORY,
+            slots=(
+                EvidenceSlot.SECONDARY_TREND_MISMATCH,
+                EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+                EvidenceSlot.INVENTORY_TREND_DECLINING,
+            ),
+        ),
+        observed(
+            tick=_FLOW_IMBALANCE_COMPARE_TICK,
+            variable=StateVariable.SECONDARY_INVENTORY,
+            slots=(
+                EvidenceSlot.UPSTREAM_DOWNSTREAM_DIVERGENCE,
+                EvidenceSlot.SECONDARY_TREND_MISMATCH,
+            ),
+        ),
+        note(tick=_FLOW_IMBALANCE_COMPARE_TICK, slot=EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    g11_slots = (
+        EvidenceSlot.SECONDARY_TREND_MISMATCH,
+        EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+        EvidenceSlot.INVENTORY_TREND_DECLINING,
+        EvidenceSlot.UPSTREAM_DOWNSTREAM_DIVERGENCE,
+        EvidenceSlot.RELATED_STATE_STABLE,
+    )
+    if decision_tick == _FLOW_IMBALANCE_COMPARE_TICK and all(g11_initial):
+        return DecisionTarget(
+            scenario_id=scenario_id,
+            decision_tick=decision_tick,
+            diagnosis_status=DiagnosisStatus.DIAGNOSED,
+            fault_labels=(FaultFamily.FLOW_IMBALANCE,),
+            evidence_event_ids=tuple(event.event_id for event in g11_initial if event is not None),
+            evidence_slots=g11_slots,
+            immediate_action=ActionLabel.COMPARE_RELATED_TRENDS,
+        )
+
+    g11_mature = (
+        *g11_initial,
+        observed(
+            tick=_FLOW_IMBALANCE_STEAM_TICK,
+            variable=StateVariable.STEAM_STATE,
+            slots=(EvidenceSlot.DEPENDENT_TREND_DELAY, EvidenceSlot.CORRELATED_STATE_CHANGE),
+        ),
+        observed(
+            tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+            variable=StateVariable.TURBINE_OUTPUT,
+            slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        ),
+        observed(
+            tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+            slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        ),
+    )
+    if decision_tick == _FLOW_IMBALANCE_OUTPUT_TICK and all(g11_mature):
+        return DecisionTarget(
+            scenario_id=scenario_id,
+            decision_tick=decision_tick,
+            diagnosis_status=DiagnosisStatus.DIAGNOSED,
+            fault_labels=(FaultFamily.FLOW_IMBALANCE,),
+            evidence_event_ids=tuple(event.event_id for event in g11_mature if event is not None),
+            evidence_slots=(
+                *g11_slots,
+                EvidenceSlot.DEPENDENT_TREND_DELAY,
+                EvidenceSlot.CORRELATED_STATE_CHANGE,
+            ),
+            immediate_action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+        )
+
+    return DecisionTarget(
+        scenario_id=scenario_id,
+        decision_tick=decision_tick,
+        diagnosis_status=DiagnosisStatus.UNRESOLVED,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+    )
+
+
+def _transfer_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit G10's causal transfer-loss chain without exposing its latent label."""
+
+    injection = _transfer_injection(scenario)
+    if injection is None:
+        raise ValueError("transfer events require a transfer-efficiency-loss injection")
+    spec = _spec_for(scenario)
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    efficiency = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_TRANSFER_ONSET_TICK,
+        variable=StateVariable.TRANSFER_EFFICIENCY,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.MULTIPLE_CHANNELS_AGREE,),
+        related_event_ids=(stable.event_id,),
+        spec=spec,
+    )
+    _event(
+        events,
+        sim_time=_TRANSFER_ONSET_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.transfer_unit_id,
+        operating_mode_before=OperatingMode.STABLE,
+        operating_mode_after=OperatingMode.DISTURBED,
+        related_event_ids=(efficiency.event_id,),
+    )
+    thermal = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_TRANSFER_THERMAL_TICK,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+        related_event_ids=(efficiency.event_id,),
+        spec=spec,
+    )
+    missing = _event(
+        events,
+        sim_time=_TRANSFER_THERMAL_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        related_event_ids=(thermal.event_id,),
+    )
+    early = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_TRANSFER_THERMAL_TICK,
+        diagnosis_status=DiagnosisStatus.UNRESOLVED,
+        evidence_event_ids=(missing.event_id,),
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+    )
+    abstain = _event(
+        events,
+        sim_time=_TRANSFER_STEAM_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.instrumentation_id,
+        action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+        related_event_ids=(missing.event_id,),
+    )
+    steam = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_TRANSFER_STEAM_TICK,
+        variable=StateVariable.STEAM_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(
+            EvidenceSlot.DEPENDENT_TREND_DELAY,
+            EvidenceSlot.UPSTREAM_DOWNSTREAM_DIVERGENCE,
+        ),
+        related_event_ids=(thermal.event_id, abstain.event_id),
+        spec=spec,
+    )
+    turbine = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_TRANSFER_OUTPUT_TICK,
+        variable=StateVariable.TURBINE_OUTPUT,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        related_event_ids=(steam.event_id,),
+        spec=spec,
+    )
+    electrical = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_TRANSFER_OUTPUT_TICK,
+        variable=StateVariable.ELECTRICAL_OUTPUT,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        related_event_ids=(turbine.event_id,),
+        spec=spec,
+    )
+    preserved = _event(
+        events,
+        sim_time=_TRANSFER_OUTPUT_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.primary_loop_domain_id,
+        evidence_slots=(EvidenceSlot.RELATED_STATE_STABLE, EvidenceSlot.MULTIPLE_CHANNELS_AGREE),
+        related_event_ids=(electrical.event_id,),
+    )
+    mature = _decision_from_process_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_TRANSFER_LOAD_DECISION_TICK,
+        events=tuple(events),
+    )
+    reduce_load = _event(
+        events,
+        sim_time=_TRANSFER_LOAD_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.primary_loop_domain_id,
+        action_label=ActionLabel.REDUCE_SIMULATED_LOAD,
+        related_event_ids=(preserved.event_id,),
+    )
+    target = _event(
+        events,
+        sim_time=_TRANSFER_LOAD_APPLY_TICK,
+        event_type=EventType.TARGET_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        variable=StateVariable.LOAD_DEMAND,
+        value_before=_transfer_values(scenario.seed, _TRANSFER_LOAD_APPLY_TICK - 1).load_demand,
+        value_after=_transfer_values(scenario.seed, _TRANSFER_LOAD_APPLY_TICK).load_demand,
+        related_event_ids=(reduce_load.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_TRANSFER_LOAD_APPLY_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.transfer_unit_id,
+        operating_mode_before=OperatingMode.DISTURBED,
+        operating_mode_after=OperatingMode.RECOVERY,
+        related_event_ids=(target.event_id,),
+    )
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id, decisions=(early, mature)
+    )
+
+
+def _flow_imbalance_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit G11's secondary mismatch, delayed dependent effects, and two actions."""
+
+    injection = _flow_imbalance_injection(scenario)
+    if injection is None:
+        raise ValueError("flow-imbalance events require a flow-imbalance injection")
+    spec = _spec_for(scenario)
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    flow = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_FLOW_IMBALANCE_ONSET_TICK,
+        variable=StateVariable.SECONDARY_FLOW,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(
+            EvidenceSlot.SECONDARY_TREND_MISMATCH,
+            EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+        ),
+        related_event_ids=(stable.event_id,),
+        spec=spec,
+    )
+    _event(
+        events,
+        sim_time=_FLOW_IMBALANCE_ONSET_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.secondary_feed_id,
+        operating_mode_before=OperatingMode.STABLE,
+        operating_mode_after=OperatingMode.DISTURBED,
+        related_event_ids=(flow.event_id,),
+    )
+    inventory = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_FLOW_IMBALANCE_INVENTORY_TICK,
+        variable=StateVariable.SECONDARY_INVENTORY,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(
+            EvidenceSlot.SECONDARY_TREND_MISMATCH,
+            EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+            EvidenceSlot.INVENTORY_TREND_DECLINING,
+        ),
+        related_event_ids=(flow.event_id,),
+        spec=spec,
+    )
+    persistence = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_FLOW_IMBALANCE_COMPARE_TICK,
+        variable=StateVariable.SECONDARY_INVENTORY,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(
+            EvidenceSlot.UPSTREAM_DOWNSTREAM_DIVERGENCE,
+            EvidenceSlot.SECONDARY_TREND_MISMATCH,
+        ),
+        related_event_ids=(inventory.event_id,),
+        spec=spec,
+    )
+    _event(
+        events,
+        sim_time=_FLOW_IMBALANCE_COMPARE_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.primary_loop_domain_id,
+        evidence_slots=(EvidenceSlot.RELATED_STATE_STABLE,),
+        related_event_ids=(persistence.event_id,),
+    )
+    compare = _decision_from_process_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_FLOW_IMBALANCE_COMPARE_TICK,
+        events=tuple(events),
+    )
+    applied_compare = _event(
+        events,
+        sim_time=_FLOW_IMBALANCE_STEAM_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.secondary_feed_id,
+        action_label=ActionLabel.COMPARE_RELATED_TRENDS,
+        related_event_ids=(persistence.event_id,),
+    )
+    steam = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_FLOW_IMBALANCE_STEAM_TICK,
+        variable=StateVariable.STEAM_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY, EvidenceSlot.CORRELATED_STATE_CHANGE),
+        related_event_ids=(applied_compare.event_id,),
+        spec=spec,
+    )
+    turbine = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+        variable=StateVariable.TURBINE_OUTPUT,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        related_event_ids=(steam.event_id,),
+        spec=spec,
+    )
+    electrical = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+        variable=StateVariable.ELECTRICAL_OUTPUT,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        related_event_ids=(turbine.event_id,),
+        spec=spec,
+    )
+    stabilize = _decision_from_process_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+        events=tuple(events),
+    )
+    applied_stabilize = _event(
+        events,
+        sim_time=_FLOW_IMBALANCE_STABILIZE_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.secondary_feed_id,
+        action_label=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+        related_event_ids=(electrical.event_id,),
+    )
+    target = _event(
+        events,
+        sim_time=_FLOW_IMBALANCE_STABILIZE_APPLY_TICK,
+        event_type=EventType.TARGET_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        variable=StateVariable.LOAD_DEMAND,
+        value_before=_flow_imbalance_values(
+            scenario.seed, _FLOW_IMBALANCE_STABILIZE_APPLY_TICK - 1
+        ).load_demand,
+        value_after=_flow_imbalance_values(
+            scenario.seed, _FLOW_IMBALANCE_STABILIZE_APPLY_TICK
+        ).load_demand,
+        related_event_ids=(applied_stabilize.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_FLOW_IMBALANCE_STABILIZE_APPLY_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.secondary_feed_id,
+        operating_mode_before=OperatingMode.DISTURBED,
+        operating_mode_after=OperatingMode.STABILIZED,
+        related_event_ids=(target.event_id,),
+    )
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id, decisions=(compare, stabilize)
+    )
+
+
 def _events_and_targets(
     scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
 ) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
@@ -2150,6 +3039,14 @@ def _events_and_targets(
     pump = _pump_degradation_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and pump is not None:
         return _pump_events_and_targets(scenario, observations)
+
+    transfer = _transfer_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and transfer is not None:
+        return _transfer_events_and_targets(scenario, observations)
+
+    flow_imbalance = _flow_imbalance_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and flow_imbalance is not None:
+        return _flow_imbalance_events_and_targets(scenario, observations)
 
     valve = _valve_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and valve is not None:
@@ -2707,8 +3604,15 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         ):
             raise UnsupportedScenarioError("load transient has insufficient response history")
         return
-    if scenario.plant_variant_id is not PlantVariant.ASTER_A:
-        raise UnsupportedScenarioError("fault scenarios currently support only ASTER-A")
+    process_faults = {
+        FaultFamily.TRANSFER_EFFICIENCY_LOSS,
+        FaultFamily.FLOW_IMBALANCE,
+    }
+    if (
+        scenario.plant_variant_id is not PlantVariant.ASTER_A
+        and scenario.fault_injections[0].fault_family not in process_faults
+    ):
+        raise UnsupportedScenarioError("this fault scenario currently supports only ASTER-A")
     if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
         injection = scenario.fault_injections[0]
         if injection.fault_family is not FaultFamily.SENSOR_STUCK:
@@ -2750,6 +3654,58 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             raise UnsupportedScenarioError("sensor-stuck load scenario id is noncanonical")
         return
     injection = scenario.fault_injections[0]
+    if injection.fault_family in process_faults:
+        is_transfer = injection.fault_family is FaultFamily.TRANSFER_EFFICIENCY_LOSS
+        expected_process_component = (
+            spec.transfer_unit_id if is_transfer else spec.secondary_feed_id
+        )
+        expected_actions = (
+            (
+                ScenarioAction(
+                    decision_tick=_TRANSFER_THERMAL_TICK,
+                    action=ActionLabel.INSUFFICIENT_EVIDENCE,
+                ),
+                ScenarioAction(
+                    decision_tick=_TRANSFER_LOAD_DECISION_TICK,
+                    action=ActionLabel.REDUCE_SIMULATED_LOAD,
+                ),
+            )
+            if is_transfer
+            else (
+                ScenarioAction(
+                    decision_tick=_FLOW_IMBALANCE_COMPARE_TICK,
+                    action=ActionLabel.COMPARE_RELATED_TRENDS,
+                ),
+                ScenarioAction(
+                    decision_tick=_FLOW_IMBALANCE_OUTPUT_TICK,
+                    action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+                ),
+            )
+        )
+        minimum_duration = _TRANSFER_MIN_DURATION if is_transfer else _FLOW_IMBALANCE_MIN_DURATION
+        expected_id = _process_scenario_id(
+            spec=spec,
+            family=injection.fault_family,
+            seed=scenario.seed,
+            duration_ticks=scenario.duration_ticks,
+            component_id=expected_process_component,
+        )
+        if (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or type(injection.component_id) is not str
+            or injection.component_id != expected_process_component
+            or injection.channel_id is not None
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _TRANSFER_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.action_sequence != expected_actions
+            or scenario.duration_ticks < minimum_duration
+            or scenario.standby_context is not None
+            or scenario.dependency_map_context is not None
+            or scenario.scenario_id != expected_id
+        ):
+            raise UnsupportedScenarioError("unsupported transfer/flow process scenario")
+        return
     if injection.fault_family in {FaultFamily.VALVE_LAG, FaultFamily.VALVE_STUCK}:
         lag_duration = injection.duration_ticks
         if injection.fault_family is FaultFamily.VALVE_LAG:

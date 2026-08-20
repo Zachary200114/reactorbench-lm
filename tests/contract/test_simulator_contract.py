@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from reactorbench.schemas import (
+    ActionLabel,
     ComponentState,
     FaultFamily,
     ProvenanceRecord,
@@ -10,12 +11,14 @@ from reactorbench.schemas import (
     TaskName,
 )
 from reactorbench.simulator import (
+    build_flow_imbalance_scenario,
     build_load_transient_scenario,
     build_pump_degradation_scenario,
     build_pump_trip_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
+    build_transfer_efficiency_loss_scenario,
     build_valve_lag_scenario,
     build_valve_stuck_scenario,
     generate_trace,
@@ -66,6 +69,33 @@ def test_visible_payload_hides_truth_and_structured_trajectory_validates() -> No
         for index, event in enumerate(trace.events)
         for related_id in event.related_event_ids
     )
+
+
+def test_g10_g11_visible_payloads_hide_truth_and_actions_apply_on_next_tick() -> None:
+    for builder, forbidden, final_action in (
+        (
+            build_transfer_efficiency_loss_scenario,
+            "TRANSFER_EFFICIENCY_LOSS",
+            ActionLabel.REDUCE_SIMULATED_LOAD,
+        ),
+        (build_flow_imbalance_scenario, "FLOW_IMBALANCE", ActionLabel.ENTER_SIMULATED_STABLE_STATE),
+    ):
+        trace = generate_trace(builder(seed=23, duration_ticks=12))
+        serialized = json.dumps(trace.visible_payload(), sort_keys=True)
+        assert forbidden not in serialized
+        assert "fault_injection" not in serialized
+        decision = trace.targets.decisions[-1]
+        applied = next(
+            event
+            for event in trace.events
+            if event.event_type.value == "ACTION_APPLIED" and event.action_label is final_action
+        )
+        assert applied.sim_time == decision.decision_tick + 1
+        assert all(
+            related_id in {earlier.event_id for earlier in trace.events[:index]}
+            for index, event in enumerate(trace.events)
+            for related_id in event.related_event_ids
+        )
 
 
 def test_valve_counterfactual_visible_payload_remains_target_free() -> None:

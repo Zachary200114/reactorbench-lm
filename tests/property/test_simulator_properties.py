@@ -8,13 +8,17 @@ from hypothesis import strategies as st
 
 from reactorbench.schemas import (
     ActionLabel,
+    ChannelQuality,
     ComponentState,
     DiagnosisStatus,
+    FaultFamily,
+    PlantVariant,
     SeverityBand,
     StateVariable,
 )
 from reactorbench.simulator import (
     ASTER_A_SPEC,
+    build_flow_imbalance_scenario,
     build_load_transient_scenario,
     build_pump_degradation_scenario,
     build_pump_trip_scenario,
@@ -22,6 +26,7 @@ from reactorbench.simulator import (
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
+    build_transfer_efficiency_loss_scenario,
     build_valve_lag_scenario,
     build_valve_stuck_scenario,
     generate_trace,
@@ -54,6 +59,98 @@ def test_stable_generation_is_replayable_and_seed_controlled(seed: int, duration
     assert first == second
     assert len(first.observations) == duration
     assert all(len(frame.channels) == 2 * len(StateVariable) for frame in first.observations)
+
+
+@settings(max_examples=24, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    duration=st.sampled_from((8, 12, 64)),
+    variant=st.sampled_from(tuple(PlantVariant)),
+)
+def test_g10_g11_process_cases_preserve_prefix_bounds_and_unaffected_channels(
+    seed: int, duration: int, variant: PlantVariant
+) -> None:
+    stable = generate_trace(
+        build_stable_scenario(seed=seed, duration_ticks=duration, plant_variant=variant)
+    )
+    transfer = generate_trace(
+        build_transfer_efficiency_loss_scenario(
+            seed=seed, duration_ticks=duration, plant_variant=variant
+        )
+    )
+    imbalance = generate_trace(
+        build_flow_imbalance_scenario(seed=seed, duration_ticks=duration, plant_variant=variant)
+    )
+    for trace, fault, unaffected in (
+        (
+            transfer,
+            FaultFamily.TRANSFER_EFFICIENCY_LOSS,
+            (
+                StateVariable.PRIMARY_FLOW,
+                StateVariable.PRIMARY_INVENTORY,
+                StateVariable.SECONDARY_FLOW,
+                StateVariable.SECONDARY_INVENTORY,
+            ),
+        ),
+        (
+            imbalance,
+            FaultFamily.FLOW_IMBALANCE,
+            (
+                StateVariable.PRIMARY_FLOW,
+                StateVariable.PRIMARY_THERMAL_STATE,
+                StateVariable.PRIMARY_INVENTORY,
+                StateVariable.TRANSFER_EFFICIENCY,
+            ),
+        ),
+    ):
+        assert trace == generate_trace(trace.scenario)
+        assert trace.latent_states[:2] == stable.latent_states[:2]
+        assert trace.observations[:2] == stable.observations[:2]
+        assert trace.targets.decisions[-1].fault_labels == (fault,)
+        assert all(
+            0.0 <= value <= 1.0
+            for state in trace.latent_states
+            for value in state.values.model_dump().values()
+        )
+        for variable in StateVariable:
+            series = [getattr(state.values, variable.value) for state in trace.latent_states]
+            assert all(abs(after - before) <= 0.03 for before, after in pairwise(series))
+        for variable in unaffected:
+            assert tuple(
+                getattr(state.values, variable.value) for state in trace.latent_states
+            ) == tuple(getattr(state.values, variable.value) for state in stable.latent_states)
+            assert tuple(
+                tuple(channel.value for channel in frame.channels if channel.variable is variable)
+                for frame in trace.observations
+            ) == tuple(
+                tuple(channel.value for channel in frame.channels if channel.variable is variable)
+                for frame in stable.observations
+            )
+        for frame in trace.observations:
+            for variable in StateVariable:
+                pair = [channel for channel in frame.channels if channel.variable is variable]
+                assert len(pair) == 2
+                assert pair[0].quality is pair[1].quality is ChannelQuality.GOOD
+                assert pair[0].value == pair[1].value
+        for state, frame, stable_state, stable_frame in zip(
+            trace.latent_states,
+            trace.observations,
+            stable.latent_states,
+            stable.observations,
+            strict=True,
+        ):
+            for variable in set(StateVariable) - set(unaffected):
+                trace_value = getattr(state.values, variable.value)
+                stable_value = getattr(stable_state.values, variable.value)
+                trace_pair = [channel for channel in frame.channels if channel.variable is variable]
+                stable_pair = [
+                    channel for channel in stable_frame.channels if channel.variable is variable
+                ]
+                assert tuple(
+                    channel.value - trace_value for channel in trace_pair
+                ) == pytest.approx(
+                    tuple(channel.value - stable_value for channel in stable_pair), abs=1e-12
+                )
 
 
 @settings(max_examples=30, deadline=None)

@@ -3,12 +3,14 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from itertools import pairwise
+from typing import cast
 
 import pytest
 
 from reactorbench.schemas import (
     AbstentionReason,
     ActionLabel,
+    CanonicalEvent,
     ChannelQuality,
     ComponentState,
     DiagnosisStatus,
@@ -18,6 +20,8 @@ from reactorbench.schemas import (
     ObservationStatus,
     OperatingMode,
     PlantVariant,
+    ScenarioAction,
+    ScenarioDefinition,
     ScenarioDriver,
     SeverityBand,
     StateVariable,
@@ -31,6 +35,7 @@ from reactorbench.simulator import (
     AsterVariantSpec,
     SimulationTrace,
     UnsupportedScenarioError,
+    build_flow_imbalance_scenario,
     build_load_transient_scenario,
     build_pump_degradation_scenario,
     build_pump_trip_scenario,
@@ -38,12 +43,14 @@ from reactorbench.simulator import (
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
     build_stable_scenario,
+    build_transfer_efficiency_loss_scenario,
     build_valve_lag_scenario,
     build_valve_stuck_scenario,
     dependency_map_context_for,
     generate_trace,
     scan_prohibited_content,
 )
+from reactorbench.simulator.core import _decision_from_process_evidence
 
 
 def _channel_values(trace: SimulationTrace, channel_id: str) -> tuple[float | None, ...]:
@@ -88,6 +95,286 @@ def test_stable_trace_is_bounded_available_and_resolved() -> None:
             channel.status is ObservationStatus.NORMAL and channel.quality is ChannelQuality.GOOD
             for channel in frame.channels
         )
+
+
+@pytest.mark.parametrize(
+    ("builder", "fault", "first_action", "second_action"),
+    [
+        (
+            build_transfer_efficiency_loss_scenario,
+            FaultFamily.TRANSFER_EFFICIENCY_LOSS,
+            ActionLabel.INSUFFICIENT_EVIDENCE,
+            ActionLabel.REDUCE_SIMULATED_LOAD,
+        ),
+        (
+            build_flow_imbalance_scenario,
+            FaultFamily.FLOW_IMBALANCE,
+            ActionLabel.COMPARE_RELATED_TRENDS,
+            ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+        ),
+    ],
+)
+def test_g10_g11_variant_builders_are_deterministic_bounded_and_causal(
+    builder: Callable[..., ScenarioDefinition],
+    fault: FaultFamily,
+    first_action: ActionLabel,
+    second_action: ActionLabel,
+) -> None:
+    for variant in PlantVariant:
+        scenario = builder(seed=20, duration_ticks=12, plant_variant=variant)
+        trace = generate_trace(scenario)
+        stable = generate_trace(
+            build_stable_scenario(seed=20, duration_ticks=12, plant_variant=variant)
+        )
+
+        assert trace == generate_trace(scenario)
+        assert trace.latent_states[:2] == stable.latent_states[:2]
+        assert trace.observations[:2] == stable.observations[:2]
+        assert all(
+            component.state is ComponentState.AVAILABLE and component.health == 1.0
+            for state in trace.latent_states
+            for component in state.components
+        )
+        for variable in StateVariable:
+            values = [getattr(state.values, variable.value) for state in trace.latent_states]
+            assert all(abs(second - first) <= 0.03 for first, second in pairwise(values))
+        decisions = trace.targets.decisions
+        assert decisions[-1].fault_labels == (fault,)
+        assert decisions[-1].immediate_action is second_action
+        if fault is FaultFamily.TRANSFER_EFFICIENCY_LOSS:
+            assert decisions[0].diagnosis_status is DiagnosisStatus.UNRESOLVED
+            assert decisions[0].immediate_action is first_action
+            assert (
+                trace.latent_states[2].values.transfer_efficiency
+                < stable.latent_states[2].values.transfer_efficiency
+            )
+        else:
+            assert decisions[0].immediate_action is first_action
+            assert (
+                trace.latent_states[2].values.secondary_flow
+                < stable.latent_states[2].values.secondary_flow
+            )
+
+
+def test_g10_g11_direct_model_copies_fail_closed() -> None:
+    transfer = build_transfer_efficiency_loss_scenario(seed=7, plant_variant=PlantVariant.ASTER_B)
+    copied = transfer.model_copy(
+        update={"scenario_id": "aster-b-transfer-efficiency-loss-7-12-2-low-foreign"}
+    )
+    with pytest.raises(UnsupportedScenarioError):
+        generate_trace(copied)
+
+    imbalance = build_flow_imbalance_scenario(seed=7, plant_variant=PlantVariant.ASTER_C)
+    cross_variant = imbalance.model_copy(update={"plant_variant_id": PlantVariant.ASTER_A})
+    with pytest.raises(UnsupportedScenarioError):
+        generate_trace(cross_variant)
+
+    for builder in (build_transfer_efficiency_loss_scenario, build_flow_imbalance_scenario):
+        for raw_variant in ("ASTER-A", True, 1.0):
+            with pytest.raises(ValueError, match="plant_variant"):
+                builder(seed=7, plant_variant=cast(PlantVariant, raw_variant))
+        for malformed_duration in (True, 8.0):
+            with pytest.raises(ValueError, match="duration_ticks"):
+                builder(seed=7, duration_ticks=cast(int, malformed_duration))
+
+        base = builder(seed=7)
+        injection = base.fault_injections[0]
+        wrong_action_tick = base.action_sequence[0].model_copy(
+            update={"decision_tick": base.action_sequence[0].decision_tick + 1}
+        )
+        invalid_copies = (
+            base.model_copy(update={"scenario_id": "noncanonical-process-case"}),
+            base.model_copy(update={"seed": True}),
+            base.model_copy(update={"seed": 7.0}),
+            base.model_copy(update={"fault_injections": [injection]}),
+            base.model_copy(
+                update={
+                    "fault_injections": (
+                        injection.model_copy(update={"component_id": "unknown-process-part"}),
+                    )
+                }
+            ),
+            base.model_copy(
+                update={
+                    "fault_injections": (
+                        injection.model_copy(update={"channel_id": "bad-channel"}),
+                    )
+                }
+            ),
+            base.model_copy(
+                update={"fault_injections": (injection.model_copy(update={"severity": "LOW"}),)}
+            ),
+            base.model_copy(
+                update={"fault_injections": (injection.model_copy(update={"onset_tick": 3}),)}
+            ),
+            base.model_copy(
+                update={"fault_injections": (injection.model_copy(update={"duration_ticks": 1}),)}
+            ),
+            base.model_copy(update={"standby_context": {}}),
+            base.model_copy(update={"dependency_map_context": {}}),
+            base.model_copy(update={"action_sequence": [base.action_sequence[0]]}),
+            base.model_copy(
+                update={"action_sequence": (wrong_action_tick, base.action_sequence[1])}
+            ),
+            base.model_copy(
+                update={
+                    "action_sequence": (
+                        ScenarioAction(
+                            decision_tick=base.action_sequence[0].decision_tick,
+                            action=ActionLabel.INSUFFICIENT_EVIDENCE,
+                        ).model_copy(update={"action": "INSUFFICIENT_EVIDENCE"}),
+                        base.action_sequence[1],
+                    )
+                }
+            ),
+        )
+        for copied_shape in invalid_copies:
+            with pytest.raises(UnsupportedScenarioError):
+                generate_trace(copied_shape)
+
+
+def _canonical_prefix_without(
+    events: tuple[CanonicalEvent, ...], *, event_id: str
+) -> tuple[CanonicalEvent, ...]:
+    """Reindex an ablated visible prefix without retaining hidden-event references."""
+
+    retained = [event for event in events if getattr(event, "event_id", None) != event_id]
+    id_map = {event.event_id: f"e-{index:04d}" for index, event in enumerate(retained)}
+    return tuple(
+        CanonicalEvent.model_validate(
+            {
+                **event.model_dump(mode="python"),
+                "event_id": id_map[event.event_id],
+                "event_index": index,
+                "related_event_ids": tuple(
+                    id_map[related_id]
+                    for related_id in event.related_event_ids
+                    if related_id in id_map
+                ),
+            }
+        )
+        for index, event in enumerate(retained)
+    )
+
+
+def test_g10_g11_visible_evidence_helper_is_prefix_only_and_scenario_id_neutral() -> None:
+    transfer = generate_trace(build_transfer_efficiency_loss_scenario(seed=23))
+    imbalance = generate_trace(build_flow_imbalance_scenario(seed=23))
+    cases = (
+        (
+            transfer,
+            5,
+            FaultFamily.TRANSFER_EFFICIENCY_LOSS,
+            ActionLabel.REDUCE_SIMULATED_LOAD,
+        ),
+        (imbalance, 4, FaultFamily.FLOW_IMBALANCE, ActionLabel.COMPARE_RELATED_TRENDS),
+        (imbalance, 6, FaultFamily.FLOW_IMBALANCE, ActionLabel.ENTER_SIMULATED_STABLE_STATE),
+    )
+    for trace, tick, family, action in cases:
+        prefix = tuple(event for event in trace.events if event.sim_time <= tick)
+        neutral = _decision_from_process_evidence(
+            scenario_id="neutral-visible-prefix", decision_tick=tick, events=prefix
+        )
+        spoofed = _decision_from_process_evidence(
+            scenario_id="spoofed-visible-prefix", decision_tick=tick, events=prefix
+        )
+        assert neutral.fault_labels == spoofed.fault_labels == (family,)
+        assert neutral.immediate_action is spoofed.immediate_action is action
+        assert neutral.scenario_id != spoofed.scenario_id
+
+        ablated = _decision_from_process_evidence(
+            scenario_id="neutral-visible-prefix",
+            decision_tick=tick,
+            events=prefix[:-1],
+        )
+        assert ablated.diagnosis_status is DiagnosisStatus.UNRESOLVED
+        assert ablated.fault_labels == ()
+        assert ablated.immediate_action is ActionLabel.INSUFFICIENT_EVIDENCE
+
+        with pytest.raises(TypeError):
+            _decision_from_process_evidence(
+                scenario_id="neutral-visible-prefix",
+                decision_tick=tick,
+                events=list(prefix),  # type: ignore[arg-type]
+            )
+        with pytest.raises(TypeError):
+            _decision_from_process_evidence(
+                scenario_id="neutral-visible-prefix",
+                decision_tick=tick,
+                events=({"event_id": "e-0000"},),  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError, match="ordered visible-event prefix"):
+            _decision_from_process_evidence(
+                scenario_id="neutral-visible-prefix",
+                decision_tick=tick,
+                events=trace.events,
+            )
+
+    transfer_prefix = tuple(event for event in transfer.events if event.sim_time <= 5)
+    transfer_te = next(
+        event
+        for event in transfer_prefix
+        if event.sim_time == 2 and event.variable is StateVariable.TRANSFER_EFFICIENCY
+    )
+    assert (
+        _decision_from_process_evidence(
+            scenario_id="neutral-visible-prefix",
+            decision_tick=5,
+            events=_canonical_prefix_without(transfer_prefix, event_id=transfer_te.event_id),
+        ).diagnosis_status
+        is DiagnosisStatus.UNRESOLVED
+    )
+
+    imbalance_prefix = tuple(event for event in imbalance.events if event.sim_time <= 4)
+    imbalance_persistence = next(
+        event
+        for event in imbalance_prefix
+        if event.sim_time == 4 and event.variable is StateVariable.SECONDARY_INVENTORY
+    )
+    assert (
+        _decision_from_process_evidence(
+            scenario_id="neutral-visible-prefix",
+            decision_tick=4,
+            events=_canonical_prefix_without(
+                imbalance_prefix, event_id=imbalance_persistence.event_id
+            ),
+        ).diagnosis_status
+        is DiagnosisStatus.UNRESOLVED
+    )
+
+
+def test_g10_g11_duration_prefixes_and_global_rng_state_are_stable() -> None:
+    original_state = random.getstate()
+    try:
+        random.seed(7331)
+        before = random.getstate()
+        for builder in (
+            build_transfer_efficiency_loss_scenario,
+            build_flow_imbalance_scenario,
+        ):
+            for variant in PlantVariant:
+                traces = [
+                    generate_trace(builder(seed=20, duration_ticks=duration, plant_variant=variant))
+                    for duration in (8, 12, 64)
+                ]
+                assert random.getstate() == before
+                assert (
+                    traces[0].latent_states[:8]
+                    == traces[1].latent_states[:8]
+                    == traces[2].latent_states[:8]
+                )
+                assert (
+                    traces[0].observations[:8]
+                    == traces[1].observations[:8]
+                    == traces[2].observations[:8]
+                )
+                prefixes = [
+                    tuple(event for event in trace.events if event.sim_time <= 7)
+                    for trace in traces
+                ]
+                assert prefixes[0] == prefixes[1] == prefixes[2]
+    finally:
+        random.setstate(original_state)
 
 
 def test_load_transient_is_benign_coordinated_and_causally_ordered() -> None:
@@ -838,6 +1125,10 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         assert random.getstate() == before
         noise = generate_trace(build_sensor_noise_scenario(seed=10))
         assert random.getstate() == before
+        transfer = generate_trace(build_transfer_efficiency_loss_scenario(seed=10))
+        assert random.getstate() == before
+        imbalance = generate_trace(build_flow_imbalance_scenario(seed=10))
+        assert random.getstate() == before
         second = generate_trace(build_stable_scenario(seed=11))
         stable_b = generate_trace(
             build_stable_scenario(seed=10, plant_variant=PlantVariant.ASTER_B)
@@ -855,6 +1146,8 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         assert load.latent_states != first.latent_states
         assert stuck.latent_states == load.latent_states
         assert noise.latent_states == first.latent_states
+        assert transfer.latent_states != first.latent_states
+        assert imbalance.latent_states != first.latent_states
     finally:
         random.setstate(original_state)
 
