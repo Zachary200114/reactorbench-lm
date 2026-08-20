@@ -45,6 +45,7 @@ from .variants import (
     ASTER_A_SPEC,
     AsterVariantSpec,
     ChannelRole,
+    ComponentRole,
     get_variant_spec,
 )
 from .variants import (
@@ -114,6 +115,14 @@ _FLOW_IMBALANCE_STEAM_TICK = 5
 _FLOW_IMBALANCE_OUTPUT_TICK = 6
 _FLOW_IMBALANCE_STABILIZE_APPLY_TICK = 7
 _FLOW_IMBALANCE_MIN_DURATION = 8
+_SUPPORT_POWER_ONSET_TICK = 2
+_SUPPORT_POWER_COMPONENT_TICK = 3
+_SUPPORT_POWER_EFFECT_TICK = 4
+_SUPPORT_POWER_DELAYED_TICK = 5
+_SUPPORT_POWER_DECISION_TICK = 5
+_SUPPORT_POWER_ACTION_TICK = 6
+_SUPPORT_POWER_STABILIZED_TICK = 7
+_SUPPORT_POWER_MIN_DURATION = 8
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -497,6 +506,86 @@ def build_flow_imbalance_scenario(
                 decision_tick=_FLOW_IMBALANCE_OUTPUT_TICK,
                 action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
             ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def _support_power_scenario_id(
+    *,
+    spec: AsterVariantSpec,
+    seed: int,
+    duration_ticks: int,
+    bus_id: str,
+    include_dependency_map: bool,
+) -> str:
+    context_suffix = "included" if include_dependency_map else "withheld"
+    return (
+        f"{spec.plant_variant.value.lower()}-support-power-interruption-{seed}-"
+        f"{duration_ticks}-{_SUPPORT_POWER_ONSET_TICK}-low-{bus_id}-map-{context_suffix}"
+    )
+
+
+def build_support_power_interruption_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    plant_variant: PlantVariant = PlantVariant.ASTER_B,
+    include_dependency_map: bool = True,
+) -> ScenarioDefinition:
+    """Build G12's bounded support-bus interruption fixture.
+
+    The dependency map is selected only from the immutable variant registry.
+    ``include_dependency_map`` changes the model-visible context and target
+    branch, never the latent physics or observations before the decision tick.
+    """
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if type(plant_variant) is not PlantVariant:
+        raise ValueError("plant_variant must be a PlantVariant")
+    if plant_variant not in {PlantVariant.ASTER_A, PlantVariant.ASTER_B}:
+        raise ValueError("support-power interruption supports only Aster-A and Aster-B")
+    if type(include_dependency_map) is not bool:
+        raise ValueError("include_dependency_map must be a bool")
+    if duration_ticks < _SUPPORT_POWER_MIN_DURATION:
+        raise ValueError("support-power interruption needs at least 8 ticks")
+
+    spec = get_variant_spec(plant_variant)
+    bus_id = spec.component_for_role(ComponentRole.SUPPORT_BUS_TWO).component_id
+    scenario = ScenarioDefinition(
+        scenario_id=_support_power_scenario_id(
+            spec=spec,
+            seed=seed,
+            duration_ticks=duration_ticks,
+            bus_id=bus_id,
+            include_dependency_map=include_dependency_map,
+        ),
+        plant_variant_id=spec.plant_variant,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.SUPPORT_POWER_INTERRUPTION,
+                component_id=bus_id,
+                onset_tick=_SUPPORT_POWER_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_SUPPORT_POWER_DECISION_TICK,
+                action=(
+                    ActionLabel.ENTER_SIMULATED_STABLE_STATE
+                    if include_dependency_map
+                    else ActionLabel.INSUFFICIENT_EVIDENCE
+                ),
+            ),
+        ),
+        dependency_map_context=(
+            dependency_map_context_for(spec) if include_dependency_map else None
         ),
     )
     assert_no_prohibited_content(scenario)
@@ -890,6 +979,10 @@ def _flow_imbalance_injection(scenario: ScenarioDefinition) -> FaultInjection | 
     return _single_injection_for(scenario, FaultFamily.FLOW_IMBALANCE)
 
 
+def _support_power_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    return _single_injection_for(scenario, FaultFamily.SUPPORT_POWER_INTERRUPTION)
+
+
 def _valve_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
     signature = _fault_signature(scenario)
     if signature == (FaultFamily.VALVE_LAG,):
@@ -1258,6 +1351,101 @@ def _healthy_components(
     )
 
 
+def _support_power_drop(seed: int) -> float:
+    """Return one deterministic normalized support-power loss in the reviewed band."""
+
+    return round(Random(seed * 6_000_029 + 401).uniform(0.018, 0.024), 6)  # noqa: S311
+
+
+def _support_power_roles(*, spec: AsterVariantSpec, bus_id: str) -> frozenset[ComponentRole]:
+    return frozenset(
+        component.role
+        for component in spec.components
+        if component.component_id in spec.dependents_for(bus_id)
+    )
+
+
+def _support_power_values(
+    *, scenario: ScenarioDefinition, tick: int, spec: AsterVariantSpec
+) -> PlantValues:
+    """Return G12 values with effects derived exclusively from the registry roles."""
+
+    baseline = _baseline_values(scenario.seed)
+    values = baseline.model_dump()
+    injection = _support_power_injection(scenario)
+    if injection is None:
+        return baseline
+    bus_id = injection.component_id
+    roles = _support_power_roles(spec=spec, bus_id=bus_id)
+
+    if tick >= _SUPPORT_POWER_ONSET_TICK:
+        values[StateVariable.SUPPORT_POWER.value] = _clip(
+            baseline.support_power - _support_power_drop(scenario.seed)
+        )
+    if tick >= _SUPPORT_POWER_EFFECT_TICK:
+        primary_flow_delta = 0.0
+        if ComponentRole.PRIMARY_TRAIN_ONE in roles:
+            primary_flow_delta -= 0.010
+        if ComponentRole.PRIMARY_TRAIN_TWO in roles:
+            primary_flow_delta -= 0.010
+        if ComponentRole.PRIMARY_FLOW_VALVE in roles:
+            primary_flow_delta -= 0.008
+        primary_flow_delta = -min(-primary_flow_delta, spec.max_per_tick_step)
+        if primary_flow_delta:
+            values[StateVariable.PRIMARY_FLOW.value] = _clip(
+                baseline.primary_flow + primary_flow_delta
+            )
+        if ComponentRole.TRANSFER_UNIT in roles:
+            values[StateVariable.TRANSFER_EFFICIENCY.value] = _clip(
+                baseline.transfer_efficiency - 0.012
+            )
+        if ComponentRole.SECONDARY_FEED in roles:
+            values[StateVariable.SECONDARY_FLOW.value] = _clip(baseline.secondary_flow - 0.012)
+    if tick >= _SUPPORT_POWER_DELAYED_TICK:
+        if ComponentRole.TRANSFER_UNIT in roles:
+            values[StateVariable.PRIMARY_THERMAL_STATE.value] = _clip(
+                baseline.primary_thermal_state + 0.008
+            )
+            values[StateVariable.STEAM_STATE.value] = _clip(baseline.steam_state - 0.008)
+        if ComponentRole.SECONDARY_FEED in roles:
+            values[StateVariable.SECONDARY_INVENTORY.value] = _clip(
+                baseline.secondary_inventory - 0.008
+            )
+    if scenario.dependency_map_context is not None and tick >= _SUPPORT_POWER_ACTION_TICK:
+        reduction = min(0.036, 0.012 * (tick - _SUPPORT_POWER_ACTION_TICK + 1))
+        values[StateVariable.LOAD_DEMAND.value] = _clip(baseline.load_demand - reduction)
+        values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(
+            baseline.heat_source_level - reduction
+        )
+    return PlantValues(**values)
+
+
+def _support_power_components(
+    *, scenario: ScenarioDefinition, tick: int, spec: AsterVariantSpec
+) -> tuple[ComponentLatentState, ...]:
+    injection = _support_power_injection(scenario)
+    if injection is None:
+        return _healthy_components(scenario=scenario, tick=tick, spec=spec)
+    unavailable = {injection.component_id} if tick >= _SUPPORT_POWER_ONSET_TICK else set()
+    if tick >= _SUPPORT_POWER_COMPONENT_TICK:
+        unavailable.update(spec.dependents_for(injection.component_id))
+    return tuple(
+        ComponentLatentState(
+            component_id=component.component_id,
+            state=(
+                ComponentState.UNAVAILABLE
+                if component.component_id in unavailable
+                else ComponentState.AVAILABLE
+            ),
+            health=1.0,
+            **_component_positions(
+                scenario=scenario, tick=tick, component_id=component.component_id
+            ),
+        )
+        for component in spec.components
+    )
+
+
 def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]:
     spec = _spec_for(scenario)
     baseline = _baseline_values(scenario.seed)
@@ -1314,6 +1502,25 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
                 ),
                 values=_flow_imbalance_values(scenario.seed, tick),
                 components=_healthy_components(scenario=scenario, tick=tick, spec=spec),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
+    support_power = _support_power_injection(scenario)
+    if support_power is not None:
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _SUPPORT_POWER_ONSET_TICK
+                    else OperatingMode.DISTURBED
+                    if tick < _SUPPORT_POWER_ACTION_TICK or scenario.dependency_map_context is None
+                    else OperatingMode.RECOVERY
+                    if tick < _SUPPORT_POWER_STABILIZED_TICK
+                    else OperatingMode.STABILIZED
+                ),
+                values=_support_power_values(scenario=scenario, tick=tick, spec=spec),
+                components=_support_power_components(scenario=scenario, tick=tick, spec=spec),
             )
             for tick in range(scenario.duration_ticks)
         )
@@ -1595,6 +1802,76 @@ def _flow_imbalance_overall_status(tick: int) -> ObservationStatus:
     return ObservationStatus.WATCH if tick <= 3 else ObservationStatus.ABNORMAL
 
 
+def _support_power_channel_status(
+    scenario: ScenarioDefinition, tick: int, variable: StateVariable
+) -> ObservationStatus:
+    injection = _support_power_injection(scenario)
+    if injection is None:
+        return ObservationStatus.NORMAL
+    spec = get_variant_spec(scenario.plant_variant_id)
+    roles = _support_power_roles(spec=spec, bus_id=injection.component_id)
+    if tick < _SUPPORT_POWER_ONSET_TICK:
+        return ObservationStatus.NORMAL
+    affected = (
+        variable is StateVariable.SUPPORT_POWER
+        or (
+            variable is StateVariable.PRIMARY_FLOW
+            and bool(
+                roles
+                & {
+                    ComponentRole.PRIMARY_TRAIN_ONE,
+                    ComponentRole.PRIMARY_TRAIN_TWO,
+                    ComponentRole.PRIMARY_FLOW_VALVE,
+                }
+            )
+        )
+        or (variable is StateVariable.TRANSFER_EFFICIENCY and ComponentRole.TRANSFER_UNIT in roles)
+        or (
+            variable
+            in {
+                StateVariable.PRIMARY_THERMAL_STATE,
+                StateVariable.STEAM_STATE,
+            }
+            and ComponentRole.TRANSFER_UNIT in roles
+        )
+        or (
+            variable
+            in {
+                StateVariable.SECONDARY_FLOW,
+                StateVariable.SECONDARY_INVENTORY,
+            }
+            and ComponentRole.SECONDARY_FEED in roles
+        )
+    )
+    if not affected:
+        return ObservationStatus.NORMAL
+    effect_tick = (
+        _SUPPORT_POWER_ONSET_TICK
+        if variable is StateVariable.SUPPORT_POWER
+        else _SUPPORT_POWER_EFFECT_TICK
+        if variable
+        in {
+            StateVariable.PRIMARY_FLOW,
+            StateVariable.TRANSFER_EFFICIENCY,
+            StateVariable.SECONDARY_FLOW,
+        }
+        else _SUPPORT_POWER_DELAYED_TICK
+    )
+    if tick < effect_tick:
+        return ObservationStatus.NORMAL
+    return (
+        ObservationStatus.WATCH if tick < _SUPPORT_POWER_ACTION_TICK else ObservationStatus.ABNORMAL
+    )
+
+
+def _support_power_overall_status(tick: int) -> ObservationStatus:
+    if tick < _SUPPORT_POWER_ONSET_TICK:
+        return ObservationStatus.NORMAL
+    return (
+        ObservationStatus.WATCH if tick < _SUPPORT_POWER_ACTION_TICK else ObservationStatus.ABNORMAL
+    )
+
+
 def _valve_channel_status(
     scenario: ScenarioDefinition, tick: int, variable: StateVariable
 ) -> ObservationStatus:
@@ -1683,6 +1960,7 @@ def _observations(
     trip = _pump_trip_injection(scenario)
     transfer = _transfer_injection(scenario)
     flow_imbalance = _flow_imbalance_injection(scenario)
+    support_power = _support_power_injection(scenario)
     valve = _valve_injection(scenario)
     stuck = _sensor_stuck_injection(scenario)
     sensor_noise = _sensor_noise_injection(scenario)
@@ -1729,6 +2007,8 @@ def _observations(
                     if transfer is not None
                     else _flow_imbalance_channel_status(latent.tick, variable)
                     if flow_imbalance is not None
+                    else _support_power_channel_status(scenario, latent.tick, variable)
+                    if support_power is not None
                     else _valve_channel_status(scenario, latent.tick, variable)
                     if valve is not None
                     else _selected_channel_status(scenario, latent.tick, channel.channel_id)
@@ -1740,6 +2020,7 @@ def _observations(
                         or trip is not None
                         or transfer is not None
                         or flow_imbalance is not None
+                        or support_power is not None
                         or valve is not None
                     )
                     else _selected_channel_quality(scenario, latent.tick, channel.channel_id)
@@ -1762,6 +2043,8 @@ def _observations(
             if transfer is not None
             else _flow_imbalance_overall_status(latent.tick)
             if flow_imbalance is not None
+            else _support_power_overall_status(latent.tick)
+            if support_power is not None
             else _valve_overall_status(scenario, latent.tick)
             if valve is not None
             else ObservationStatus.NORMAL
@@ -1771,6 +2054,7 @@ def _observations(
             and trip is None
             and transfer is None
             and flow_imbalance is None
+            and support_power is None
             and valve is None
             and scenario.fault_injections
         ):
@@ -3002,6 +3286,259 @@ def _flow_imbalance_events_and_targets(
     )
 
 
+def _support_power_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit G12's map-aware bus-to-dependent causal chain."""
+
+    injection = _support_power_injection(scenario)
+    if injection is None:
+        raise ValueError("support-power events require a support-power injection")
+    spec = _spec_for(scenario)
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    bus = _event(
+        events,
+        sim_time=_SUPPORT_POWER_ONSET_TICK,
+        event_type=EventType.COMPONENT_STATE_CHANGED,
+        subject_id=injection.component_id,
+        component_state_before=ComponentState.AVAILABLE,
+        component_state_after=ComponentState.UNAVAILABLE,
+        evidence_slots=(EvidenceSlot.SUPPORT_BUS_CHANGE,),
+        related_event_ids=(stable.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_SUPPORT_POWER_ONSET_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        operating_mode_before=OperatingMode.STABLE,
+        operating_mode_after=OperatingMode.DISTURBED,
+        related_event_ids=(bus.event_id,),
+    )
+    support_power = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_SUPPORT_POWER_ONSET_TICK,
+        variable=StateVariable.SUPPORT_POWER,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.SUPPORT_BUS_CHANGE,),
+        related_event_ids=(bus.event_id,),
+        spec=spec,
+    )
+
+    dependency_events: list[CanonicalEvent] = []
+    dependency_events_by_role: dict[ComponentRole, list[CanonicalEvent]] = {}
+    for dependent_id in sorted(spec.dependents_for(injection.component_id)):
+        dependent_role = next(
+            component.role
+            for component in spec.components
+            if component.component_id == dependent_id
+        )
+        dependent_event = _event(
+            events,
+            sim_time=_SUPPORT_POWER_COMPONENT_TICK,
+            event_type=EventType.COMPONENT_STATE_CHANGED,
+            subject_id=dependent_id,
+            component_state_before=ComponentState.AVAILABLE,
+            component_state_after=ComponentState.UNAVAILABLE,
+            evidence_slots=(EvidenceSlot.MAPPED_COMPONENT_CHANGE,),
+            related_event_ids=(bus.event_id,),
+        )
+        dependency_events.append(dependent_event)
+        dependency_events_by_role.setdefault(dependent_role, []).append(dependent_event)
+    dependency_ids = tuple(event.event_id for event in dependency_events)
+    primary_flow = _support_power_roles(spec=spec, bus_id=injection.component_id)
+    effect_events: list[CanonicalEvent] = [support_power]
+    effect_events_by_role: dict[ComponentRole, CanonicalEvent] = {}
+    primary_flow_dependency_ids = tuple(
+        event.event_id
+        for role in (
+            ComponentRole.PRIMARY_TRAIN_ONE,
+            ComponentRole.PRIMARY_TRAIN_TWO,
+            ComponentRole.PRIMARY_FLOW_VALVE,
+        )
+        for event in dependency_events_by_role.get(role, ())
+    )
+    if primary_flow & {
+        ComponentRole.PRIMARY_TRAIN_ONE,
+        ComponentRole.PRIMARY_TRAIN_TWO,
+        ComponentRole.PRIMARY_FLOW_VALVE,
+    }:
+        effect_events.append(
+            _process_observation_event(
+                events,
+                observations=observations,
+                tick=_SUPPORT_POWER_EFFECT_TICK,
+                variable=StateVariable.PRIMARY_FLOW,
+                status=ObservationStatus.WATCH,
+                evidence_slots=(EvidenceSlot.MAPPED_COMPONENT_CHANGE,),
+                related_event_ids=primary_flow_dependency_ids,
+                spec=spec,
+            )
+        )
+        effect_events_by_role[ComponentRole.PRIMARY_FLOW_VALVE] = effect_events[-1]
+        effect_events_by_role[ComponentRole.PRIMARY_TRAIN_ONE] = effect_events[-1]
+        effect_events_by_role[ComponentRole.PRIMARY_TRAIN_TWO] = effect_events[-1]
+    if ComponentRole.TRANSFER_UNIT in primary_flow:
+        effect_events.append(
+            _process_observation_event(
+                events,
+                observations=observations,
+                tick=_SUPPORT_POWER_EFFECT_TICK,
+                variable=StateVariable.TRANSFER_EFFICIENCY,
+                status=ObservationStatus.WATCH,
+                evidence_slots=(EvidenceSlot.MAPPED_COMPONENT_CHANGE,),
+                related_event_ids=tuple(
+                    event.event_id
+                    for event in dependency_events_by_role.get(ComponentRole.TRANSFER_UNIT, ())
+                ),
+                spec=spec,
+            )
+        )
+        effect_events_by_role[ComponentRole.TRANSFER_UNIT] = effect_events[-1]
+    if ComponentRole.SECONDARY_FEED in primary_flow:
+        effect_events.append(
+            _process_observation_event(
+                events,
+                observations=observations,
+                tick=_SUPPORT_POWER_EFFECT_TICK,
+                variable=StateVariable.SECONDARY_FLOW,
+                status=ObservationStatus.WATCH,
+                evidence_slots=(EvidenceSlot.MAPPED_COMPONENT_CHANGE,),
+                related_event_ids=tuple(
+                    event.event_id
+                    for event in dependency_events_by_role.get(ComponentRole.SECONDARY_FEED, ())
+                ),
+                spec=spec,
+            )
+        )
+        effect_events_by_role[ComponentRole.SECONDARY_FEED] = effect_events[-1]
+
+    delayed_events: list[CanonicalEvent] = []
+    effect_ids = tuple(event.event_id for event in effect_events)
+    if ComponentRole.TRANSFER_UNIT in primary_flow:
+        delayed_events.append(
+            _process_observation_event(
+                events,
+                observations=observations,
+                tick=_SUPPORT_POWER_DELAYED_TICK,
+                variable=StateVariable.PRIMARY_THERMAL_STATE,
+                status=ObservationStatus.WATCH,
+                evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+                related_event_ids=(effect_events_by_role[ComponentRole.TRANSFER_UNIT].event_id,),
+                spec=spec,
+            )
+        )
+        delayed_events.append(
+            _process_observation_event(
+                events,
+                observations=observations,
+                tick=_SUPPORT_POWER_DELAYED_TICK,
+                variable=StateVariable.STEAM_STATE,
+                status=ObservationStatus.WATCH,
+                evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+                related_event_ids=(effect_events_by_role[ComponentRole.TRANSFER_UNIT].event_id,),
+                spec=spec,
+            )
+        )
+    if ComponentRole.SECONDARY_FEED in primary_flow:
+        delayed_events.append(
+            _process_observation_event(
+                events,
+                observations=observations,
+                tick=_SUPPORT_POWER_DELAYED_TICK,
+                variable=StateVariable.SECONDARY_INVENTORY,
+                status=ObservationStatus.WATCH,
+                evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+                related_event_ids=(effect_events_by_role[ComponentRole.SECONDARY_FEED].event_id,),
+                spec=spec,
+            )
+        )
+    delayed_ids = tuple(event.event_id for event in delayed_events)
+    physical_evidence_ids = (bus.event_id, *dependency_ids, *effect_ids, *delayed_ids)
+    physical_evidence_slots = (
+        EvidenceSlot.SUPPORT_BUS_CHANGE,
+        EvidenceSlot.MAPPED_COMPONENT_CHANGE,
+        EvidenceSlot.DEPENDENT_TREND_DELAY,
+    )
+    if scenario.dependency_map_context is not None:
+        decision = DecisionTarget(
+            scenario_id=scenario.scenario_id,
+            decision_tick=_SUPPORT_POWER_DECISION_TICK,
+            diagnosis_status=DiagnosisStatus.DIAGNOSED,
+            fault_labels=(FaultFamily.SUPPORT_POWER_INTERRUPTION,),
+            evidence_event_ids=physical_evidence_ids,
+            evidence_slots=physical_evidence_slots,
+            immediate_action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+        )
+        applied = _event(
+            events,
+            sim_time=_SUPPORT_POWER_ACTION_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=spec.primary_loop_domain_id,
+            action_label=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            related_event_ids=physical_evidence_ids,
+        )
+        target = _event(
+            events,
+            sim_time=_SUPPORT_POWER_ACTION_TICK,
+            event_type=EventType.TARGET_CHANGED,
+            subject_id=spec.primary_loop_domain_id,
+            variable=StateVariable.LOAD_DEMAND,
+            value_before=_support_power_values(
+                scenario=scenario, tick=_SUPPORT_POWER_ACTION_TICK - 1, spec=spec
+            ).load_demand,
+            value_after=_support_power_values(
+                scenario=scenario, tick=_SUPPORT_POWER_ACTION_TICK, spec=spec
+            ).load_demand,
+            related_event_ids=(applied.event_id,),
+        )
+        recovery = _event(
+            events,
+            sim_time=_SUPPORT_POWER_ACTION_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id=spec.primary_loop_domain_id,
+            operating_mode_before=OperatingMode.DISTURBED,
+            operating_mode_after=OperatingMode.RECOVERY,
+            related_event_ids=(target.event_id,),
+        )
+        _event(
+            events,
+            sim_time=_SUPPORT_POWER_STABILIZED_TICK,
+            event_type=EventType.OPERATING_MODE_CHANGED,
+            subject_id=spec.primary_loop_domain_id,
+            operating_mode_before=OperatingMode.RECOVERY,
+            operating_mode_after=OperatingMode.STABILIZED,
+            related_event_ids=(recovery.event_id,),
+        )
+    else:
+        decision = DecisionTarget(
+            scenario_id=scenario.scenario_id,
+            decision_tick=_SUPPORT_POWER_DECISION_TICK,
+            diagnosis_status=DiagnosisStatus.UNRESOLVED,
+            evidence_event_ids=physical_evidence_ids,
+            evidence_slots=physical_evidence_slots,
+            immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+        )
+        _event(
+            events,
+            sim_time=_SUPPORT_POWER_ACTION_TICK,
+            event_type=EventType.ACTION_APPLIED,
+            subject_id=spec.instrumentation_id,
+            action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+            related_event_ids=physical_evidence_ids,
+        )
+    return tuple(events), ScenarioTargets(scenario_id=scenario.scenario_id, decisions=(decision,))
+
+
 def _events_and_targets(
     scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
 ) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
@@ -3047,6 +3584,10 @@ def _events_and_targets(
     flow_imbalance = _flow_imbalance_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and flow_imbalance is not None:
         return _flow_imbalance_events_and_targets(scenario, observations)
+
+    support_power = _support_power_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and support_power is not None:
+        return _support_power_events_and_targets(scenario, observations)
 
     valve = _valve_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and valve is not None:
@@ -3534,10 +4075,19 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         raise UnsupportedScenarioError("fault injection must use the canonical contract")
     if type(scenario.action_sequence) is not tuple:
         raise UnsupportedScenarioError("action_sequence must use a tuple container")
+    is_pump_trip = (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_TRIP
+    )
+    is_support_power = (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.SUPPORT_POWER_INTERRUPTION
+    )
     if scenario.dependency_map_context is not None:
         if type(scenario.dependency_map_context) is not DependencyMapContext:
             raise UnsupportedScenarioError("dependency map context must use the canonical contract")
-        raise UnsupportedScenarioError("dependency map context is not supported before G12")
+        if not is_support_power:
+            raise UnsupportedScenarioError("dependency map context is only supported for G12")
     for action in scenario.action_sequence:
         if type(action) is not ScenarioAction:
             raise UnsupportedScenarioError("action sequence must use the canonical contract")
@@ -3558,10 +4108,6 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
                 _require_uint32(injection.duration_ticks, name="fault duration")
         except ValueError as error:
             raise UnsupportedScenarioError(str(error)) from error
-    is_pump_trip = (
-        len(scenario.fault_injections) == 1
-        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_TRIP
-    )
     if is_pump_trip:
         context = scenario.standby_context
         if type(context) is not StandbyContext:
@@ -3611,8 +4157,57 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     if (
         scenario.plant_variant_id is not PlantVariant.ASTER_A
         and scenario.fault_injections[0].fault_family not in process_faults
+        and not is_support_power
     ):
         raise UnsupportedScenarioError("this fault scenario currently supports only ASTER-A")
+    if is_support_power:
+        injection = scenario.fault_injections[0]
+        if scenario.plant_variant_id not in {PlantVariant.ASTER_A, PlantVariant.ASTER_B}:
+            raise UnsupportedScenarioError("G12 supports only Aster-A and Aster-B")
+        expected_bus_id = spec.component_for_role(ComponentRole.SUPPORT_BUS_TWO).component_id
+        expected_included_id = _support_power_scenario_id(
+            spec=spec,
+            seed=scenario.seed,
+            duration_ticks=scenario.duration_ticks,
+            bus_id=expected_bus_id,
+            include_dependency_map=True,
+        )
+        expected_withheld_id = _support_power_scenario_id(
+            spec=spec,
+            seed=scenario.seed,
+            duration_ticks=scenario.duration_ticks,
+            bus_id=expected_bus_id,
+            include_dependency_map=False,
+        )
+        if scenario.scenario_id == expected_included_id:
+            expected_action = ActionLabel.ENTER_SIMULATED_STABLE_STATE
+            g12_context: DependencyMapContext | None = dependency_map_context_for(spec)
+        elif scenario.scenario_id == expected_withheld_id:
+            expected_action = ActionLabel.INSUFFICIENT_EVIDENCE
+            g12_context = None
+        else:
+            raise UnsupportedScenarioError("support-power scenario id is noncanonical")
+        if (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or type(injection.component_id) is not str
+            or injection.component_id != expected_bus_id
+            or injection.channel_id is not None
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _SUPPORT_POWER_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.duration_ticks < _SUPPORT_POWER_MIN_DURATION
+            or scenario.standby_context is not None
+            or scenario.action_sequence
+            != (
+                ScenarioAction(
+                    decision_tick=_SUPPORT_POWER_DECISION_TICK,
+                    action=expected_action,
+                ),
+            )
+            or scenario.dependency_map_context != g12_context
+        ):
+            raise UnsupportedScenarioError("unsupported support-power interruption scenario")
+        return
     if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
         injection = scenario.fault_injections[0]
         if injection.fault_family is not FaultFamily.SENSOR_STUCK:
@@ -3797,8 +4392,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             )
         )
         if (
-            scenario.driver is not ScenarioDriver.STEADY_OPERATION
-            or type(injection.component_id) is not str
+            type(injection.component_id) is not str
             or injection.component_id not in ASTER_A_SPEC.primary_train_ids
             or injection.channel_id is not None
             or injection.severity is not SeverityBand.LOW
