@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from itertools import pairwise
 
 import pytest
@@ -11,6 +12,7 @@ from reactorbench.schemas import (
     ChannelQuality,
     ComponentState,
     DiagnosisStatus,
+    EventType,
     EvidenceSlot,
     FaultFamily,
     ObservationStatus,
@@ -25,6 +27,7 @@ from reactorbench.simulator import (
     SimulationTrace,
     UnsupportedScenarioError,
     build_load_transient_scenario,
+    build_pump_degradation_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
@@ -842,11 +845,13 @@ def test_maximum_duration_and_aster_spec_channel_cardinality() -> None:
     drift = generate_trace(build_sensor_drift_scenario(seed=4, duration_ticks=64))
     load = generate_trace(build_load_transient_scenario(seed=4, duration_ticks=64))
     noise = generate_trace(build_sensor_noise_scenario(seed=4, duration_ticks=64))
+    pump = generate_trace(build_pump_degradation_scenario(seed=4, duration_ticks=64))
 
     assert len(trace.observations) == 64
     assert len(drift.observations) == 64
     assert len(load.observations) == 64
     assert len(noise.observations) == 64
+    assert len(pump.observations) == 64
     assert len(set(ASTER_A_SPEC.primary_train_ids)) == 2
     assert len(set(ASTER_A_SPEC.support_bus_ids)) == 2
     for variable in StateVariable:
@@ -854,3 +859,406 @@ def test_maximum_duration_and_aster_spec_channel_cardinality() -> None:
             channel.channel_id for channel in ASTER_A_SPEC.channels if channel.variable is variable
         ]
         assert len(channel_ids) == len(set(channel_ids)) == 2
+
+
+def test_pump_degradation_visible_trends_preserve_seeded_noise_residuals() -> None:
+    for seed in (0, 1, 20, 21, 4_294_967_295):
+        pump = generate_trace(build_pump_degradation_scenario(seed=seed, duration_ticks=12))
+        stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=12))
+
+        for pump_frame, stable_frame, latent in zip(
+            pump.observations, stable.observations, pump.latent_states, strict=True
+        ):
+            stable_latent = stable.latent_states[latent.tick]
+            for pump_channel, stable_channel in zip(
+                pump_frame.channels, stable_frame.channels, strict=True
+            ):
+                assert pump_channel.value is not None
+                assert stable_channel.value is not None
+                pump_true = getattr(latent.values, pump_channel.variable.value)
+                stable_true = getattr(stable_latent.values, stable_channel.variable.value)
+                assert pump_channel.value - pump_true == pytest.approx(
+                    stable_channel.value - stable_true
+                )
+
+        changed_events = [
+            event for event in pump.events if event.event_type is EventType.OBSERVATION_CHANGED
+        ]
+        directions: list[tuple[float, float]] = []
+        for event in changed_events:
+            if event.value_before is None or event.value_after is None:
+                raise AssertionError("pump observation events must carry values")
+            directions.append((event.value_before, event.value_after))
+        assert directions[0][1] < directions[0][0]
+        assert directions[1][1] > directions[1][0]
+        assert directions[2][1] < directions[2][0]
+        assert directions[3][1] < directions[3][0]
+
+
+def test_pump_degradation_fixed_chain_and_prefix_identity() -> None:
+    short = generate_trace(build_pump_degradation_scenario(seed=20, duration_ticks=9))
+    long = generate_trace(build_pump_degradation_scenario(seed=20, duration_ticks=12))
+
+    assert short.latent_states == long.latent_states[:9]
+    assert short.observations == long.observations[:9]
+    assert short.events == long.events
+    assert tuple(
+        decision.model_dump(exclude={"scenario_id"}) for decision in short.targets.decisions
+    ) == tuple(decision.model_dump(exclude={"scenario_id"}) for decision in long.targets.decisions)
+    assert [event.event_type for event in short.events] == [
+        EventType.BENIGN_NOTE,
+        EventType.COMPONENT_STATE_CHANGED,
+        EventType.OPERATING_MODE_CHANGED,
+        EventType.OBSERVATION_CHANGED,
+        EventType.OBSERVATION_CHANGED,
+        EventType.BENIGN_NOTE,
+        EventType.ACTION_APPLIED,
+        EventType.OBSERVATION_CHANGED,
+        EventType.OBSERVATION_CHANGED,
+        EventType.ACTION_APPLIED,
+        EventType.BENIGN_NOTE,
+        EventType.ACTION_APPLIED,
+        EventType.TARGET_CHANGED,
+        EventType.OPERATING_MODE_CHANGED,
+    ]
+
+
+def test_pump_degradation_latent_causal_order_and_selected_component_only() -> None:
+    seed = 20
+    pump = generate_trace(build_pump_degradation_scenario(seed=seed, duration_ticks=64))
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=64))
+    selected_id = pump.scenario.fault_injections[0].component_id
+    assert selected_id is not None
+
+    def first_change(variable: StateVariable) -> int:
+        return next(
+            state.tick
+            for state, baseline in zip(pump.latent_states, stable.latent_states, strict=True)
+            if getattr(state.values, variable.value) != getattr(baseline.values, variable.value)
+        )
+
+    assert first_change(StateVariable.PRIMARY_FLOW) == 3
+    assert first_change(StateVariable.PRIMARY_THERMAL_STATE) == 4
+    assert first_change(StateVariable.STEAM_STATE) == 5
+    assert first_change(StateVariable.TURBINE_OUTPUT) == 6
+    assert first_change(StateVariable.ELECTRICAL_OUTPUT) == 6
+    assert first_change(StateVariable.HEAT_SOURCE_LEVEL) == 8
+    assert first_change(StateVariable.LOAD_DEMAND) == 8
+    assert all(
+        getattr(pump.latent_states[-1].values, variable.value)
+        < getattr(stable.latent_states[-1].values, variable.value)
+        for variable in (
+            StateVariable.PRIMARY_FLOW,
+            StateVariable.STEAM_STATE,
+            StateVariable.TURBINE_OUTPUT,
+            StateVariable.ELECTRICAL_OUTPUT,
+        )
+    )
+    assert (
+        pump.latent_states[-1].values.primary_thermal_state
+        > stable.latent_states[-1].values.primary_thermal_state
+    )
+    assert all(
+        getattr(state.values, variable.value) == getattr(baseline.values, variable.value)
+        for state, baseline in zip(pump.latent_states, stable.latent_states, strict=True)
+        for variable in (
+            StateVariable.PRIMARY_INVENTORY,
+            StateVariable.TRANSFER_EFFICIENCY,
+            StateVariable.SECONDARY_FLOW,
+            StateVariable.SECONDARY_INVENTORY,
+            StateVariable.CONDENSER_FUNCTION,
+            StateVariable.HEAT_REJECTION,
+            StateVariable.SUPPORT_POWER,
+        )
+    )
+    derived_heat = tuple(
+        state.values.heat_source_level
+        * state.values.primary_flow
+        * state.values.transfer_efficiency
+        for state in pump.latent_states
+    )
+    stable_heat = tuple(
+        state.values.heat_source_level
+        * state.values.primary_flow
+        * state.values.transfer_efficiency
+        for state in stable.latent_states
+    )
+    assert derived_heat[:3] == stable_heat[:3]
+    assert derived_heat[3] < stable_heat[3]
+
+    previous_health = 1.0
+    for state, baseline in zip(pump.latent_states, stable.latent_states, strict=True):
+        current = {component.component_id: component for component in state.components}
+        stable_components = {component.component_id: component for component in baseline.components}
+        selected = current[selected_id]
+        assert selected.health <= previous_health
+        previous_health = selected.health
+        if state.tick < 2:
+            assert selected.state is ComponentState.AVAILABLE
+            assert selected.health == 1.0
+        else:
+            assert selected.state is ComponentState.DEGRADED
+            assert selected.health < 1.0
+        assert selected.pending_maintenance is (state.tick >= 7)
+        for component_id, component in current.items():
+            if component_id != selected_id:
+                assert component == stable_components[component_id]
+                assert component.state is ComponentState.AVAILABLE
+                assert component.health == 1.0
+                assert component.pending_maintenance is False
+
+    selected_tick_two_health = next(
+        component.health
+        for component in pump.latent_states[2].components
+        if component.component_id == selected_id
+    )
+    assert 0.010 <= 1.0 - selected_tick_two_health <= 0.014
+    assert (
+        1.0
+        - next(
+            component.health
+            for component in pump.latent_states[-1].components
+            if component.component_id == selected_id
+        )
+        <= 0.24
+    )
+
+
+def test_pump_degradation_statuses_channels_and_causal_actions() -> None:
+    trace = generate_trace(build_pump_degradation_scenario(seed=21, duration_ticks=12))
+    statuses: dict[StateVariable, Callable[[int], ObservationStatus]] = {
+        StateVariable.PRIMARY_FLOW: lambda tick: (
+            ObservationStatus.NORMAL
+            if tick < 3
+            else ObservationStatus.WATCH
+            if tick <= 5
+            else ObservationStatus.ABNORMAL
+        ),
+        StateVariable.PRIMARY_THERMAL_STATE: lambda tick: (
+            ObservationStatus.NORMAL
+            if tick < 4
+            else ObservationStatus.WATCH
+            if tick <= 5
+            else ObservationStatus.ABNORMAL
+        ),
+        StateVariable.STEAM_STATE: lambda tick: (
+            ObservationStatus.NORMAL
+            if tick < 5
+            else ObservationStatus.WATCH
+            if tick == 5
+            else ObservationStatus.ABNORMAL
+        ),
+        StateVariable.TURBINE_OUTPUT: lambda tick: (
+            ObservationStatus.NORMAL if tick < 6 else ObservationStatus.ABNORMAL
+        ),
+        StateVariable.ELECTRICAL_OUTPUT: lambda tick: (
+            ObservationStatus.NORMAL if tick < 6 else ObservationStatus.ABNORMAL
+        ),
+    }
+    for frame in trace.observations:
+        assert frame.overall_status is (
+            ObservationStatus.NORMAL
+            if frame.tick < 2
+            else ObservationStatus.WATCH
+            if frame.tick <= 5
+            else ObservationStatus.ABNORMAL
+        )
+        for variable in StateVariable:
+            pair = [channel for channel in frame.channels if channel.variable is variable]
+            assert len(pair) == 2
+            assert pair[0].value == pair[1].value
+            assert pair[0].quality is pair[1].quality is ChannelQuality.GOOD
+            status_fn = statuses.get(variable)
+            expected = ObservationStatus.NORMAL if status_fn is None else status_fn(frame.tick)
+            assert pair[0].status is pair[1].status is expected
+
+    assert [(event.sim_time, event.event_type, event.action_label) for event in trace.events] == [
+        (0, EventType.BENIGN_NOTE, None),
+        (2, EventType.COMPONENT_STATE_CHANGED, None),
+        (2, EventType.OPERATING_MODE_CHANGED, None),
+        (3, EventType.OBSERVATION_CHANGED, None),
+        (4, EventType.OBSERVATION_CHANGED, None),
+        (4, EventType.BENIGN_NOTE, None),
+        (5, EventType.ACTION_APPLIED, ActionLabel.INSUFFICIENT_EVIDENCE),
+        (5, EventType.OBSERVATION_CHANGED, None),
+        (6, EventType.OBSERVATION_CHANGED, None),
+        (7, EventType.ACTION_APPLIED, ActionLabel.REQUEST_COMPONENT_INSPECTION),
+        (7, EventType.BENIGN_NOTE, None),
+        (8, EventType.ACTION_APPLIED, ActionLabel.REDUCE_SIMULATED_LOAD),
+        (8, EventType.TARGET_CHANGED, None),
+        (8, EventType.OPERATING_MODE_CHANGED, None),
+    ]
+    events_by_id = {event.event_id: event for event in trace.events}
+    assert all(
+        events_by_id[related_id].event_index < event.event_index
+        for event in trace.events
+        for related_id in event.related_event_ids
+    )
+    assert [
+        (decision.decision_tick, decision.immediate_action, decision.diagnosis_status)
+        for decision in trace.targets.decisions
+    ] == [
+        (4, ActionLabel.INSUFFICIENT_EVIDENCE, DiagnosisStatus.UNRESOLVED),
+        (6, ActionLabel.REQUEST_COMPONENT_INSPECTION, DiagnosisStatus.DIAGNOSED),
+        (7, ActionLabel.REDUCE_SIMULATED_LOAD, DiagnosisStatus.DIAGNOSED),
+    ]
+    mature_slots = {
+        EvidenceSlot.COMPONENT_HEALTH_DECLINING,
+        EvidenceSlot.FLOW_DECLINING,
+        EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+        EvidenceSlot.CORRELATED_STATE_CHANGE,
+        EvidenceSlot.DEPENDENT_TREND_DELAY,
+    }
+    assert set(trace.targets.decisions[1].evidence_slots) == mature_slots
+    assert set(trace.targets.decisions[2].evidence_slots) == mature_slots
+    applied_actions = {
+        event.action_label: event.sim_time
+        for event in trace.events
+        if event.event_type is EventType.ACTION_APPLIED
+    }
+    assert applied_actions[ActionLabel.INSUFFICIENT_EVIDENCE] == 5
+    assert applied_actions[ActionLabel.REQUEST_COMPONENT_INSPECTION] == 7
+    assert applied_actions[ActionLabel.REDUCE_SIMULATED_LOAD] == 8
+    target = next(event for event in trace.events if event.event_type is EventType.TARGET_CHANGED)
+    mode = next(
+        event
+        for event in trace.events
+        if event.event_type is EventType.OPERATING_MODE_CHANGED and event.sim_time == 8
+    )
+    reduce_event = next(
+        event for event in trace.events if event.action_label is ActionLabel.REDUCE_SIMULATED_LOAD
+    )
+    assert target.related_event_ids == (reduce_event.event_id,)
+    assert mode.related_event_ids == (target.event_id,)
+    assert reduce_event.event_index < target.event_index < mode.event_index
+    assert target.value_after is not None
+    assert target.value_before is not None
+    assert target.value_after < target.value_before
+
+    filtered_prefix = tuple(
+        event
+        for event in trace.events
+        if event.sim_time <= 4 and event.event_type is not EventType.COMPONENT_STATE_CHANGED
+    )
+    assert filtered_prefix
+    assert all(
+        EvidenceSlot.COMPONENT_HEALTH_DECLINING not in event.evidence_slots
+        for event in filtered_prefix
+    )
+    assert trace.targets.decisions[0].diagnosis_status is DiagnosisStatus.UNRESOLVED
+    assert trace.targets.decisions[0].immediate_action is ActionLabel.INSUFFICIENT_EVIDENCE
+
+
+def test_pump_degradation_builder_and_direct_variants_fail_closed() -> None:
+    scenario = build_pump_degradation_scenario(seed=4, duration_ticks=12)
+    injection = scenario.fault_injections[0]
+    malformed = (
+        scenario.model_copy(update={"driver": ScenarioDriver.LOAD_TRANSIENT}),
+        scenario.model_copy(update={"plant_variant_id": PlantVariant.ASTER_B}),
+        scenario.model_copy(update={"duration_ticks": 8}),
+        scenario.model_copy(update={"scenario_id": "spoofed"}),
+        scenario.model_copy(update={"action_sequence": ()}),
+        scenario.model_copy(update={"action_sequence": [*scenario.action_sequence]}),
+        scenario.model_copy(update={"fault_injections": [injection]}),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"component_id": "cirrus"}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"channel_id": "aster-primary-flow-a"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"severity": SeverityBand.MEDIUM}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": 3}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": 2.0}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"onset_tick": True}),)}
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"duration_ticks": 2}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "fault_injections": (
+                    injection.model_copy(update={"fault_family": "PUMP_DEGRADATION"}),
+                )
+            }
+        ),
+        scenario.model_copy(
+            update={"fault_injections": (injection.model_copy(update={"severity": "LOW"}),)}
+        ),
+        scenario.model_copy(
+            update={
+                "action_sequence": (
+                    scenario.action_sequence[0].model_copy(
+                        update={"action": "INSUFFICIENT_EVIDENCE"}
+                    ),
+                    scenario.action_sequence[1],
+                    scenario.action_sequence[2],
+                )
+            }
+        ),
+        scenario.model_copy(update={"seed": "4"}),
+        scenario.model_copy(update={"seed": 4.0}),
+        scenario.model_copy(update={"seed": True}),
+    )
+    for invalid in malformed:
+        with pytest.raises(UnsupportedScenarioError):
+            generate_trace(invalid)
+    invalid_components: tuple[object, ...] = (
+        "cirrus",
+        "aster-train-cirrus ",
+        1,
+        1.0,
+        True,
+        [],
+    )
+    for invalid_component in invalid_components:
+        with pytest.raises(ValueError, match="component_id"):
+            build_pump_degradation_scenario(seed=4, component_id=invalid_component)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="at least 9"):
+        build_pump_degradation_scenario(seed=4, duration_ticks=8)
+
+
+def test_pump_degradation_rng_parity_and_step_variation() -> None:
+    original_state = random.getstate()
+    try:
+        random.seed(817)
+        before = random.getstate()
+        even = generate_trace(build_pump_degradation_scenario(seed=20))
+        assert random.getstate() == before
+        odd = generate_trace(build_pump_degradation_scenario(seed=21))
+        assert random.getstate() == before
+    finally:
+        random.setstate(original_state)
+
+    assert even.scenario.fault_injections[0].component_id == ASTER_A_SPEC.primary_train_ids[0]
+    assert odd.scenario.fault_injections[0].component_id == ASTER_A_SPEC.primary_train_ids[1]
+    assert (
+        even.targets.decisions[1].fault_labels
+        == odd.targets.decisions[1].fault_labels
+        == (FaultFamily.PUMP_DEGRADATION,)
+    )
+    even_health = next(
+        component.health
+        for component in even.latent_states[2].components
+        if component.component_id == even.scenario.fault_injections[0].component_id
+    )
+    odd_health = next(
+        component.health
+        for component in odd.latent_states[2].components
+        if component.component_id == odd.scenario.fault_injections[0].component_id
+    )
+    assert even_health != odd_health

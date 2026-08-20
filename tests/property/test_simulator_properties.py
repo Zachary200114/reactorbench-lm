@@ -10,6 +10,7 @@ from reactorbench.schemas import ActionLabel, DiagnosisStatus, SeverityBand, Sta
 from reactorbench.simulator import (
     ASTER_A_SPEC,
     build_load_transient_scenario,
+    build_pump_degradation_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
@@ -354,3 +355,41 @@ def test_sensor_noise_minimum_trace_is_prefix_of_a_lengthened_trace(
     assert tuple(
         decision.model_dump(exclude={"scenario_id"}) for decision in short.targets.decisions
     ) == tuple(decision.model_dump(exclude={"scenario_id"}) for decision in long.targets.decisions)
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    duration=st.integers(min_value=9, max_value=24),
+    component_id=st.sampled_from(ASTER_A_SPEC.primary_train_ids),
+)
+def test_pump_degradation_is_replayable_bounded_and_prefix_preserving(
+    seed: int, duration: int, component_id: str
+) -> None:
+    scenario = build_pump_degradation_scenario(
+        seed=seed, duration_ticks=duration, component_id=component_id
+    )
+    first = generate_trace(scenario)
+    second = generate_trace(scenario)
+    stable = generate_trace(build_stable_scenario(seed=seed, duration_ticks=duration))
+
+    assert first == second
+    assert scenario.fault_injections[0].component_id == component_id
+    assert first.latent_states[:2] == stable.latent_states[:2]
+    assert first.observations[:2] == stable.observations[:2]
+    assert [state.operating_mode for state in first.latent_states[:2]] == [
+        stable.latent_states[0].operating_mode
+    ] * 2
+    assert all(
+        0.0 <= value <= 1.0
+        for state in first.latent_states
+        for value in state.values.model_dump().values()
+    )
+    assert all(
+        abs(later - earlier) <= ASTER_A_SPEC.max_per_tick_step
+        for before, after in zip(first.latent_states, first.latent_states[1:], strict=False)
+        for earlier, later in zip(
+            before.values.model_dump().values(), after.values.model_dump().values(), strict=True
+        )
+    )
+    assert [decision.decision_tick for decision in first.targets.decisions] == [4, 6, 7]

@@ -5,6 +5,7 @@ import json
 from reactorbench.schemas import FaultFamily, ProvenanceRecord, SplitName, TaskName
 from reactorbench.simulator import (
     build_load_transient_scenario,
+    build_pump_degradation_scenario,
     build_sensor_drift_scenario,
     build_sensor_noise_scenario,
     build_sensor_stuck_load_scenario,
@@ -134,3 +135,43 @@ def test_sensor_noise_visible_payload_hides_truth_and_trajectory_validates() -> 
     assert tuple(injection.fault_family for injection in trajectory.scenario.fault_injections) == (
         FaultFamily.SENSOR_NOISE,
     )
+
+
+def test_pump_degradation_visible_payload_hides_fault_and_health_truth() -> None:
+    trace = generate_trace(build_pump_degradation_scenario(seed=20, duration_ticks=9))
+    payload = json.dumps(trace.visible_payload(), sort_keys=True)
+    provenance = ProvenanceRecord(
+        dataset_version="0.1.0",
+        generator_commit="abcdef1",
+        renderer_version="0.1.0",
+        seed=20,
+        trajectory_id="pump-trace-20",
+        scenario_id=trace.scenario.scenario_id,
+        plant_variant_id=trace.scenario.plant_variant_id,
+        fault_family_ids=(FaultFamily.PUMP_DEGRADATION,),
+        template_family_ids=("template-a",),
+        split_name=SplitName.IID_TEST,
+        task_name=TaskName.FAULT_FAMILY,
+    )
+
+    assert set(trace.visible_payload()) == {"schema_version", "observations", "events"}
+    assert trace.scenario.scenario_id not in payload
+    for forbidden in (
+        "PUMP_DEGRADATION",
+        "fault_family",
+        "fault_injection",
+        "STEADY_OPERATION",
+        "severity",
+        "onset",
+        "health",
+        "pending_maintenance",
+        "provenance",
+        "latent",
+        "targets",
+    ):
+        assert forbidden not in payload
+    trajectory = trace.to_structured_trajectory(
+        trajectory_id="pump-trace-20", provenance=provenance
+    )
+    assert trajectory.events == trace.events
+    assert trajectory.targets == trace.targets

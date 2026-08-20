@@ -58,6 +58,18 @@ _SENSOR_NOISE_SECOND_DECISION_TICK = 4
 _SENSOR_NOISE_DIAGNOSIS_TICK = 5
 _SENSOR_NOISE_FLAG_TICK = 6
 _SENSOR_NOISE_FLAG_APPLY_TICK = 7
+_PUMP_DEGRADATION_ONSET_TICK = 2
+_PUMP_FLOW_TICK = 3
+_PUMP_THERMAL_TICK = 4
+_PUMP_STEAM_TICK = 5
+_PUMP_OUTPUT_TICK = 6
+_PUMP_INSPECTION_DECISION_TICK = 6
+_PUMP_INSPECTION_APPLY_TICK = 7
+_PUMP_LOAD_DECISION_TICK = 7
+_PUMP_LOAD_APPLY_TICK = 8
+_PUMP_MIN_DURATION = 9
+_PUMP_MODE_SUBJECT = "aster-operating-domain"
+_PUMP_LOAD_SUBJECT = "aster-load-domain"
 _LOAD_RESPONSE_STAGES: dict[StateVariable, tuple[float, int]] = {
     StateVariable.LOAD_DEMAND: (1.0, _LOAD_ONSET_TICK),
     StateVariable.HEAT_SOURCE_LEVEL: (0.8, _LOAD_ONSET_TICK),
@@ -260,6 +272,59 @@ def build_load_transient_scenario(*, seed: int, duration_ticks: int = 12) -> Sce
     return scenario
 
 
+def build_pump_degradation_scenario(
+    *, seed: int, duration_ticks: int = 12, component_id: str | None = None
+) -> ScenarioDefinition:
+    """Build the canonical gradual primary-train degradation case."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if duration_ticks < _PUMP_MIN_DURATION:
+        raise ValueError("pump degradation needs at least 9 ticks")
+    if component_id is None:
+        selected_component = ASTER_A_SPEC.primary_train_ids[
+            seed % len(ASTER_A_SPEC.primary_train_ids)
+        ]
+    elif type(component_id) is str and component_id in ASTER_A_SPEC.primary_train_ids:
+        selected_component = component_id
+    else:
+        raise ValueError("component_id must be an Aster-A primary-train id or None")
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"aster-a-pump-degradation-{seed}-{duration_ticks}-"
+            f"{_PUMP_DEGRADATION_ONSET_TICK}-low-{selected_component}"
+        ),
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.PUMP_DEGRADATION,
+                component_id=selected_component,
+                onset_tick=_PUMP_DEGRADATION_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_PUMP_THERMAL_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_INSPECTION_DECISION_TICK,
+                action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_LOAD_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
 def build_sensor_stuck_load_scenario(
     *, seed: int, duration_ticks: int = 12, channel_id: str | None = None
 ) -> ScenarioDefinition:
@@ -427,6 +492,15 @@ def build_sensor_drift_scenario(
     return scenario
 
 
+def _pump_degradation_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    if (
+        len(scenario.fault_injections) == 1
+        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_DEGRADATION
+    ):
+        return scenario.fault_injections[0]
+    return None
+
+
 def _baseline_values(seed: int) -> PlantValues:
     values: dict[str, float] = {}
     for index, variable in enumerate(StateVariable):
@@ -461,8 +535,101 @@ def _load_transient_values(seed: int, tick: int) -> PlantValues:
     return PlantValues(**values)
 
 
+def _pump_health_step(seed: int) -> float:
+    """Return a seed-derived fictional health step in the closed [0.010, 0.014] range."""
+
+    return round(Random(seed * 4_000_019 + 97).uniform(0.010, 0.014), 6)  # noqa: S311
+
+
+def _pump_health_loss(*, step: float, tick: int) -> float:
+    if tick < _PUMP_DEGRADATION_ONSET_TICK:
+        return 0.0
+    return min(0.24, step * (tick - 1))
+
+
+def _pump_action_ramp(tick: int) -> float:
+    if tick < _PUMP_LOAD_APPLY_TICK:
+        return 0.0
+    return min(0.036, 0.012 * (tick - 7))
+
+
+def _pump_values(seed: int, tick: int) -> PlantValues:
+    baseline = _baseline_values(seed)
+    values = baseline.model_dump()
+    step = _pump_health_step(seed)
+    if tick >= _PUMP_FLOW_TICK:
+        values[StateVariable.PRIMARY_FLOW.value] = _clip(
+            baseline.primary_flow - min(0.18, 1.35 * step * (tick - 2))
+        )
+    if tick >= _PUMP_THERMAL_TICK:
+        values[StateVariable.PRIMARY_THERMAL_STATE.value] = _clip(
+            baseline.primary_thermal_state + min(0.12, 1.35 * step * (tick - 3))
+        )
+    if tick >= _PUMP_STEAM_TICK:
+        values[StateVariable.STEAM_STATE.value] = _clip(
+            baseline.steam_state - min(0.14, 1.35 * step * (tick - 4))
+        )
+    if tick >= _PUMP_OUTPUT_TICK:
+        output_loss = min(0.14, 1.35 * step * (tick - 5))
+        values[StateVariable.TURBINE_OUTPUT.value] = _clip(baseline.turbine_output - output_loss)
+        values[StateVariable.ELECTRICAL_OUTPUT.value] = _clip(
+            baseline.electrical_output - output_loss
+        )
+    action_ramp = _pump_action_ramp(tick)
+    if action_ramp:
+        values[StateVariable.LOAD_DEMAND.value] = _clip(baseline.load_demand - action_ramp)
+        values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(
+            baseline.heat_source_level - action_ramp
+        )
+    return PlantValues(**values)
+
+
+def _pump_components(
+    *, selected_component: str, step: float, tick: int
+) -> tuple[ComponentLatentState, ...]:
+    health_loss = _pump_health_loss(step=step, tick=tick)
+    return tuple(
+        ComponentLatentState(
+            component_id=component.component_id,
+            state=(
+                ComponentState.DEGRADED
+                if component.component_id == selected_component
+                and tick >= _PUMP_DEGRADATION_ONSET_TICK
+                else ComponentState.AVAILABLE
+            ),
+            health=(
+                _clip(1.0 - health_loss) if component.component_id == selected_component else 1.0
+            ),
+            pending_maintenance=(
+                component.component_id == selected_component and tick >= _PUMP_INSPECTION_APPLY_TICK
+            ),
+        )
+        for component in ASTER_A_SPEC.components
+    )
+
+
 def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]:
     baseline = _baseline_values(scenario.seed)
+    pump = _pump_degradation_injection(scenario)
+    if pump is not None:
+        step = _pump_health_step(scenario.seed)
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _PUMP_DEGRADATION_ONSET_TICK
+                    else OperatingMode.DISTURBED
+                    if tick < _PUMP_LOAD_APPLY_TICK
+                    else OperatingMode.RECOVERY
+                ),
+                values=_pump_values(scenario.seed, tick),
+                components=_pump_components(
+                    selected_component=pump.component_id, step=step, tick=tick
+                ),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
     components = tuple(
         ComponentLatentState(
             component_id=component.component_id,
@@ -547,6 +714,30 @@ def _sensor_noise_offset(*, seed: int, tick: int) -> float:
     return phase * amplitude * alternating
 
 
+def _pump_channel_status(tick: int, variable: StateVariable) -> ObservationStatus:
+    if variable is StateVariable.PRIMARY_FLOW:
+        if tick < _PUMP_FLOW_TICK:
+            return ObservationStatus.NORMAL
+        return ObservationStatus.WATCH if tick <= 5 else ObservationStatus.ABNORMAL
+    if variable is StateVariable.PRIMARY_THERMAL_STATE:
+        if tick < _PUMP_THERMAL_TICK:
+            return ObservationStatus.NORMAL
+        return ObservationStatus.WATCH if tick <= 5 else ObservationStatus.ABNORMAL
+    if variable is StateVariable.STEAM_STATE:
+        if tick < _PUMP_STEAM_TICK:
+            return ObservationStatus.NORMAL
+        return ObservationStatus.WATCH if tick == 5 else ObservationStatus.ABNORMAL
+    if variable in {StateVariable.TURBINE_OUTPUT, StateVariable.ELECTRICAL_OUTPUT}:
+        return ObservationStatus.NORMAL if tick < _PUMP_OUTPUT_TICK else ObservationStatus.ABNORMAL
+    return ObservationStatus.NORMAL
+
+
+def _pump_overall_status(tick: int) -> ObservationStatus:
+    if tick < _PUMP_DEGRADATION_ONSET_TICK:
+        return ObservationStatus.NORMAL
+    return ObservationStatus.WATCH if tick <= 5 else ObservationStatus.ABNORMAL
+
+
 def _selected_channel_status(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ObservationStatus:
@@ -606,6 +797,7 @@ def _observations(
     scenario: ScenarioDefinition, latent_states: tuple[LatentPlantState, ...]
 ) -> tuple[ObservationFrame, ...]:
     frames: list[ObservationFrame] = []
+    pump = _pump_degradation_injection(scenario)
     stuck = _sensor_stuck_injection(scenario)
     sensor_noise = _sensor_noise_injection(scenario)
     for latent in latent_states:
@@ -641,19 +833,29 @@ def _observations(
                     observed_value = _clip(
                         observed_value + _sensor_noise_offset(seed=scenario.seed, tick=latent.tick)
                     )
+                channel_status = (
+                    _pump_channel_status(latent.tick, variable)
+                    if pump is not None
+                    else _selected_channel_status(scenario, latent.tick, channel.channel_id)
+                )
+                channel_quality = (
+                    ChannelQuality.GOOD
+                    if pump is not None
+                    else _selected_channel_quality(scenario, latent.tick, channel.channel_id)
+                )
                 channels.append(
                     SensorChannelObservation(
                         channel_id=channel.channel_id,
                         variable=variable,
                         value=observed_value,
-                        quality=_selected_channel_quality(
-                            scenario, latent.tick, channel.channel_id
-                        ),
-                        status=_selected_channel_status(scenario, latent.tick, channel.channel_id),
+                        quality=channel_quality,
+                        status=channel_status,
                     )
                 )
-        overall_status = ObservationStatus.NORMAL
-        if scenario.fault_injections:
+        overall_status = (
+            _pump_overall_status(latent.tick) if pump is not None else ObservationStatus.NORMAL
+        )
+        if pump is None and scenario.fault_injections:
             selected = scenario.fault_injections[0].channel_id or _INSTRUMENTATION
             overall_status = _selected_channel_status(scenario, latent.tick, selected)
         frames.append(
@@ -688,6 +890,237 @@ def _event(
     return event
 
 
+def _first_channel_id(variable: StateVariable) -> str:
+    return next(
+        channel.channel_id for channel in ASTER_A_SPEC.channels if channel.variable is variable
+    )
+
+
+def _observed_value(
+    observations: tuple[ObservationFrame, ...], *, tick: int, variable: StateVariable
+) -> float:
+    frame = observations[tick]
+    value = next(channel.value for channel in frame.channels if channel.variable is variable)
+    if value is None:
+        raise ValueError("pump process observations must remain available")
+    return value
+
+
+def _pump_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit the fixed, backward-linked visible causal chain for G06."""
+
+    injection = _pump_degradation_injection(scenario)
+    if injection is None:
+        raise ValueError("pump event generation requires a pump-degradation injection")
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_INSTRUMENTATION,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    component = _event(
+        events,
+        sim_time=_PUMP_DEGRADATION_ONSET_TICK,
+        event_type=EventType.COMPONENT_STATE_CHANGED,
+        subject_id=injection.component_id,
+        component_state_before=ComponentState.AVAILABLE,
+        component_state_after=ComponentState.DEGRADED,
+        evidence_slots=(EvidenceSlot.COMPONENT_HEALTH_DECLINING,),
+        related_event_ids=(stable.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_PUMP_DEGRADATION_ONSET_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=_PUMP_MODE_SUBJECT,
+        operating_mode_before=OperatingMode.STABLE,
+        operating_mode_after=OperatingMode.DISTURBED,
+        related_event_ids=(component.event_id,),
+    )
+    flow = _event(
+        events,
+        sim_time=_PUMP_FLOW_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.PRIMARY_FLOW),
+        variable=StateVariable.PRIMARY_FLOW,
+        value_before=_observed_value(
+            observations, tick=_PUMP_FLOW_TICK - 1, variable=StateVariable.PRIMARY_FLOW
+        ),
+        value_after=_observed_value(
+            observations, tick=_PUMP_FLOW_TICK, variable=StateVariable.PRIMARY_FLOW
+        ),
+        observation_status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.FLOW_DECLINING, EvidenceSlot.MULTIPLE_CHANNELS_AGREE),
+        related_event_ids=(component.event_id,),
+    )
+    thermal = _event(
+        events,
+        sim_time=_PUMP_THERMAL_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.PRIMARY_THERMAL_STATE),
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        value_before=_observed_value(
+            observations,
+            tick=_PUMP_THERMAL_TICK - 1,
+            variable=StateVariable.PRIMARY_THERMAL_STATE,
+        ),
+        value_after=_observed_value(
+            observations, tick=_PUMP_THERMAL_TICK, variable=StateVariable.PRIMARY_THERMAL_STATE
+        ),
+        observation_status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+        related_event_ids=(flow.event_id,),
+    )
+    missing_evidence = _event(
+        events,
+        sim_time=_PUMP_THERMAL_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_INSTRUMENTATION,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        related_event_ids=(thermal.event_id,),
+    )
+    early_decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_PUMP_THERMAL_TICK,
+        diagnosis_status=DiagnosisStatus.UNRESOLVED,
+        evidence_event_ids=(missing_evidence.event_id,),
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+    )
+    _event(
+        events,
+        sim_time=_PUMP_STEAM_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_INSTRUMENTATION,
+        action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+        related_event_ids=(missing_evidence.event_id,),
+    )
+    steam = _event(
+        events,
+        sim_time=_PUMP_STEAM_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.STEAM_STATE),
+        variable=StateVariable.STEAM_STATE,
+        value_before=_observed_value(
+            observations, tick=_PUMP_STEAM_TICK - 1, variable=StateVariable.STEAM_STATE
+        ),
+        value_after=_observed_value(
+            observations, tick=_PUMP_STEAM_TICK, variable=StateVariable.STEAM_STATE
+        ),
+        observation_status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.DEPENDENT_TREND_DELAY,),
+        related_event_ids=(thermal.event_id,),
+    )
+    electrical = _event(
+        events,
+        sim_time=_PUMP_OUTPUT_TICK,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=_first_channel_id(StateVariable.ELECTRICAL_OUTPUT),
+        variable=StateVariable.ELECTRICAL_OUTPUT,
+        value_before=_observed_value(
+            observations,
+            tick=_PUMP_OUTPUT_TICK - 1,
+            variable=StateVariable.ELECTRICAL_OUTPUT,
+        ),
+        value_after=_observed_value(
+            observations, tick=_PUMP_OUTPUT_TICK, variable=StateVariable.ELECTRICAL_OUTPUT
+        ),
+        observation_status=ObservationStatus.ABNORMAL,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        related_event_ids=(steam.event_id,),
+    )
+    mature_evidence_slots = (
+        EvidenceSlot.COMPONENT_HEALTH_DECLINING,
+        EvidenceSlot.FLOW_DECLINING,
+        EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+        EvidenceSlot.CORRELATED_STATE_CHANGE,
+        EvidenceSlot.DEPENDENT_TREND_DELAY,
+    )
+    mature_decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_PUMP_INSPECTION_DECISION_TICK,
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=(FaultFamily.PUMP_DEGRADATION,),
+        evidence_event_ids=(
+            component.event_id,
+            flow.event_id,
+            thermal.event_id,
+            steam.event_id,
+            electrical.event_id,
+        ),
+        evidence_slots=mature_evidence_slots,
+        immediate_action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+    )
+    _event(
+        events,
+        sim_time=_PUMP_INSPECTION_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=injection.component_id,
+        action_label=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+        related_event_ids=(electrical.event_id,),
+    )
+    persistent = _event(
+        events,
+        sim_time=_PUMP_INSPECTION_APPLY_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=_PUMP_MODE_SUBJECT,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE, EvidenceSlot.DEPENDENT_TREND_DELAY),
+        related_event_ids=(electrical.event_id,),
+    )
+    persistent_decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_PUMP_LOAD_DECISION_TICK,
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=(FaultFamily.PUMP_DEGRADATION,),
+        evidence_event_ids=(
+            component.event_id,
+            flow.event_id,
+            thermal.event_id,
+            steam.event_id,
+            electrical.event_id,
+            persistent.event_id,
+        ),
+        evidence_slots=mature_evidence_slots,
+        immediate_action=ActionLabel.REDUCE_SIMULATED_LOAD,
+    )
+    reduce_load = _event(
+        events,
+        sim_time=_PUMP_LOAD_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=_PUMP_LOAD_SUBJECT,
+        action_label=ActionLabel.REDUCE_SIMULATED_LOAD,
+        related_event_ids=(persistent.event_id,),
+    )
+    target_load = _event(
+        events,
+        sim_time=_PUMP_LOAD_APPLY_TICK,
+        event_type=EventType.TARGET_CHANGED,
+        subject_id=_PUMP_LOAD_SUBJECT,
+        variable=StateVariable.LOAD_DEMAND,
+        value_before=_pump_values(scenario.seed, _PUMP_LOAD_APPLY_TICK - 1).load_demand,
+        value_after=_pump_values(scenario.seed, _PUMP_LOAD_APPLY_TICK).load_demand,
+        related_event_ids=(reduce_load.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_PUMP_LOAD_APPLY_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=_PUMP_MODE_SUBJECT,
+        operating_mode_before=OperatingMode.DISTURBED,
+        operating_mode_after=OperatingMode.RECOVERY,
+        related_event_ids=(target_load.event_id,),
+    )
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id,
+        decisions=(early_decision, mature_decision, persistent_decision),
+    )
+
+
 def _events_and_targets(
     scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
 ) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
@@ -716,6 +1149,10 @@ def _events_and_targets(
                 ),
             ),
         )
+
+    pump = _pump_degradation_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and pump is not None:
+        return _pump_events_and_targets(scenario, observations)
 
     sensor_noise = _sensor_noise_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and sensor_noise is not None:
@@ -1172,6 +1609,8 @@ def _events_and_targets(
 
 
 def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
+    if type(scenario) is not ScenarioDefinition:
+        raise UnsupportedScenarioError("scenario must use the canonical contract")
     if scenario.schema_version != SCHEMA_VERSION:
         raise UnsupportedScenarioError("unsupported scenario schema version")
     if type(scenario.plant_variant_id) is not PlantVariant:
@@ -1277,6 +1716,40 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             raise UnsupportedScenarioError("sensor-stuck load scenario id is noncanonical")
         return
     injection = scenario.fault_injections[0]
+    if injection.fault_family is FaultFamily.PUMP_DEGRADATION:
+        pump_expected_actions = (
+            ScenarioAction(
+                decision_tick=_PUMP_THERMAL_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_INSPECTION_DECISION_TICK,
+                action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_LOAD_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+        )
+        if (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or type(injection.component_id) is not str
+            or injection.component_id not in ASTER_A_SPEC.primary_train_ids
+            or injection.channel_id is not None
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _PUMP_DEGRADATION_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.action_sequence != pump_expected_actions
+            or scenario.duration_ticks < _PUMP_MIN_DURATION
+        ):
+            raise UnsupportedScenarioError("unsupported pump-degradation scenario")
+        expected_id = (
+            f"aster-a-pump-degradation-{scenario.seed}-{scenario.duration_ticks}-"
+            f"{_PUMP_DEGRADATION_ONSET_TICK}-low-{injection.component_id}"
+        )
+        if scenario.scenario_id != expected_id:
+            raise UnsupportedScenarioError("pump-degradation scenario id is noncanonical")
+        return
     if injection.fault_family is FaultFamily.SENSOR_NOISE:
         channel_id = injection.channel_id
         noise_expected_actions = (
