@@ -86,7 +86,8 @@ milestone, but they are not yet a frozen version 1 interface and no dataset exis
 `src/reactorbench/simulator/` currently implements Aster-A stable operation, one
 observation-only `SENSOR_DRIFT` case, a benign `LOAD_TRANSIENT`, and one constrained
 `SENSOR_STUCK`-during-`LOAD_TRANSIENT` composition. It also implements one
-observation-only `SENSOR_NOISE` case. It uses
+observation-only `SENSOR_NOISE` case and the bounded `PUMP_DEGRADATION` and
+context-aware `PUMP_TRIP` process-fault cases. It uses
 deterministic local random streams, two fictional channels per normalized variable,
 bounded latent updates, and explicit observation/event/target separation. A same-seed
 stable trace and drift trace have identical latent states; only the selected channel
@@ -138,10 +139,41 @@ maintenance and the operating mode entering `RECOVERY` at tick 8 while degradati
 persists. This developmental fixture informs G06 but does not freeze it; human review
 remains pending.
 
-The public visible payload contains observations and canonical events only. Scenario
-injections, latent truth, fault labels, and targets remain outside that payload.
+The pump-trip fixture is limited to one indefinite low-severity `PUMP_TRIP` on either
+fictional Aster-A primary train during steady operation. It uses a strict immutable
+`StandbyContext` containing exactly one context identifier, the distinct active and
+standby train identifiers, standby state, mapped support-bus identifier and state, and
+a positive start delay. Aster-A's wholly project-authored dependency card maps Cirrus
+to Rill and Kestrel to Quill one-to-one and gives standby start a one-tick delay. These
+names and relationships are design constants in the invented world, not a model of a
+real facility.
+
+Matched `AVAILABLE` and `UNAVAILABLE` contexts share the same causal trip prefix. At
+tick 2 the active train changes from `AVAILABLE` to `UNAVAILABLE` and the mode changes
+from `STABLE` to `DISTURBED`; tick 3 contains the seed-derived abrupt primary-flow loss,
+which is the sole normal per-tick step-bound exception; tick 4 contains a bounded
+primary-thermal rise; and tick 5 contains delayed steam, turbine, and electrical-output
+declines and the `PUMP_TRIP` diagnosis. In the available branch, tick 5 selects the
+standby, tick 6 applies the selection and changes the standby to `STARTING`, and tick 7
+changes it to `RECOVERING`, begins bounded partial flow recovery, and enters `RECOVERY`
+only after the visible recovery. In the unavailable branch, tick 5 selects simulated
+load reduction; tick 6 applies it, lowers fictional heat/load targets, and selects the
+simulated stable-state action; tick 7 applies that action and enters `STABILIZED` while
+the standby remains unavailable and flow does not recover. The active train remains
+unavailable in both branches. This developmental fixture informs G07 but does not freeze
+it; human review remains pending.
+
+The public structured payload is an exact allowlist containing schema version, safe
+standby context or `null`, observations, and canonical events. Scenario injections,
+action sequences, latent truth, fault labels, targets, and provenance remain outside
+that payload. Before Phase 3 narrative/task generation, the availability-bearing
+`context_id` must be filtered from prompts, matched context pairs must be grouped before
+split assignment, and context presence/templates must be balanced so the G07-only
+object or tick-0 note cannot become a fault-label shortcut.
 Decision labels are recorded at their decision tick; any corresponding applied-action
 event occurs on the next tick so an action cannot precede its supporting evidence.
+Task inputs must be constructed from prefixes ending at the decision tick; later
+`ACTION_APPLIED` events and their consequences cannot be allowed to reveal that target.
 
 The current prohibited-content guard is a deterministic, redacting structural gate.
 It is intentionally non-exhaustive and does not replace the reviewed denylist and
@@ -187,8 +219,9 @@ The browser never selects paths, models, token limits, execution devices, or arb
 ## Current implementation boundary
 
 The Phase 1 foundation and selected Phase 2 generator milestones are present. The recorded
-2026-08-20 Python 3.12 gate passed formatting, lint, strict typing, 181 tests, 92.29%
-branch coverage, distribution builds, and isolated wheel verification. Phase 2 is not
+2026-08-20 Python 3.12 gate passed formatting across 52 files, lint, strict typing, 206 tests, and
+92.57% total coverage with branch measurement enabled, plus distribution builds and
+isolated wheel verification. Phase 2 is not
 complete: additional process faults, compositions, variants, and broader generator gates
 still need implementation. Dataset generation, tokenizer training, model training,
 measured evaluation, inference serving, and UI construction remain later work. Refer to

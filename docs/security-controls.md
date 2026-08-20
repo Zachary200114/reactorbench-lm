@@ -14,10 +14,10 @@ No production or deployment control is verified by the current local milestones.
 | Control | Threats | Requirement | Intended implementation | Verification evidence | Current status |
 |---|---|---|---|---|---|
 | SC-001 Synthetic-only boundary | TM-01, TM-14 | Exclude real plant, Navy, restricted, operational, and proprietary content | Generator-only inputs, prohibited-content scanner, visible exact disclaimer | Scanner fixtures, sampled-release review record, UI inspection | Disclaimer and a redacting non-exhaustive Phase 2 scanner are implemented and fixture-tested; reviewed full denylist and human sampling remain pending |
-| SC-002 Strict internal schemas | TM-02, TM-03 | Reject coercion, unknown fields, ambiguous targets, non-finite and out-of-range values | Strict Pydantic v2 contracts with immutable instances under the unfrozen `0.1.0` developmental interface | Foundation unit tests plus generator unit/property tests for strictness, bounds, staged ordering, mappings, replay, canonical IDs and enum instances, exact integer ticks, tuple containers, and unsupported driver/fault compositions; unchecked `model_copy` lookalikes are rejected before dispatch | Implemented and verified for the current internal-contract and structured-generator scope |
+| SC-002 Strict internal schemas | TM-02, TM-03 | Reject coercion, unknown fields, ambiguous targets, non-finite and out-of-range values | Strict Pydantic v2 contracts with immutable instances under the unfrozen `0.1.0` developmental interface | Foundation unit tests plus generator unit/property tests for strictness, bounds, staged ordering, mappings, replay, canonical IDs and enum instances, exact integer ticks, tuple containers, and unsupported driver/fault compositions; G07 tests additionally cover the strict `StandbyContext`, distinct train roles, exact `AVAILABLE`/`UNAVAILABLE` states, the invented train/bus map and one-tick delay, and unchecked `model_copy` lookalikes | Implemented and verified for the current internal-contract and structured-generator scope |
 | SC-003 Configuration boundary | TM-03, TM-04, TM-10 | Reject unknown config and unsafe output locations; never overwrite runs | `src/reactorbench/config.py`, reviewed project-relative roots, immutable run snapshots | Unit tests for extra fields, traversal and symlink escape, collision, canonical serialization, and hash | Implemented and verified for the local Phase 1 configuration scope |
-| SC-004 Ground-truth isolation | TM-02, TM-10 | Keep latent injection separate from visible observation and task input | Separate state, observation, event, scenario, and target models | Contract tests reject hidden fault, driver, scenario, severity, onset, provenance, numeric health, maintenance state, and `NOISY` shortcut fields from visible payloads; stuck/load and noise/stable tests prove same-seed latent equality and exact preservation of all nonselected observations; pump tests expose categorical degradation evidence while retaining numeric component health only in latent truth; rendered-input review remains later work | Implemented and verified for the current structured simulator boundary; renderer contamination gate pending |
-| SC-005 Split and duplicate integrity | TM-02, TM-10 | Assign structured splits before rendering and detect leakage | Frozen split manifests, scenario/fault/template constraints, text/skeleton hashes | Cross-split unit/property tests and published overlap report | Planned for Phase 3 |
+| SC-004 Ground-truth isolation | TM-02, TM-10 | Keep latent injection separate from visible observation and task input | Separate state, observation, event, scenario, and target models; an exact structured-payload allowlist | Contract tests reject hidden fault, driver, scenario, severity, onset, action sequence, provenance, numeric health, maintenance state, and `NOISY` shortcut fields from visible payloads; G07 exposes only the strict safe standby context or `null`, observations, and events while preserving audit truth separately; matched trip tests prove identical same-seed pre-branch values/observations and context-driven action changes | Implemented and verified for the current structured simulator boundary; prompt filtering, decision-tick slicing, and renderer contamination gates remain pending |
+| SC-005 Split and duplicate integrity | TM-02, TM-10 | Assign structured splits before rendering and detect leakage | Frozen split manifests, scenario/fault/template constraints, matched-context group keys, text/skeleton hashes | Cross-split unit/property tests must keep both members of a context counterfactual group in one assigned split, reject availability-bearing audit identifiers in prompts, exclude post-decision applied actions, and publish overlap/class-context reports | Planned for Phase 3 |
 | SC-006 Narrow request schema | TM-03, TM-04, TM-05 | Accept only versioned curated identifiers and bounded controls | Server-side gateway schema plus inference-side critical revalidation | Valid/invalid API contract suite and schema parity test | Planned for Phase 7 |
 | SC-007 Request resource limits | TM-05 | Bound bytes, structure, tokens, output, duration, rate, batch, and concurrency | Gateway/inference configuration selected from benchmarks | Boundary, timeout, rate, and concurrency tests | Planned; numeric limits require measurements |
 | SC-008 No arbitrary ingestion | TM-01, TM-04 | Expose no file, URL, path, checkpoint, tokenizer, or unrestricted-log input | Such fields absent from public schemas and routes | Negative API route/schema tests | Documented; service not yet present |
@@ -35,8 +35,9 @@ No production or deployment control is verified by the current local milestones.
 | SC-020 Private vulnerability reporting | TM-07, TM-09 | Provide a tested private route without inventing contact data | GitHub private reporting or named private channel selected by owner | Pre-publication reporting drill | Policy documented; route not configured |
 
 Current local evidence recorded on 2026-08-20 under CPython 3.12.11: `make check`
-passed with 181 tests and 92.29% branch coverage; Ruff formatting and lint, strict
-typing across 29 source files, distribution builds,
+passed with 206 tests and 92.57% total coverage while branch measurement was enabled;
+Ruff formatting across 52 files and
+lint, strict typing across 29 source files, distribution builds,
 and isolated wheel verification also passed. These results do not verify any
 production, service, UI, deployment, full-denylist, or human-review control.
 
@@ -79,3 +80,11 @@ production, service, UI, deployment, full-denylist, or human-review control.
 ## Residual-risk rule
 
 Verification narrows uncertainty; it does not prove that the project is fully secure. Release notes must name which controls are implemented, which are tested, which are inherited from a platform, and which remain deferred.
+
+The current G07 structured allowlist is not yet a safe rendered-task contract. A
+non-null standby context or the G07-only tick-0 context note could become a fault-label
+shortcut; `context_id` itself contains an availability word; and a record built after
+the decision could expose its later `ACTION_APPLIED` event. Phase 3 must filter audit-only
+identifiers, balance semantic context roles and templates, group matched pairs before
+splitting, slice inputs at the decision tick, and test these properties before any
+dataset pilot.

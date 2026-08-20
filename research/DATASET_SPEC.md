@@ -35,6 +35,27 @@ Every released example must be reproducible from:
 - `split_name`
 - `task_name`
 
+Before the Phase 3 pilot, trajectory-index and split-manifest provenance must also add
+two explicit matched-context fields:
+
+- `counterfactual_group_id`: one stable identifier derived only from the pair's
+  preregistered shared factors. Its derivation explicitly excludes every decisive
+  varied factor, target label, rendered string, and post-decision outcome;
+- `counterfactual_variant_id`: the bounded semantic role that differs inside that group,
+  such as `standby_available` or `standby_unavailable`.
+
+For G07 specifically, group siblings share plant variant, seed, active component role,
+duration, `PUMP_TRIP` family, onset, severity, and pre-branch causal schedule; standby
+availability is the varied factor. Other counterfactual families may vary the fault
+itself—for example, the future G08/G09 lag-versus-stuck comparison—so a generic group
+key must not assume that fault family, onset, or severity are always shared.
+
+These fields are grouping metadata, not prompt text or target labels. The current
+developmental `ProvenanceRecord` does not yet contain them, so either that schema or a
+separate strict split-manifest contract must be extended and snapshot-reviewed before a
+dataset pilot. A raw simulator `context_id` is audit metadata and must never substitute
+for these fields because its current value contains the availability word.
+
 No manually edited generated record should enter a release. If a template or rule is corrected, regenerate the affected shard and bump the appropriate version.
 
 ## 3. Three canonical data views
@@ -66,6 +87,9 @@ Suggested fields:
 | `evidence_slots` | list[string] | Facts supporting the ground-truth target |
 | `action_label` | enum | One immediate fictional next-action label at this decision tick |
 | `action_sequence` | list[`{decision_tick: int, action: enum}`] | Ordered trajectory-level sequence; exactly one immediate fictional action per listed decision tick |
+| `standby_context` | struct/null | Bounded fictional context for context-aware trajectories; audit source, not automatically model input |
+| `counterfactual_group_id` | string/null | Split-group key shared by matched context variants |
+| `counterfactual_variant_id` | enum/null | Semantic role within a matched counterfactual group |
 | `policy_state` | enum | Fictional policy-card state |
 | `is_ambiguous` | boolean | Whether abstention is expected |
 
@@ -114,6 +138,14 @@ One prompt/target record per supervised task:
 ```
 
 The target format should be easy to parse and score. Natural-language explanations can accompany structured targets, but structured labels remain authoritative.
+
+Every decision-task record must be built from a prefix ending at its exact
+`decision_tick`. Events and state consequences after that tick—including a later
+`ACTION_APPLIED` event for the target action—are excluded. An applied action from an
+earlier decision may be included for a later decision only when it occurred on or
+before the later decision tick and the task contract explicitly permits that causal
+history. Audit-only fields such as `context_id`, scenario identity, fault injection,
+latent truth, and provenance are never copied into a rendered prompt.
 
 ## 4. Corpus composition targets
 
@@ -164,6 +196,10 @@ Do not use a frontier LLM to write training examples. That would blur ownership,
 - Track lexical overlap and duplicate n-grams across splits.
 - Limit any single rendered string or template skeleton to a declared maximum share.
 - Generate matched counterfactual pairs where one evidence fact changes the target.
+- Balance and filter structural context cues. A non-null `standby_context`, a G07-only
+  tick-0 note, or one template family must not by itself identify `PUMP_TRIP` or its
+  action label; add suitable negative controls or exclude the structural field from a
+  task view until that shortcut test passes.
 - Include both explicit and indirect evidence, but never require outside nuclear knowledge.
 
 ### Controlled noise
@@ -209,6 +245,16 @@ Assign splits from structured scenario definitions **before** narrative renderin
   training on another seed, channel, alias, or component role. Training may contain
   that benign driver alone and that fault alone where each is otherwise valid, but
   never their held-out composition.
+- Compute `counterfactual_group_id` before split assignment and assign the entire group
+  atomically. Matched standby-available and standby-unavailable siblings must never be
+  placed in different splits; both members of a `counterfactual_test` pair must remain
+  together so comparison is possible without train/test sibling leakage.
+- Do not derive a split from `context_id`, rendered availability words, a target label,
+  or a post-decision outcome. Grouping uses the preregistered shared-factor definition
+  and is computed independently of model input text and targets.
+- Preserve and report counts by fault family, context presence, and
+  `counterfactual_variant_id`. For G07-derived records, require paired 1:1 availability
+  roles before rendering; any later filtering must remove or retain the pair together.
 - Deduplicate exact text and normalized template skeletons globally.
 - Measure n-gram overlap across train/test and publish it.
 - Freeze test manifests before the main run.
@@ -234,6 +280,11 @@ Target: canonical evidence slots present in the input.
 
 Input: narrative plus optional fictional policy card.
 Target: one fictional action label. It is never a real procedure.
+
+The input ends at the action's `decision_tick`; its own later application and effects
+are forbidden from the prompt. Context-aware examples expose only the semantic facts
+needed by the fictional task, never audit identifiers whose spelling encodes the
+answer.
 
 ### `incident_summary`
 
@@ -262,6 +313,14 @@ Target: identify which structured conclusion changes and why, using canonical ev
 - Every narrative maps back to a structured trajectory.
 - Every mentioned value/status matches the structured record.
 - No target appears accidentally in the input unless the task intends it.
+- Every decision-task input ends at the declared `decision_tick`; no later event,
+  `ACTION_APPLIED` record, mode change, or recovery/stabilization effect is present.
+- `context_id`, scenario identity, counterfactual group identifiers, and provenance do
+  not appear in narrative or task prompts.
+- Matched context pairs share one `counterfactual_group_id`, have distinct bounded
+  variant roles, remain in one split, and survive filtering together.
+- Context presence, tick-0 context-note templates, and availability wording are tested
+  for fault-family and action-label shortcuts; contingency counts are reported.
 - No malformed timestamps, component aliases, or unfinished templates.
 - No real facility names, people, contact information, addresses, emails, phone numbers, or real incident identifiers.
 

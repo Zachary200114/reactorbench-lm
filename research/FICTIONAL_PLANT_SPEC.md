@@ -1,6 +1,6 @@
 # Fictional plant specification
 
-Status: pre-implementation design contract
+Status: developmental design contract; selected Aster-A fixtures are implemented, but the golden suite is not frozen
 Plant type: wholly fictional, civilian, pressurized-water-inspired teaching abstraction
 Working plant name: **Aster Station**
 
@@ -277,6 +277,10 @@ Rules:
 
 - A bus interruption changes only dependencies assigned in the invented variant.
 - The dependency map must not resemble or be sourced from a real facility.
+- The current Aster-A card uses an invented one-to-one mapping: primary train Cirrus
+  maps to support bus Rill, and primary train Kestrel maps to support bus Quill.
+- A valid Aster-A standby start uses a one-tick fictional delay. Both this delay and the
+  mapping are project-authored software constants with no claimed real-plant analogue.
 
 ### 6.8 `INSTRUMENTATION`
 
@@ -314,6 +318,43 @@ Sensor faults alter bias, noise, or availability. They never alter the latent tr
 | `SUPPORT_POWER_INTERRUPTION` | Reduce one fictional bus | Assigned dependencies change state | Bus event precedes only mapped component changes | No real electrical topology |
 | `LOAD_TRANSIENT` *(benign driver, not a fault)* | Change `LD` | Coordinated normal transition | Related variables move consistently | Ground truth is `NO_FAULT`; never include in `fault_family_ids` |
 | `ABSTRACT_INVENTORY_LOSS` | Apply synthetic loss to `PI` | Inventory falls; related fictional trends follow | Multiple independent observations agree | No break size/location or emergency progression |
+
+### 7.1 Developmental G07 pump-trip contract
+
+The implemented Aster-A G07 fixture is a matched counterfactual pair, not a generalized
+plant policy. Both members use steady operation, one indefinite low-severity
+`PUMP_TRIP` on either active primary train, the other primary train as standby, its
+invented mapped support bus, and a one-tick standby-start delay. A strict
+`StandbyContext` records only the context identifier, distinct active/standby train
+identifiers, standby state, support-bus identifier and state, and positive start delay.
+Only exact `AVAILABLE` or `UNAVAILABLE` standby contexts are supported. The current
+matched pair holds the mapped support bus `AVAILABLE` and changes only the standby
+state; other bus-state combinations remain outside this fixture and fail closed.
+
+The fixed fictional schedule is:
+
+- Tick 2: the active train changes from `AVAILABLE` to `UNAVAILABLE`, and operating
+  mode changes from `STABLE` to `DISTURBED`; active-train numeric health remains `1.0`
+  because this case models an abrupt state change rather than gradual degradation.
+- Tick 3: primary flow loses the selected train's contribution. This seed-derived
+  abrupt loss is the sole exception to the normal per-tick step bound; transfer
+  efficiency remains unchanged.
+- Tick 4: primary thermal state rises by a bounded fictional increment.
+- Tick 5: steam, turbine output, and electrical output decline after the dependent
+  delay. Both contexts diagnose `PUMP_TRIP` using the same process evidence plus the
+  visible standby fact.
+- Available branch: tick 5 selects `SELECT_SYNTHETIC_STANDBY_TRAIN`; tick 6 applies the
+  action and moves the standby from `AVAILABLE` to `STARTING`; tick 7 moves it to
+  `RECOVERING`, begins bounded partial flow recovery, and changes the mode to `RECOVERY`
+  only after recovery is visible.
+- Unavailable branch: tick 5 selects `REDUCE_SIMULATED_LOAD`; tick 6 applies it, lowers
+  fictional heat/load targets, and selects `ENTER_SIMULATED_STABLE_STATE`; tick 7
+  applies that action and changes the mode to `STABILIZED`. The standby remains
+  unavailable and primary flow does not recover.
+
+The tripped active train stays unavailable in both branches. G07 remains a
+developmental fixture outside training and is not frozen until the required human
+golden-scenario review occurs.
 
 ## 8. Action-label semantics
 

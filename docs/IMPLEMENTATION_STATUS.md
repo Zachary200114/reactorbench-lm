@@ -1,13 +1,18 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-20 05:18 EDT
-Current phase: Phase 2 in progress — developmental G06 `PUMP_DEGRADATION` milestone complete
-Checkpoint reason: the first constrained process-fault case passed focused and full gates, fresh independent review, and local code integration; documentation is being preserved as a separate handoff checkpoint
+Last updated: 2026-08-20 05:55 EDT
+Current phase: Phase 2 in progress — developmental G07 context-aware `PUMP_TRIP` milestone complete
+Checkpoint reason: the matched fictional standby-context branches passed focused and full gates, fresh independent review, and local code integration; documentation is being preserved as a separate handoff checkpoint
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Current objective
 
-Audit the authoritative G07 `PUMP_TRIP` contract, Aster-A standby/dependency representation, abrupt component-to-process causal ordering, and context-dependent action requirement before changing code. Determine whether the smallest fictional case can be represented without prematurely adding a second plant variant or changing schemas. Do not add another fault, generalize composition, render a dataset, train a tokenizer/model, build the UI, or expose a network service until the relevant gates pass.
+Perform a read-only joint capability audit of the authoritative G08 `VALVE_LAG` and
+G09 `VALVE_STUCK` contracts before changing code. Resolve their shared command/position
+representation, bounded-delay and persistence evidence, counterfactual relationship,
+and any schema or Aster-A component prerequisite. Then define the smallest G08
+implementation gate. Do not implement G08/G09 during the audit, render a dataset, train
+a tokenizer/model, build the UI, or expose a network service.
 
 ## Completed work
 
@@ -53,6 +58,13 @@ Audit the authoritative G07 `PUMP_TRIP` contract, Aster-A standby/dependency rep
 - Added a contiguous, monotonic, backward-linked causal event chain and mature evidence spanning component-health decline, agreeing flow decline, correlated state change, and dependent delay. Visible payloads omit fault truth, scenario identifiers, severity, onset, numeric health, maintenance state, provenance, latent state, and targets.
 - Added strict pump-specific fail-closed checks, deterministic replay and prefix tests, both train aliases, global RNG isolation, bounded per-tick changes, stable-noise residual parity, and `StructuredTrajectory` provenance validation. Golden G06 remains outside training and is not frozen because human review has not occurred.
 - A fresh Sol reviewer returned `ship` with no material findings and changed no files. Exact hashes and Git state were identical before and after review. The reviewer noted one acceptable developmental residual: the component-evidence removal check filters an existing prefix rather than constructing a separately regenerated ablation trajectory; strengthen that test before golden-suite freeze.
+- Added a strict immutable `StandbyContext` to the developmental `0.1.0` scenario contract. Its exact allowlist is `context_id`, active and standby train identifiers, standby state, standby support-bus identifier and state, and a positive standby-start delay. Unknown fields, coercion, identical active/standby identifiers, unsupported states, noncanonical copied models, and mismatched Aster-A mappings fail closed. The schema interface remains `frozen=false`.
+- Added one indefinite low-severity Aster-A `PUMP_TRIP` on either primary train during `STEADY_OPERATION`, paired across `AVAILABLE` and `UNAVAILABLE` standby contexts. Aster-A's entirely invented one-to-one dependency card maps Cirrus to Rill and Kestrel to Quill and gives standby start a one-tick delay; it is not derived from or representative of a real facility.
+- Added the fixed G07 causal prefix: a context fact at tick 0; active train `AVAILABLE` to `UNAVAILABLE` and mode `STABLE` to `DISTURBED` at tick 2; the sole abrupt normal-step-bound exception for primary-flow loss at tick 3; bounded primary-thermal rise at tick 4; and delayed steam, turbine, and electrical-output declines at tick 5. The tick-5 diagnosis is `PUMP_TRIP` in both contexts and requires context, component-unavailable, agreeing-flow, correlated-state, and dependent-delay evidence.
+- In the available branch, tick 5 selects `SELECT_SYNTHETIC_STANDBY_TRAIN`; tick 6 applies it and changes the standby train from `AVAILABLE` to `STARTING`; tick 7 changes it to `RECOVERING`, begins bounded partial flow recovery, and enters `RECOVERY` only after that visible recovery evidence. The tripped active train remains unavailable.
+- In the unavailable branch, tick 5 selects `REDUCE_SIMULATED_LOAD`; tick 6 applies it, lowers fictional heat/load targets, and selects `ENTER_SIMULATED_STABLE_STATE`; tick 7 applies the second action and enters `STABILIZED`. The standby remains unavailable and primary flow never recovers.
+- Preserved identical same-seed pre-branch process values and observations through tick 5, the existing observation-noise residuals, agreeing `GOOD` redundant channels, invariant transfer efficiency, causal event links, deterministic replay and prefix behavior, and strict visible/audit-truth separation. The public structured payload now always contains `schema_version`, `standby_context` (the safe object or `null`), observations, and events; it still excludes fault injection, action sequence, latent truth, targets, and provenance.
+- A fresh read-only reviewer returned `ship` with no material findings and changed no files. Golden G07 remains developmental and outside training because its required human review has not occurred. The reviewer and documentation audit recorded Phase 3 shortcut risks: a non-null context or G07-only tick-0 note could reveal the fault family; the availability word embedded in `context_id` must not enter rendered prompts; matched context roles require balancing/filtering; decision-task inputs must stop at their decision tick rather than include later `ACTION_APPLIED` events; and matched counterfactual pairs must be grouped before splitting.
 
 ## Files created or changed
 
@@ -61,10 +73,10 @@ Audit the authoritative G07 `PUMP_TRIP` contract, Aster-A standby/dependency rep
 - Project documentation: `docs/IMPLEMENTATION_STATUS.md`, `docs/PHASE0_AUDIT.md`, `docs/architecture.md`, `docs/threat-model.md`, `docs/security-controls.md`.
 - Reconciled research: `research/DATASET_SPEC.md`, `research/DECISION_LOG.md`, `research/FICTIONAL_PLANT_SPEC.md`, `research/GOLDEN_SCENARIOS.md`, `research/PREBUILD_CHECKLIST.md`, `research/README.md`, `research/RESEARCH_BLUEPRINT.md`, `research/VOCABULARY_SEED.md`.
 - Package: `src/reactorbench/__init__.py`, `src/reactorbench/config.py`, `src/reactorbench/resources.py`.
-- Schema package: `src/reactorbench/schemas/__init__.py`, `base.py`, `enums.py`, `events.py`, `export.py`, `latent.py`, `observation.py`, `provenance.py`, `scenario.py`, `target.py`, `trajectory.py`.
+- Schema package: `src/reactorbench/schemas/__init__.py`, `base.py`, `enums.py`, `events.py`, `export.py`, `latent.py`, `observation.py`, `provenance.py`, `scenario.py`, `target.py`, `trajectory.py`; the latest milestone added `STANDBY_AVAILABLE` and the strict `StandbyContext` through `__init__.py`, `enums.py`, and `scenario.py`.
 - Simulator package: `src/reactorbench/simulator/__init__.py`, `content_guard.py`, `core.py`; the latest code milestone changed `__init__.py` and `core.py`.
 - Reviewed contracts: `schemas/aster/v0/README.md`, `snapshot-contract.json`, seven `*.schema.json` files, and `manifest.json`.
-- Tests: existing foundation tests plus `tests/unit/test_simulator.py`, `test_content_guard.py`; `tests/property/test_simulator_properties.py`; and `tests/contract/test_simulator_contract.py`. The latest milestone changed the simulator unit, property, and contract files.
+- Tests: existing foundation tests plus `tests/unit/test_simulator.py`, `test_content_guard.py`; `tests/property/test_simulator_properties.py`; and `tests/contract/test_simulator_contract.py`. The latest milestone changed schema unit/property/snapshot tests and simulator unit/property/contract tests.
 
 Generated `dist/`, caches, run directories, corpora, checkpoints, and artifacts are ignored and are not release evidence.
 
@@ -73,18 +85,23 @@ Generated `dist/`, caches, run directories, corpora, checkpoints, and artifacts 
 Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolved by `uv 0.8.24`. No global Python package installation was performed.
 
 - `make sync` using the project lockfile: exit 0; 22 locked project/development packages installed into the isolated Python 3.12 environment.
-- Focused final pump-degradation gate in the shared assembly tree: 59 tests passed.
-- `make check`: exit 0 on the final pump-degradation milestone under CPython 3.12.11.
-  - Ruff format: passed.
+- The clean `ce917c1` checkpoint was verified before G07 changes with the recorded full gate: 181 tests passed at 92.29% total coverage while branch measurement was enabled, with formatting, lint, strict typing, builds, and isolated artifact verification green.
+- Focused strict-schema gate after the `StandbyContext` prerequisite: 111 tests passed.
+- Focused simulator G07 gate: 66 tests passed.
+- Independent combined schema/simulator subset: 177 tests passed.
+- `make check`: exit 0 on the final context-aware pump-trip milestone under CPython 3.12.11.
+  - Ruff format: 52 files passed.
   - Ruff lint: all checks passed.
   - Mypy strict mode: success across 29 source files reported by mypy.
-  - Pytest: 181 passed.
-  - Branch coverage: 92.29%; required threshold 85%.
+  - Pytest: 206 passed.
+  - Coverage total: 92.57% with branch measurement enabled; required threshold 85%.
   - Build: `reactorbench_lm-0.1.0.tar.gz` and `reactorbench_lm-0.1.0-py3-none-any.whl` built successfully, with the wheel built from the sdist.
   - Artifact verifier: passed; wheel resources match reviewed roots, sdist omits incomplete tests, and the wheel installs/imports with `--no-deps --no-index` in an isolated target.
-- `git diff --cached --check`: exit 0 after whitespace-only repository-hygiene corrections.
+- `git diff --check`: exit 0 before the G07 code commit.
+- Documentation staging: `git diff --no-index --check` passed for all seven owned files against the intended repository versions.
 - `uv pip check` against the isolated Python 3.12 environment: exit 0; all 22 installed packages compatible.
-- Current schema snapshot hash: `50a6b8ce8a4118d7598ef0131b050475844a21a00529047fbdcb5995ba2bccbc`.
+- Current developmental schema snapshot hash: `a6f658078b0c18bba02e605a216523d9f59e28c8ae9b5ad25664004f453f1bb9` (`0.1.0`, `frozen=false`).
+- Fresh post-gate read-only review: `ship`; no files changed.
 
 ## Decisions made
 
@@ -97,7 +114,7 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - `TaskTarget` is the public structured task root; legacy scenario decisions remain nested in `StructuredTrajectory`.
 - Code and dataset licenses remain `TBD` and must be selected before distribution, not before local generator work.
 - Browser and Computer Use are reserved for runnable local UI verification in Phase 7. Visualize is available for requested in-conversation design exploration; it does not replace repository-native UI work.
-- Generator `0.1.0` currently supports Aster-A stable operation, a single primary-flow-channel `SENSOR_DRIFT`, a benign staged `LOAD_TRANSIENT`, that load driver combined with exactly one indefinite low-severity `SENSOR_STUCK` on either electrical-output channel, exactly one indefinite low-severity `SENSOR_NOISE` on either primary-thermal-state channel during steady operation, and exactly one indefinite low-severity `PUMP_DEGRADATION` on either primary train during steady operation. Supported trajectories are 8–64 fictional ticks; stuck/noise milestones default to 12 and require at least 8, while pump degradation requires at least 9.
+- Generator `0.1.0` currently supports Aster-A stable operation, a single primary-flow-channel `SENSOR_DRIFT`, a benign staged `LOAD_TRANSIENT`, that load driver combined with exactly one indefinite low-severity `SENSOR_STUCK` on either electrical-output channel, exactly one indefinite low-severity `SENSOR_NOISE` on either primary-thermal-state channel during steady operation, and exactly one indefinite low-severity `PUMP_DEGRADATION` or `PUMP_TRIP` on either primary train during steady operation. Supported trajectories are 8–64 fictional ticks; stuck/noise/trip milestones default to 12 and require at least 8, while pump degradation requires at least 9.
 - A decision is recorded at its decision tick, while any `ACTION_APPLIED` event occurs on the next tick. The suspect quality change follows the applied `FLAG_SENSOR_SUSPECT` action rather than preceding its evidence.
 - `LOAD_TRANSIENT` direction and magnitude are deterministic functions of its seed; caller-selectable driver parameters remain deferred until they can be represented explicitly in validated scenario truth.
 - The developmental stuck-load schedule uses onset tick 2, evidence/first decision tick 5, applied verification/second decision tick 6, and applied flag plus suspect quality tick 7. Its final settlement is linked to coordinated benign-load evidence, not to the sensor disagreement.
@@ -105,14 +122,17 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - Developmental sensor noise begins producing paired alternating offsets after onset tick 2. Decisions at ticks 3 and 4 abstain, tick 5 diagnoses and selects `COMPARE_RELATED_TRENDS`, tick 6 selects `FLAG_SENSOR_SUSPECT`, and all corresponding applied-action events occur on the next tick.
 - `SENSOR_NOISE` structured fault truth and the later narrative-corruption `noise_test` split are independent dimensions; renderer corruption must not create a fault label.
 - Developmental pump degradation begins selected-train health loss at tick 2, then stages flow/thermal/steam/output effects at ticks 3/4/5/6. Tick 4 abstains, tick 6 requests fictional component inspection, tick 7 selects simulated-load reduction, and their effects apply at ticks 5/7/8 without repairing the degraded train.
+- Developmental pump trip uses a strict context-aware matched pair rather than adding Aster-B/C or a generalized policy-card system. The entirely invented Aster-A dependency map is Cirrus-to-Rill and Kestrel-to-Quill with a one-tick standby-start delay. Both branches trip the active train and enter `DISTURBED` at tick 2, lose flow abruptly at tick 3, change thermal state at tick 4, and show delayed steam/output effects with a `PUMP_TRIP` diagnosis at tick 5.
+- If the paired standby context is `AVAILABLE`, tick 5 selects the standby, tick 6 applies that selection and moves it to `STARTING`, and tick 7 moves it to `RECOVERING`, begins partial flow recovery, and enters `RECOVERY`. If it is `UNAVAILABLE`, tick 5 selects load reduction, tick 6 applies the reduction and selects the simulated stable-state action, and tick 7 applies that second action and enters `STABILIZED` without standby or flow recovery.
+- The strict visible payload allowlist includes the bounded `standby_context` object or `null`. Phase 3 must not pass its availability-bearing `context_id` into rendered prompts, must group matched counterfactual contexts before assigning a split, must balance/filter structural context cues, and must slice task input at its decision tick so later action applications cannot leak the target.
 - Exact canonical types are revalidated at simulator entry even when immutable Pydantic models were bypassed with unchecked `model_copy` updates.
-- The next likely process-fault milestone is `PUMP_TRIP`, but only after a read-only G07 contract and capability audit resolves its standby/dependency and paired-variant action semantics; this checkpoint does not silently settle that design.
+- The next objective is a joint read-only G08/G09 valve capability audit because lag and stuck share command/position evidence and differ through bounded resolution versus persistence. No valve implementation decision is silently settled by this checkpoint.
 
 ## Assumptions
 
 - All permitted scenarios remain project-authored and synthetic; no real facility, Navy-derived, operational, or proprietary material may enter code, fixtures, data, prompts, or outputs.
 - The system Python 3.13.2 may be compatible, but reproducible gates use the isolated Python 3.12 baseline.
-- Golden scenarios remain outside training. Concrete golden `decision_tick` values require generator fixtures and human review before freeze; implemented developmental behavior does not by itself freeze G04, G05, or G06.
+- Golden scenarios remain outside training. Concrete golden `decision_tick` values require generator fixtures and human review before freeze; implemented developmental behavior does not by itself freeze G04, G05, G06, or G07.
 - Exact account-level remaining usage is not observable in this environment. The requested 1% cutoff was not measured; durable phase checkpoints are the conservative fallback unless the user supplies the visible percentage.
 
 ## Known failures
@@ -120,6 +140,9 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 - No known Phase 1 or completed Phase 2 milestone test, type, lint, formatting, build, snapshot, or artifact failure remains.
 - The generator intentionally rejects ASTER-B/C, finite-duration drift/stuck/noise/pump cases, every unsupported fault family, multiple simultaneous faults, and every driver/fault composition except the single reviewed `LOAD_TRANSIENT` plus `SENSOR_STUCK` contract.
 - The G06 component-evidence removal check is a filtered-prefix counterfactual rather than a separately regenerated ablation trajectory. This is acceptable for the developmental fixture but must be strengthened before the golden suite is frozen.
+- The G07 visible payload necessarily exposes task-relevant fictional standby context, but its current non-null shape and tick-0 context note occur only in the G07 fixture. Without Phase 3 filtering, balanced negative controls, and matched-group split discipline, either structural cue could become a fault-family shortcut rather than evidence.
+- The generated G07 `context_id` ends in `available` or `unavailable`. It is audit metadata and must be removed from narrative/task prompts; render only the bounded semantic facts a task is allowed to observe.
+- Task builders do not exist yet. When added, they must slice observations and events at each `decision_tick`, exclude later `ACTION_APPLIED` events and consequences, and preserve only causally prior applications from earlier decisions where the task contract permits them.
 - The prohibited-content guard is deliberately non-exhaustive. A reviewed real-facility denylist and stratified human sample-review procedure remain required before any dataset pilot or release.
 - A private public-reporting route cannot be configured until the owner creates the eventual public repository or names another private channel.
 - Production headers, rate limits, safe service errors, artifact-loader startup checks, browser behavior, and deployment isolation are later-phase controls and are not claimed as verified.
@@ -133,11 +156,12 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Uncommitted work and Git state
 
-- The verified source/test assembly was synchronized to the intended project path for the pump-degradation integration.
-- The complete `make check` gate was rerun successfully from the intended project immediately before the pump-degradation code commit.
+- The G07 work began from the clean local documentation checkpoint `ce917c1`.
+- The verified schema/source/test assembly was synchronized to the intended project path for the context-aware pump-trip integration.
+- The complete `make check` gate was rerun successfully from the intended project immediately before the pump-trip code commit.
 - Local Git is initialized on `codex/foundation`; Phase 1 and the completed Phase 2 code milestones are committed locally.
 - Last known Git branch: `codex/foundation`.
-- Last known code commit: `193d195` (pump-degradation simulator milestone).
+- Last known code commit: `ff8fe4d` (context-aware pump-trip simulator milestone).
 - Remote state: none; no remote will be created and no push is authorized.
 - The expected worktree state immediately after this separate documentation checkpoint is clean; verify rather than assume it on resume. The status file records the preceding implementation commit because a commit cannot contain its own final Git hash.
 
@@ -156,14 +180,19 @@ Environment: isolated CPython 3.12.11 managed under `/private/tmp`; lock resolve
 
 ## Immediate next step
 
-Perform a read-only audit of G07, the fictional `PUMP_TRIP` contract, Aster-A component/dependency map, standby representation, abrupt causal ordering, and context-dependent action labels. Define acceptance tests for the smallest deterministic milestone and identify any schema or variant prerequisite before making source changes. Do not implement the fault, add a plant variant, generalize composition, or alter the golden suite during this audit.
+Perform a read-only joint audit of G08 `VALVE_LAG` and G09 `VALVE_STUCK`, their
+shared fictional command/position representation, bounded resolution versus persistent
+mismatch evidence, action timing, and Aster-A component/mapping requirements. Define
+the acceptance tests and prerequisites for the smallest deterministic G08 milestone
+before changing source. Do not implement either fault, add a plant variant, generalize
+composition, or alter the golden suite during this audit.
 
 Exact recommended next command before implementation:
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 git status --short --branch
-rg -n "G07|PUMP_TRIP|standby|dependency" research src tests
+rg -n "G08|G09|VALVE_LAG|VALVE_STUCK|commanded_position|actual_position|mismatch" research src tests
 ```
 
 ## Exact resume prompt
