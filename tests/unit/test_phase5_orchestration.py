@@ -216,8 +216,8 @@ def test_phase5_run_and_verify_are_nonoverwriting_and_relationship_bound(
         "reactorbench.training.pilot.run_preregistered_baselines",
         lambda *_args, **_kwargs: _baselines(),
     )
-    smaller = _transformer("smaller_transformer", 300, 128, "d")
-    pilot = _transformer("pilot_transformer", 500, 256, "e")
+    smaller = _transformer("smaller_transformer", 300, 512, "d")
+    pilot = _transformer("pilot_transformer", 500, 512, "e")
 
     def train_stub(*, tier: str, output_directory: Path, **_kwargs: object) -> Any:
         output_directory.mkdir()

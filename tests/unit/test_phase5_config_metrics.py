@@ -63,6 +63,7 @@ def _example(prompt: str = "fictional prompt evidence") -> ExperimentExample:
 
 def test_phase5_config_loads_the_preregistered_contract() -> None:
     config = load_phase5_config(CONFIG_PATH)
+    assert config.serialization.model_context_length == 512
 
     assert config.pilot_transformer.steps == 500
     assert config.smaller_transformer.steps == 300

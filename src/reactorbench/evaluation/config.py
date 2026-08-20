@@ -80,6 +80,7 @@ class Phase5DataConfig(StrictConfigModel):
 
 class SerializationConfig(StrictConfigModel):
     serialization_version: Literal["0.1.0"]
+    model_context_length: Literal[512]
     prompt_prefix: Literal["<|prompt|>"]
     target_prefix: Literal["<|target|>"]
     record_separator: Literal["<|sep|>"]

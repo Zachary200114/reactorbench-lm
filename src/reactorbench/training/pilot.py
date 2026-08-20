@@ -465,6 +465,12 @@ def run_phase5_pilot(
     phase4, phase4_report, tokenizer_manifest, tokenizer, data, candidate_sha256 = (
         _load_phase5_inputs(config, project_root)
     )
+    smaller_model = phase4.smoke_model.model_copy(
+        update={"context_length": config.serialization.model_context_length}
+    )
+    pilot_model = phase4.pilot_model.model_copy(
+        update={"context_length": config.serialization.model_context_length}
+    )
     run_root = resolve_project_path(project_root, config.phase5.run_root, must_exist=False)
     run_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     output = run_root / config.phase5.run_name
@@ -473,13 +479,13 @@ def run_phase5_pilot(
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=run_root))
     try:
         pilot_train = _tokenize_inventory(
-            data.train, tokenizer, config, context_length=phase4.pilot_model.context_length
+            data.train, tokenizer, config, context_length=pilot_model.context_length
         )
         pilot_validation = _tokenize_inventory(
             data.validation,
             tokenizer,
             config,
-            context_length=phase4.pilot_model.context_length,
+            context_length=pilot_model.context_length,
         )
         baselines = run_preregistered_baselines(
             data,
@@ -490,7 +496,7 @@ def run_phase5_pilot(
         )
         smaller = _train_transformer(
             tier="smaller_transformer",
-            model_config=phase4.smoke_model,
+            model_config=smaller_model,
             training_config=config.smaller_transformer,
             tokenizer_manifest=tokenizer_manifest,
             tokenizer=tokenizer,
@@ -501,7 +507,7 @@ def run_phase5_pilot(
         )
         pilot = _train_transformer(
             tier="pilot_transformer",
-            model_config=phase4.pilot_model,
+            model_config=pilot_model,
             training_config=config.pilot_transformer,
             tokenizer_manifest=tokenizer_manifest,
             tokenizer=tokenizer,
@@ -527,7 +533,7 @@ def run_phase5_pilot(
                     item,
                     tokenizer,
                     config.serialization,
-                    context_length=phase4.smoke_model.context_length,
+                    context_length=smaller_model.context_length,
                 ).truncated_prompt
                 for item in data.train
             ),
@@ -536,7 +542,7 @@ def run_phase5_pilot(
                     item,
                     tokenizer,
                     config.serialization,
-                    context_length=phase4.smoke_model.context_length,
+                    context_length=smaller_model.context_length,
                 ).truncated_prompt
                 for item in data.validation
             ),
@@ -580,6 +586,12 @@ def verify_phase5_run(config: Phase5Config, *, project_root: Path) -> Phase5RunR
     phase4, phase4_report, tokenizer_manifest, tokenizer, data, candidate_sha256 = (
         _load_phase5_inputs(config, project_root)
     )
+    smaller_model = phase4.smoke_model.model_copy(
+        update={"context_length": config.serialization.model_context_length}
+    )
+    pilot_model = phase4.pilot_model.model_copy(
+        update={"context_length": config.serialization.model_context_length}
+    )
     run_root = resolve_project_path(project_root, config.phase5.run_root, must_exist=True)
     directory = run_root / config.phase5.run_name
     if directory.is_symlink() or not directory.is_dir():
@@ -616,8 +628,8 @@ def verify_phase5_run(config: Phase5Config, *, project_root: Path) -> Phase5RunR
     ):
         raise ValueError("Phase 5 report is bound to a different dependency lock")
     for result, model_config, name in (
-        (report.transformer_results[0], phase4.smoke_model, "smaller-checkpoint"),
-        (report.transformer_results[1], phase4.pilot_model, "pilot-checkpoint"),
+        (report.transformer_results[0], smaller_model, "smaller-checkpoint"),
+        (report.transformer_results[1], pilot_model, "pilot-checkpoint"),
     ):
         if result.context_length != model_config.context_length:
             raise ValueError("Phase 5 checkpoint context differs from reviewed model tier")

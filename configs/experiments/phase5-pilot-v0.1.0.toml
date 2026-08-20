@@ -21,6 +21,7 @@ classification_tasks = ["fault_family", "next_action", "continue_log"]
 
 [serialization]
 serialization_version = "0.1.0"
+model_context_length = 512
 prompt_prefix = "<|prompt|>"
 target_prefix = "<|target|>"
 record_separator = "<|sep|>"
@@ -69,4 +70,3 @@ maximum_report_bytes = 4194304
 maximum_run_bytes = 1073741824
 require_all_baselines = true
 require_validation_only_selection = true
-
