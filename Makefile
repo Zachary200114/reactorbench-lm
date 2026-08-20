@@ -2,7 +2,7 @@ UV ?= uv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify
+.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify phase6-verify-golden
 
 help: ## Show the available development commands.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -53,3 +53,6 @@ phase5-pilot: ## Run all preregistered baselines and the validation-selected pil
 
 phase5-verify: ## Verify the complete Phase 5 report and safe checkpoints.
 	$(UV) run --frozen python -m reactorbench.training verify-pilot --config configs/experiments/phase5-pilot-v0.1.0.toml
+
+phase6-verify-golden: ## Verify the owner-approved golden packet before held-out access.
+	$(UV) run --frozen python -m reactorbench.training verify-golden-review --packet golden/golden-suite-v0.1.0.json --record artifacts/review/golden-review-record-v0.1.0.json --expected-packet-sha256 c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c

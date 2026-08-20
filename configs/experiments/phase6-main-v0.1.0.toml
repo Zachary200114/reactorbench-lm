@@ -1,9 +1,13 @@
 [phase6]
 contract_version = "0.1.0"
 phase4_config_path = "configs/model/phase4-smoke-v0.1.0.toml"
+phase5_config_path = "configs/experiments/phase5-pilot-v0.1.0.toml"
 phase5_report_path = "runs/phase5-pilot-v0.1.0/report.json"
 phase5_report_sha256 = "5c21a4ff93701cdaa73e59e5b9a488cc171009dd1c35ac1f2a234dc7db029ffc"
 phase5_config_sha256 = "5e75ccc0c5dfab1ba1a34c37ba490ff55b53c49d6596d956efd037369bee7bc3"
+golden_packet_path = "golden/golden-suite-v0.1.0.json"
+golden_packet_sha256 = "c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c"
+golden_review_record_path = "artifacts/review/golden-review-record-v0.1.0.json"
 run_root = "runs"
 run_name = "phase6-main-v0.1.0"
 
@@ -20,6 +24,21 @@ prohibited_splits = [
   "noise_test",
 ]
 classification_tasks = ["fault_family", "next_action", "continue_log"]
+
+[test_freeze]
+split_manifest_raw_sha256 = "ee01aea896831c90c04e7be324eb05a40341bbc7d752bcf34f9280f7003c8abb"
+task_examples_raw_sha256 = "b45e3466a390b31031a3a39b82046cfef17fd0fb159fa85b97405cbe2ff02cc1"
+train_example_count = 630
+validation_example_count = 252
+test_example_count = 894
+component_test_inventory_sha256 = "5c319b5a442a3adc06fd9d99f26687d182f812ad352591ba241a5a34eac7478a"
+composition_test_inventory_sha256 = "4b97df8e52b1dd7b2ed50921989a4c07aa7e844cba03f75f414686538c15de5e"
+counterfactual_test_inventory_sha256 = "2ef336c9d5155809c607b95677578b6fbb74d84f2b20d3e7e359d4e7c26b901c"
+iid_test_inventory_sha256 = "c4e385b20c6a7fc8b4690cc4ec674e373d51c8e83ac3f8834ecf19205bc98e32"
+noise_test_inventory_sha256 = "c8983f15d568f98ab61ce9ab5825c0a138a6e23e3ac5069c74079c9e84750db8"
+severity_test_inventory_sha256 = "9f7b6bd2402585807b869b78b7f87ab159a2fe2078d0e45cce2f2ac1b77200ed"
+template_test_inventory_sha256 = "89c5c18a8afa0d20c3e4975991ddfa2e9218b12c62d2f681a5a3567bc55b1474"
+access_policy = "after_owner_golden_approval_and_implementation_commit"
 
 [model]
 model_version = "0.1.0"
@@ -52,6 +71,13 @@ minimum_validation_nll_reduction_fraction = 0.90
 maximum_selected_validation_nll = 0.50
 minimum_relative_nll_improvement_over_smaller = 0.10
 
+[decoder]
+strategy = "greedy"
+maximum_generated_target_tokens = 256
+confidence = "geometric_mean_selected_token_probability"
+calibration_bins = 10
+invalid_output_confidence = 0.0
+
 [evaluation]
 bootstrap_resamples = 2000
 bootstrap_seed = 6602
@@ -71,6 +97,19 @@ maximum_selective_risk = 0.20
 composition_has_pass_threshold = false
 report_every_split_separately = true
 require_golden_suite_approval_before_test = true
+
+[ablations]
+control_model = "pilot_architecture_context_512"
+control_steps = 500
+batch_size = 4
+event_order_method = "evaluation_time_reverse_same_tick_safe_events"
+renderer_diversity_seed = 6671
+renderer_diversity_training_filter = "canonical_and_short_aliases_only"
+abstention_seed = 6672
+abstention_training_filter = "remove_unresolved_and_insufficient_evidence"
+compound_training_status = "not_applicable_no_compound_iid_train_rows"
+ablation_selection_split = "iid_validation"
+test_access_after_all_ablation_selection = true
 
 [experiments]
 required = [

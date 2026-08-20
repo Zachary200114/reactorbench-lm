@@ -11,6 +11,7 @@ from .config import (
     resolve_project_path,
 )
 from .transformer import (
+    AttentionCache,
     CausalBatch,
     TransformerLM,
     causal_language_model_loss,
@@ -20,6 +21,7 @@ from .transformer import (
 )
 
 __all__ = [
+    "AttentionCache",
     "CausalBatch",
     "CheckpointManifest",
     "Phase4Config",

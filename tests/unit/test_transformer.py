@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
+import pytest
 import torch
 
 from reactorbench.model import (
@@ -104,3 +107,60 @@ def test_bounded_generation_is_deterministic() -> None:
 
     assert torch.equal(first, second)
     assert first.shape == (1, 7)
+
+
+def test_cached_decode_matches_full_forward_logits() -> None:
+    model = initialized_model(_config(), vocab_size=64, seed=37)
+    model.eval()
+    prefix = torch.tensor(((1, 2, 3), (4, 5, 6)), dtype=torch.long)
+    next_tokens = torch.tensor(((7,), (8,)), dtype=torch.long)
+
+    with torch.no_grad():
+        full_prefix = model(prefix)[:, -1, :]
+        cached_prefix, caches = model.prefill_cache(prefix)
+        key_mask = torch.ones((2, 4), dtype=torch.bool)
+        cached_next, updated = model.decode_step(
+            next_tokens,
+            position=3,
+            caches=caches,
+            key_mask=key_mask,
+        )
+        full_next = model(torch.cat((prefix, next_tokens), dim=1))[:, -1, :]
+
+    assert torch.equal(cached_prefix, full_prefix)
+    assert torch.allclose(cached_next, full_next, atol=1e-6, rtol=1e-6)
+    assert all(cache.key.shape[2] == 4 for cache in updated)
+
+
+def test_cached_decode_rejects_malformed_steps_and_cache_shapes() -> None:
+    model = initialized_model(_config(), vocab_size=64, seed=41)
+    prefix = torch.tensor(((1, 2, 3),), dtype=torch.long)
+    _logits, caches = model.prefill_cache(prefix)
+    with pytest.raises(TypeError, match="one-token long tensor"):
+        model.decode_step(
+            torch.tensor(((4, 5),), dtype=torch.long),
+            position=3,
+            caches=caches,
+            key_mask=torch.ones((1, 4), dtype=torch.bool),
+        )
+    with pytest.raises(ValueError, match="outside the model context"):
+        model.decode_step(
+            torch.tensor(((4,),), dtype=torch.long),
+            position=16,
+            caches=caches,
+            key_mask=torch.ones((1, 4), dtype=torch.bool),
+        )
+    with pytest.raises(ValueError, match="one exact cache per layer"):
+        model.decode_step(
+            torch.tensor(((4,),), dtype=torch.long),
+            position=3,
+            caches=cast(Any, ()),
+            key_mask=torch.ones((1, 4), dtype=torch.bool),
+        )
+    with pytest.raises(ValueError, match="wrong shape"):
+        model.decode_step(
+            torch.tensor(((4,),), dtype=torch.long),
+            position=3,
+            caches=caches,
+            key_mask=torch.ones((1, 3), dtype=torch.bool),
+        )

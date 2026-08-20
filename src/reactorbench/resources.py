@@ -48,6 +48,12 @@ def phase6_main_config_resource() -> Traversable:
     return _reviewed_resource("configs", "experiments", "phase6-main-v0.1.0.toml", directory=False)
 
 
+def golden_suite_resource() -> Traversable:
+    """Return the checksum-bound developmental G01-G15 owner-review packet."""
+
+    return _reviewed_resource("golden", "golden-suite-v0.1.0.json", directory=False)
+
+
 def canonical_schema_snapshot_resource() -> Traversable:
     """Return the current reviewed Aster schema snapshot directory as a resource."""
 
@@ -64,6 +70,7 @@ __all__ = [
     "canonical_dataset_schema_snapshot_resource",
     "canonical_schema_snapshot_resource",
     "default_config_resource",
+    "golden_suite_resource",
     "phase4_smoke_config_resource",
     "phase5_pilot_config_resource",
     "phase6_main_config_resource",

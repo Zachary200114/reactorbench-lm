@@ -12,7 +12,7 @@ Aster Station: a wholly fictional causal environment.
 
 ## Current status
 
-Phases 0–5 are complete locally.
+Phases 0–5 are complete locally. Phase 6 is at its checksum-bound owner-review gate.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -39,17 +39,24 @@ Phases 0–5 are complete locally.
 - Pilot-informed Phase 6 model, training, comparison, bootstrap, and numerical
   acceptance gates are frozen in `configs/experiments/phase6-main-v0.1.0.toml` before
   main or test evaluation.
-- The intended-repository gate passed 677 tests with 85.37% branch coverage, Ruff
-  formatting/lint, strict mypy for 96 source files, package build, and isolated artifact
-  verification.
+- The exact 15-case golden review packet is generated, prohibited-content-clean under
+  the bounded automated scanner, and bound to generator commit `4473718`. Human owner
+  approval is still required before held-out access; automation is not approval.
+- The last completed Phase 5 intended-repository gate passed 687 tests with 85.07%
+  branch coverage, Ruff formatting/lint, strict mypy for 107 source files, package
+  build, and isolated artifact verification. The Phase 6 pre-test gate now passes 698
+  tests with 85.06% branch coverage, Ruff across 141 files, strict mypy across 111
+  source files, build, and isolated artifact verification.
 
 This is a validation-only pilot milestone, not a test-generalization result. No IID-test,
 compositional, robustness, behavioral, abstention, or golden-suite model claim exists
-yet. The golden suite remains unfrozen. There is no inference service or web interface.
+yet. The golden suite packet is prepared but remains unapproved. There is no inference
+service or web interface.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
 [the baseline/pilot report](docs/model/PHASE5_PILOT.md) and
+[the Phase 6 pre-test freeze](docs/model/PHASE6_PRETEST.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question

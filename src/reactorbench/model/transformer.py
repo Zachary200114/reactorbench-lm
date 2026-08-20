@@ -21,6 +21,14 @@ class CausalBatch:
     target_mask: Tensor
 
 
+@dataclass(frozen=True)
+class AttentionCache:
+    """Per-layer inference-only keys and values for bounded autoregressive decoding."""
+
+    key: Tensor
+    value: Tensor
+
+
 def shift_next_token_targets(
     input_ids: Tensor, attention_mask: Tensor | None = None
 ) -> CausalBatch:
@@ -64,7 +72,7 @@ class CausalSelfAttention(nn.Module):
         )
         self.register_buffer("causal_mask", mask.view(1, 1, *mask.shape), persistent=False)
 
-    def forward(self, hidden: Tensor, attention_mask: Tensor) -> Tensor:
+    def _project(self, hidden: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         batch, sequence, width = hidden.shape
         qkv = self.qkv(hidden)
         query, key, value = qkv.split(width, dim=-1)
@@ -72,7 +80,18 @@ class CausalSelfAttention(nn.Module):
         def heads(value_: Tensor) -> Tensor:
             return value_.view(batch, sequence, self.heads, self.head_width).transpose(1, 2)
 
-        query, key, value = heads(query), heads(key), heads(value)
+        return heads(query), heads(key), heads(value)
+
+    def _output(self, attended: Tensor) -> Tensor:
+        batch, _heads, sequence, _head_width = attended.shape
+        attended = attended.transpose(1, 2).contiguous().view(batch, sequence, -1)
+        return cast(Tensor, self.residual_dropout(self.output(attended)))
+
+    def forward_with_cache(
+        self, hidden: Tensor, attention_mask: Tensor
+    ) -> tuple[Tensor, AttentionCache]:
+        query, key, value = self._project(hidden)
+        sequence = hidden.shape[1]
         scores = query @ key.transpose(-2, -1) / math.sqrt(self.head_width)
         allowed = self.causal_mask[:, :, :sequence, :sequence]
         allowed = allowed & attention_mask[:, None, None, :]
@@ -80,8 +99,32 @@ class CausalSelfAttention(nn.Module):
         weights = functional.softmax(scores, dim=-1)
         weights = self.attention_dropout(weights)
         attended = weights @ value
-        attended = attended.transpose(1, 2).contiguous().view(batch, sequence, width)
-        return cast(Tensor, self.residual_dropout(self.output(attended)))
+        return self._output(attended), AttentionCache(key=key, value=value)
+
+    def forward_step(
+        self,
+        hidden: Tensor,
+        cache: AttentionCache,
+        key_mask: Tensor,
+    ) -> tuple[Tensor, AttentionCache]:
+        if hidden.shape[1] != 1 or type(cache) is not AttentionCache:
+            raise ValueError("cached attention step requires one token and an exact cache")
+        query, key, value = self._project(hidden)
+        combined_key = torch.cat((cache.key, key), dim=2)
+        combined_value = torch.cat((cache.value, value), dim=2)
+        if key_mask.shape != (hidden.shape[0], combined_key.shape[2]):
+            raise ValueError("cached attention key mask has the wrong shape")
+        scores = query @ combined_key.transpose(-2, -1) / math.sqrt(self.head_width)
+        scores = scores.masked_fill(~key_mask[:, None, None, :], torch.finfo(scores.dtype).min)
+        weights = self.attention_dropout(functional.softmax(scores, dim=-1))
+        return self._output(weights @ combined_value), AttentionCache(
+            key=combined_key,
+            value=combined_value,
+        )
+
+    def forward(self, hidden: Tensor, attention_mask: Tensor) -> Tensor:
+        output, _cache = self.forward_with_cache(hidden, attention_mask)
+        return output
 
 
 class FeedForward(nn.Module):
@@ -110,6 +153,24 @@ class TransformerBlock(nn.Module):
     def forward(self, hidden: Tensor, attention_mask: Tensor) -> Tensor:
         hidden = hidden + self.attention(self.attention_norm(hidden), attention_mask)
         return cast(Tensor, hidden + self.feed_forward(self.feed_forward_norm(hidden)))
+
+    def forward_with_cache(
+        self, hidden: Tensor, attention_mask: Tensor
+    ) -> tuple[Tensor, AttentionCache]:
+        attended, cache = self.attention.forward_with_cache(
+            self.attention_norm(hidden), attention_mask
+        )
+        hidden = hidden + attended
+        return cast(Tensor, hidden + self.feed_forward(self.feed_forward_norm(hidden))), cache
+
+    def forward_step(
+        self, hidden: Tensor, cache: AttentionCache, key_mask: Tensor
+    ) -> tuple[Tensor, AttentionCache]:
+        attended, updated = self.attention.forward_step(
+            self.attention_norm(hidden), cache, key_mask
+        )
+        hidden = hidden + attended
+        return cast(Tensor, hidden + self.feed_forward(self.feed_forward_norm(hidden))), updated
 
 
 class TransformerLM(nn.Module):
@@ -169,6 +230,61 @@ class TransformerLM(nn.Module):
         for block in self.blocks:
             hidden = block(hidden, attention_mask)
         return cast(Tensor, self.lm_head(self.final_norm(hidden)))
+
+    @torch.no_grad()
+    def prefill_cache(
+        self, input_ids: Tensor, attention_mask: Tensor | None = None
+    ) -> tuple[Tensor, tuple[AttentionCache, ...]]:
+        """Encode a prompt once and return next-token logits plus layer caches."""
+
+        attention_mask = self._validate_inputs(input_ids, attention_mask)
+        positions = torch.arange(input_ids.shape[1], device=input_ids.device)
+        hidden = self.token_embedding(input_ids) + self.position_embedding(positions)[None, :, :]
+        hidden = self.embedding_dropout(hidden)
+        caches: list[AttentionCache] = []
+        for block_module in self.blocks:
+            block = cast(TransformerBlock, block_module)
+            hidden, cache = block.forward_with_cache(hidden, attention_mask)
+            caches.append(cache)
+        logits = self.lm_head(self.final_norm(hidden))[:, -1, :]
+        return cast(Tensor, logits), tuple(caches)
+
+    @torch.no_grad()
+    def decode_step(
+        self,
+        input_ids: Tensor,
+        *,
+        position: int,
+        caches: tuple[AttentionCache, ...],
+        key_mask: Tensor,
+    ) -> tuple[Tensor, tuple[AttentionCache, ...]]:
+        """Advance an exact cache by one token without recomputing its prefix."""
+
+        if (
+            type(input_ids) is not Tensor
+            or input_ids.dtype != torch.long
+            or input_ids.ndim != 2
+            or input_ids.shape[1] != 1
+        ):
+            raise TypeError("cached decode input must be a rank-2 one-token long tensor")
+        if type(position) is not int or not 0 <= position < self.config.context_length:
+            raise ValueError("cached decode position is outside the model context")
+        if len(caches) != len(self.blocks) or any(
+            type(cache) is not AttentionCache for cache in caches
+        ):
+            raise ValueError("cached decode requires one exact cache per layer")
+        hidden = (
+            self.token_embedding(input_ids)
+            + self.position_embedding.weight[position][None, None, :]
+        )
+        hidden = self.embedding_dropout(hidden)
+        updated: list[AttentionCache] = []
+        for block_module, cache in zip(self.blocks, caches, strict=True):
+            block = cast(TransformerBlock, block_module)
+            hidden, next_cache = block.forward_step(hidden, cache, key_mask)
+            updated.append(next_cache)
+        logits = self.lm_head(self.final_norm(hidden))[:, -1, :]
+        return cast(Tensor, logits), tuple(updated)
 
     @torch.no_grad()
     def generate(

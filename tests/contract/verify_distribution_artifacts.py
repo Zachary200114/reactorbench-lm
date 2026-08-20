@@ -39,6 +39,9 @@ def _expected_resource_files() -> dict[str, bytes]:
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-main-v0.1.0.toml": (
             ROOT / "configs" / "experiments" / "phase6-main-v0.1.0.toml"
         ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/golden/golden-suite-v0.1.0.json": (
+            ROOT / "golden" / "golden-suite-v0.1.0.json"
+        ).read_bytes(),
     }
     for snapshot_family in ("aster", "dataset"):
         snapshot_root = ROOT / "schemas" / snapshot_family / "v0"
@@ -129,8 +132,10 @@ from reactorbench.resources import (
     canonical_dataset_schema_snapshot_resource,
     canonical_schema_snapshot_resource,
     default_config_resource,
+    golden_suite_resource,
     phase4_smoke_config_resource,
     phase5_pilot_config_resource,
+    phase6_main_config_resource,
 )
 from reactorbench.schemas import load_snapshot, schema_documents
 
@@ -142,6 +147,10 @@ with as_file(phase4_smoke_config_resource()) as config_path:
     assert config_path.read_bytes().startswith(b'[phase4]')
 with as_file(phase5_pilot_config_resource()) as config_path:
     assert config_path.read_bytes().startswith(b'[phase5]')
+with as_file(phase6_main_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'[phase6]')
+with as_file(golden_suite_resource()) as golden_path:
+    assert b'"packet_sha256"' in golden_path.read_bytes()
 with as_file(canonical_schema_snapshot_resource()) as snapshot_path:
     documents, _manifest = load_snapshot(snapshot_path)
     assert documents == schema_documents()

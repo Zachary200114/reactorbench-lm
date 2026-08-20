@@ -150,6 +150,12 @@ Robustness test inputs remain fictional and are separate from security attack sc
 
 ## 9. Human review and golden-suite freeze
 
+The prepared local `0.1.0` packet contains exact G01-G15 scenarios and structured
+targets bound to generator commit `4473718`. Its semantic SHA-256 is
+`c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c`.
+It remains unapproved until the project owner reviews it; the automated zero-finding
+scan is explicitly not approval.
+
 Each golden scenario requires:
 
 - reviewer identity or role;

@@ -28,6 +28,7 @@ dev = [
 [tool.hatch.build.targets.sdist]
 include = [
   "/configs",
+  "/golden",
   "/schemas",
   "/src",
   "/README.md",
@@ -42,6 +43,7 @@ packages = ["src/reactorbench"]
 "configs/model/phase4-smoke-v0.1.0.toml" = "reactorbench/_data/configs/model/phase4-smoke-v0.1.0.toml"
 "configs/experiments/phase5-pilot-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase5-pilot-v0.1.0.toml"
 "configs/experiments/phase6-main-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase6-main-v0.1.0.toml"
+"golden/golden-suite-v0.1.0.json" = "reactorbench/_data/golden/golden-suite-v0.1.0.json"
 "schemas/aster/v0" = "reactorbench/_data/schemas/aster/v0"
 "schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
 

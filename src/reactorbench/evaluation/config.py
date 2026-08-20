@@ -160,16 +160,72 @@ class Phase5Config(StrictConfigModel):
 class Phase6Paths(StrictConfigModel):
     contract_version: Literal["0.1.0"]
     phase4_config_path: str
+    phase5_config_path: str
     phase5_report_path: str
     phase5_report_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     phase5_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    golden_packet_path: str
+    golden_packet_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    golden_review_record_path: str
     run_root: str
     run_name: ContractId
 
-    @field_validator("phase4_config_path", "phase5_report_path", "run_root", mode="after")
+    @field_validator(
+        "phase4_config_path",
+        "phase5_config_path",
+        "phase5_report_path",
+        "golden_packet_path",
+        "golden_review_record_path",
+        "run_root",
+        mode="after",
+    )
     @classmethod
     def paths_are_contained(cls, value: str) -> str:
         return _relative_project_path(value)
+
+
+class Phase6TestFreezeConfig(StrictConfigModel):
+    split_manifest_raw_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    task_examples_raw_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    train_example_count: Literal[630]
+    validation_example_count: Literal[252]
+    test_example_count: Literal[894]
+    component_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    composition_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    counterfactual_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    iid_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    noise_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    severity_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    template_test_inventory_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    access_policy: Literal["after_owner_golden_approval_and_implementation_commit"]
+
+
+class Phase6DecoderConfig(StrictConfigModel):
+    strategy: Literal["greedy"]
+    maximum_generated_target_tokens: Literal[256]
+    confidence: Literal["geometric_mean_selected_token_probability"]
+    calibration_bins: Literal[10]
+    invalid_output_confidence: NonNegativeFloat
+
+    @model_validator(mode="after")
+    def invalid_outputs_have_zero_confidence(self) -> Phase6DecoderConfig:
+        if self.invalid_output_confidence != 0.0:
+            raise ValueError("invalid structured outputs must have zero confidence")
+        return self
+
+
+class Phase6AblationConfig(StrictConfigModel):
+    control_model: Literal["pilot_architecture_context_512"]
+    control_steps: Literal[500]
+    batch_size: Literal[4]
+    event_order_method: Literal["evaluation_time_reverse_same_tick_safe_events"]
+    renderer_diversity_seed: Literal[6671]
+    renderer_diversity_training_filter: Literal["canonical_and_short_aliases_only"]
+    abstention_seed: Literal[6672]
+    abstention_training_filter: Literal["remove_unresolved_and_insufficient_evidence"]
+    compound_training_status: Literal["not_applicable_no_compound_iid_train_rows"]
+    ablation_selection_split: Literal[SplitName.IID_VALIDATION]
+    test_access_after_all_ablation_selection: Literal[True]
 
 
 class Phase6SelectionConfig(StrictConfigModel):
@@ -276,10 +332,13 @@ class Phase6ExperimentMatrix(StrictConfigModel):
 class Phase6Config(StrictConfigModel):
     phase6: Phase6Paths
     data: Phase5DataConfig
+    test_freeze: Phase6TestFreezeConfig
     model: TransformerConfig
     training: TransformerTrainingConfig
     selection: Phase6SelectionConfig
+    decoder: Phase6DecoderConfig
     evaluation: Phase6EvaluationConfig
+    ablations: Phase6AblationConfig
     experiments: Phase6ExperimentMatrix
 
     @model_validator(mode="after")
@@ -335,11 +394,14 @@ __all__ = [
     "Phase5Config",
     "Phase5DataConfig",
     "Phase5Paths",
+    "Phase6AblationConfig",
     "Phase6Config",
+    "Phase6DecoderConfig",
     "Phase6EvaluationConfig",
     "Phase6ExperimentMatrix",
     "Phase6Paths",
     "Phase6SelectionConfig",
+    "Phase6TestFreezeConfig",
     "SerializationConfig",
     "TransformerTrainingConfig",
     "load_phase5_config",

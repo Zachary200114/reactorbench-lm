@@ -1,15 +1,30 @@
 # ReactorBench-LM implementation status
 
 Last updated: 2026-08-20 America/New_York
-Current phase: **Phase 5 complete locally — baselines, MPS pilot, and pre-test freeze passed**
-Current objective: preserve the verified Phase 5 evidence and begin Phase 6 only with a
-read-only golden/test-manifest and evaluator-contract audit.
-Checkpoint reason: every preregistered Phase 5 comparison completed, both Transformer
-tiers passed their learning and safe-reload gates, and pilot-informed Phase 6 settings
-were frozen before any test access.
+Current phase: **Phase 6 in progress — pre-test implementation ready; owner golden review pending**
+Current objective: obtain one explicit project-owner decision on the exact G01-G15
+packet, then run the already-frozen main, ablation, and held-out evaluation sequence.
+Checkpoint reason: the test inventories, golden cases, decoder, cache, uncertainty
+metrics, and fail-closed review contracts are implemented without reading a model
+prediction from any held-out split.
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Completed work
+
+- Reverified the complete Phase 5 report and both safetensors checkpoints before Phase
+  6 changes; pilot validation NLL remains `0.15928723867008093`.
+- Enumerated all 1,776 approved task examples without model scoring and froze all 894
+  held-out records by per-split checksum.
+- Prepared the exact 15-case G01-G15 owner-review packet, bound it to generator commit
+  `4473718`, and recorded zero findings from the bounded automated prohibited-content
+  scanner. The packet is not yet human-approved.
+- Added strict golden packet/record contracts, non-overwriting generation, duplicate-key
+  rejection, staleness regeneration, project-owner-only approval, and CLI verification.
+- Added full-split experiment materialization, paired/corrupted prompt reconstruction,
+  cached autoregressive Transformer decoding, strict JSON/task-schema validation,
+  deterministic bootstrap intervals, evidence-set F1, ECE, and selective-risk metrics.
+- Preregistered the exact decoder and ablation semantics plus the honest E7
+  not-applicable result before held-out access.
 
 - Phases 0–2 and the developmental G01–G15 Aster Station generator are complete locally.
 - Phase 3 is complete locally. Its owner-approved candidate contains 204 audit
@@ -72,8 +87,14 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 ## Tests and checks run
 
 - Python: CPython 3.12.11.
-- Intended-repository final suite: **687 passed in 299.71 seconds** with **85.07%
+- Phase 6 pre-test fresh suite: **698 passed in 299.73 seconds** with **85.06%
   branch coverage**. The required 85% floor was not weakened.
+- Phase 6 pre-test Ruff format check: **141 files formatted**. Ruff lint passed.
+  Strict mypy: **111 source files**, no issues.
+- Phase 6 wheel and sdist build passed. Isolated no-network installation verified the
+  packaged Phase 6 config, golden packet, schemas, and guard resources byte for byte.
+- Intended-repository final suite: **687 passed in 299.71 seconds** with **85.07%
+  branch coverage** at the completed Phase 5 checkpoint.
 - Ruff format check: **136 files formatted**. Ruff lint: passed.
 - Strict mypy: **107 source files**, no issues.
 - `git diff --check`: passed.
@@ -122,12 +143,11 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 
 ## Open blockers
 
-- Before Phase 6 main/test work: complete and record human review for every golden
-  scenario; freeze exact test manifests and checksums; implement the E0–E7 evaluator,
-  decoding, calibration, abstention, bootstrap, ablation, and error-artifact contracts;
-  then reverify the Phase 5 chain.
-- Phase 6 may begin with read-only/design work, but main training and test access must
-  not begin until those gates pass.
+- One blocker remains before Phase 6 main/test work: the project owner must review and
+  approve, revise, or reject the exact checksum-bound G01-G15 packet. No approval record
+  has been fabricated.
+- Main/ablation orchestration and report assembly continue after that decision. No test
+  prediction has been accessed.
 - Before distribution: choose code/data licenses and complete release/SBOM/security
   gates. GitHub push and Vercel deployment remain owner-managed and unauthorized here.
 
@@ -150,18 +170,19 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 
 ## Immediate next step
 
-Begin Phase 6 with a read-only freeze audit. Verify the Phase 5 report, enumerate the
-remaining golden/test-manifest prerequisites, and define acceptance tests for the
-evaluator before implementing or running main/test experiments. Do not repeat Phase 5,
-start training, access test metrics, or build the UI.
+Review the compact G01-G15 decision summary and provide an explicit approve, revise, or
+reject decision. If approved, write the bound local record, verify it, finish the
+remaining Phase 6 orchestration, train the main and ablation models, then evaluate all
+held-out splits exactly once.
 
 ## Exact recommended next command
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-git status --short --branch
-.venv/bin/python -m reactorbench.training verify-pilot \
-  --config configs/experiments/phase5-pilot-v0.1.0.toml
+.venv/bin/python -m reactorbench.training verify-golden-review \
+  --packet golden/golden-suite-v0.1.0.json \
+  --record artifacts/review/golden-review-record-v0.1.0.json \
+  --expected-packet-sha256 c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c
 ```
 
 ## Relevant artifacts and configuration
@@ -181,8 +202,14 @@ git status --short --branch
   `8d4b93d29cd1c4becf2062cff8e3eb810259601d1685eb565ced5f5382da2daa` /
   `2b2b60205e77ddf8cedf8c41bfa0761814eb82eeef51db2bb8d586fe5afd319f`
 - Phase 6 config canonical/raw SHA-256:
-  `d50089cd85863a411e93417df6448110e2d021bf96547f7e6ae471e880c4ab1c` /
-  `0dbbab59962fac4f4a90c981a613e6b223eacd7c21f77550339c64f78ed989cc`
+  `be1df0cee9752912b5c317b62fb618b896598906252da25801161e344071b784` /
+  `e01a3ac57277f198826476d3bea0d431eb521a3989fec3ab85f42a1139ea1439`
+- Golden packet semantic/raw SHA-256:
+  `c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c` /
+  `118720638aeb9d082a6ddc7efd367f3d972c5831a12c6b76f171a10076cc64ea`
+- Split-manifest/task-example raw SHA-256:
+  `ee01aea896831c90c04e7be324eb05a40341bbc7d752bcf34f9280f7003c8abb` /
+  `b45e3466a390b31031a3a39b82046cfef17fd0fb159fa85b97405cbe2ff02cc1`
 - Dataset candidate SHA-256:
   `3bba04bdb2030425ef67845332540fa2d148d0a318ab1d9e658f52bb890bf10c`
 - Tokenizer manifest SHA-256:
@@ -190,11 +217,11 @@ git status --short --branch
 - Dependency lock SHA-256:
   `dc09fe5e44a7a08f314558b92776f2ca77153842770524ea1818c6a41c6269e6`
 - Final wheel SHA-256 / size:
-  `94b0d4bf210eb4ed61d6dcccbd35271685b029a0af7bd78dce9ef44a0b085ac1` /
-  230,963 bytes.
+  `f42affa4fb4d2bed236a2125a33df5630c0e6fb05b94fd40d2924d7df0aa7fea` /
+  250,440 bytes.
 - Final sdist SHA-256 / size:
-  `dcc4753389e07bb99422f4655fc02dde3b65a6acd11860c003881487f7682199` /
-  180,303 bytes.
+  `532eecd9b6e514386b3ea683691f66f6f05df4c86b9fb23a18a663df730dc522` /
+  197,080 bytes.
 
 ## Exact resume prompt
 

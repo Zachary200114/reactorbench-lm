@@ -9,6 +9,7 @@ from reactorbench.resources import (
     canonical_dataset_schema_snapshot_resource,
     canonical_schema_snapshot_resource,
     default_config_resource,
+    golden_suite_resource,
     phase4_smoke_config_resource,
     phase5_pilot_config_resource,
     phase6_main_config_resource,
@@ -19,6 +20,7 @@ CONFIG_PATH = ROOT / "configs" / "default.toml"
 PHASE4_CONFIG_PATH = ROOT / "configs" / "model" / "phase4-smoke-v0.1.0.toml"
 PHASE5_CONFIG_PATH = ROOT / "configs" / "experiments" / "phase5-pilot-v0.1.0.toml"
 PHASE6_CONFIG_PATH = ROOT / "configs" / "experiments" / "phase6-main-v0.1.0.toml"
+GOLDEN_SUITE_PATH = ROOT / "golden" / "golden-suite-v0.1.0.json"
 SNAPSHOT_DIRECTORY = ROOT / "schemas" / "aster" / "v0"
 DATASET_SNAPSHOT_DIRECTORY = ROOT / "schemas" / "dataset" / "v0"
 DATASET_GUARD_DIRECTORY = ROOT / "src" / "reactorbench" / "dataset" / "resources"
@@ -51,6 +53,7 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
     assert phase4_smoke_config_resource().read_bytes() == PHASE4_CONFIG_PATH.read_bytes()
     assert phase5_pilot_config_resource().read_bytes() == PHASE5_CONFIG_PATH.read_bytes()
     assert phase6_main_config_resource().read_bytes() == PHASE6_CONFIG_PATH.read_bytes()
+    assert golden_suite_resource().read_bytes() == GOLDEN_SUITE_PATH.read_bytes()
     assert _resource_file_tree(canonical_schema_snapshot_resource()) == _source_file_tree(
         SNAPSHOT_DIRECTORY
     )
@@ -70,7 +73,7 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
 
     hatch_targets = pyproject["tool"]["hatch"]["build"]["targets"]
     sdist_includes = set(hatch_targets["sdist"]["include"])
-    assert {"/configs", "/schemas", "/src"} <= sdist_includes
+    assert {"/configs", "/golden", "/schemas", "/src"} <= sdist_includes
     assert "/tests" not in sdist_includes
     assert hatch_targets["wheel"]["force-include"] == {
         "configs/default.toml": "reactorbench/_data/configs/default.toml",
@@ -83,6 +86,7 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-main-v0.1.0.toml": (
             "reactorbench/_data/configs/experiments/phase6-main-v0.1.0.toml"
         ),
+        "golden/golden-suite-v0.1.0.json": ("reactorbench/_data/golden/golden-suite-v0.1.0.json"),
         "schemas/aster/v0": "reactorbench/_data/schemas/aster/v0",
         "schemas/dataset/v0": "reactorbench/_data/schemas/dataset/v0",
     }

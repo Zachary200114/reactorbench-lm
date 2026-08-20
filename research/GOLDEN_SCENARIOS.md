@@ -1,14 +1,16 @@
 # Golden scenario suite
 
-Status: human-authored developmental acceptance contract; fixture implementation exists, but human review, freeze, and final evaluation remain pending
+Status: exact `0.1.0` packet prepared; project-owner approval and final evaluation pending
 Scope: Aster Station, a wholly fictional normalized state machine
 
 ## Purpose
 
 These cases define behavior that the generator, labels, baselines, and trained model must eventually be tested against. They are not training templates. Their exact combinations, event order, aliases, and surface wording must be withheld from training and development data.
 
-The local G01–G15 generator fixtures are development evidence only. They do not freeze
-these golden cases, create a golden checksum, or establish a model-evaluation result.
+The exact local review artifact is `golden/golden-suite-v0.1.0.json`, semantic SHA-256
+`c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c`, bound to
+generator commit `4473718`. It is still development evidence until the project owner
+approves it; its automated zero-finding scan is not human approval or a model result.
 
 All values are dimensionless and normalized to `[0, 1]`. Approximate bands are `LOW < 0.35`, `NOMINAL 0.35–0.75`, and `HIGH > 0.75`; final implementation thresholds remain invented and versioned. Actions are fictional classification labels, not instructions.
 
