@@ -177,6 +177,12 @@ Do not use a frontier LLM to write training examples. That would blur ownership,
 
 Noise must be applied before target computation when it affects evidence sufficiency.
 
+`SENSOR_NOISE` and `noise_test` are separate dimensions. `SENSOR_NOISE` is structured
+simulator ground truth for an injected observation-layer fault. `noise_test` is a later
+evaluation split for controlled corruption of otherwise generated examples. A scenario
+may have either, both, or neither; assigning an example to `noise_test` must not itself
+add a `SENSOR_NOISE` label, and narrative corruption must never become ground truth.
+
 ## 7. Split policy
 
 ### Rule

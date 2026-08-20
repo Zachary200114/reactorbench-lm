@@ -1,6 +1,6 @@
 # ReactorBench-LM architecture
 
-Status: Phase 1 complete; selected Phase 2 generator milestones locally integrated and verified on 2026-08-18
+Status: Phase 1 complete; selected Phase 2 generator milestones locally integrated and verified on 2026-08-20
 
 ## Design objective
 
@@ -85,7 +85,8 @@ milestone, but they are not yet a frozen version 1 interface and no dataset exis
 
 `src/reactorbench/simulator/` currently implements Aster-A stable operation, one
 observation-only `SENSOR_DRIFT` case, a benign `LOAD_TRANSIENT`, and one constrained
-`SENSOR_STUCK`-during-`LOAD_TRANSIENT` composition. It uses
+`SENSOR_STUCK`-during-`LOAD_TRANSIENT` composition. It also implements one
+observation-only `SENSOR_NOISE` case. It uses
 deterministic local random streams, two fictional channels per normalized variable,
 bounded latent updates, and explicit observation/event/target separation. A same-seed
 stable trace and drift trace have identical latent states; only the selected channel
@@ -109,6 +110,33 @@ the selected channel quality is `SUSPECT`. Unsupported variants, channels, sever
 durations, action sequences, identifiers, container shapes, drivers, and extra faults
 fail closed. This developmental fixture informs G04 but does not freeze the golden
 scenario; the required human review has not occurred.
+
+The noise case is limited to Aster-A steady operation and exactly one indefinite
+low-severity `SENSOR_NOISE` injection on either primary-thermal-state channel. Its
+selected channel matches the same-seed stable trace through onset tick 2, then receives
+deterministic alternating offsets whose paired magnitudes are sampled in the normalized
+`[0.018, 0.024]` interval. Each adjacent pair has equal magnitude and opposite signs;
+the next pair may have a different seeded magnitude. Latent state and every nonselected
+observation remain exactly equal to the stable trace. Decisions at ticks 3 and 4 are
+`UNRESOLVED` with `INSUFFICIENT_EVIDENCE`; the tick-5 diagnosis selects
+`COMPARE_RELATED_TRENDS`, and stable-related evidence at tick 6 supports
+`FLAG_SENSOR_SUSPECT`. Applied actions occur one tick later. The selected quality
+changes from `GOOD` to `SUSPECT` at tick 7. The model-visible trace never uses the
+lexical `NOISY` quality label as a shortcut before diagnosis—or afterward. This
+developmental fixture informs G05 but does not freeze it; human review remains pending.
+
+The first process-fault case is limited to one indefinite low-severity
+`PUMP_DEGRADATION` injection on either fictional Aster-A primary train during steady
+operation. The selected component becomes `DEGRADED` at tick 2, followed by primary
+flow at tick 3, primary thermal state at tick 4, steam at tick 5, and turbine/electrical
+output at tick 6. Normal same-seed observation-noise residuals remain unchanged, both
+channels for each process variable agree and remain `GOOD`, and transfer efficiency is
+invariant. A tick-4 short-evidence decision abstains; correlated evidence supports a
+tick-6 inspection request and a tick-7 simulated-load reduction decision. Inspection
+and reduction apply one tick later, with only the selected component marked pending
+maintenance and the operating mode entering `RECOVERY` at tick 8 while degradation
+persists. This developmental fixture informs G06 but does not freeze it; human review
+remains pending.
 
 The public visible payload contains observations and canonical events only. Scenario
 injections, latent truth, fault labels, and targets remain outside that payload.
@@ -159,12 +187,12 @@ The browser never selects paths, models, token limits, execution devices, or arb
 ## Current implementation boundary
 
 The Phase 1 foundation and selected Phase 2 generator milestones are present. The recorded
-2026-08-18 Python 3.12 gate passed formatting, lint, strict typing, 164 tests, 91.35%
+2026-08-20 Python 3.12 gate passed formatting, lint, strict typing, 181 tests, 92.29%
 branch coverage, distribution builds, and isolated wheel verification. Phase 2 is not
-complete: observation faults beyond drift/stuck, process faults, variants, and broader
-generator gates still need implementation. Dataset generation, tokenizer training,
-model training, measured evaluation, inference serving, and UI construction remain
-later work. Refer to [the implementation status](IMPLEMENTATION_STATUS.md) for the
-exact evolving integration state rather than inferring completion from this architecture.
+complete: additional process faults, compositions, variants, and broader generator gates
+still need implementation. Dataset generation, tokenizer training, model training,
+measured evaluation, inference serving, and UI construction remain later work. Refer to
+[the implementation status](IMPLEMENTATION_STATUS.md) for the exact evolving integration
+state rather than inferring completion from this architecture.
 
 The current task prepares everything locally but excludes GitHub push and Vercel or inference-host deployment.

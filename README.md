@@ -9,13 +9,16 @@ ReactorBench-LM is a research project for building and evaluating a small decode
 The Phase 0 audit and Phase 1 foundation are complete. Phase 2 now includes reviewed
 deterministic Aster-A stable operation, single-channel `SENSOR_DRIFT`, a benign staged
 `LOAD_TRANSIENT` with `NO_FAULT` truth, and one deliberately narrow composition:
-`LOAD_TRANSIENT` plus a single `SENSOR_STUCK` electrical-output channel. These cases
-preserve strict hidden/visible separation and use the non-exhaustive prohibited-content
-guard. The recorded 2026-08-18 Python 3.12 gate passed 164 tests with 91.35% branch
-coverage, strict typing, package builds, and isolated wheel verification. Golden case
-G04 is still a draft acceptance contract and has not received the human review needed
-to freeze it. Local Git is initialized without a remote; nothing has been pushed,
-published, or deployed.
+`LOAD_TRANSIENT` plus a single `SENSOR_STUCK` electrical-output channel. It also has a
+bounded, alternating single-channel `SENSOR_NOISE` case over stable latent state, with
+two required abstentions before diagnosis, and a gradual `PUMP_DEGRADATION` process
+fault with delayed flow, thermal, steam, and output effects. These cases preserve strict
+hidden/visible separation and use the non-exhaustive prohibited-content guard. The
+recorded 2026-08-20 Python 3.12 gate passed 181 tests with 92.29% branch coverage,
+strict typing, package builds, and isolated wheel verification. The golden suite,
+including the matching G04, G05, and G06 cases, remains a draft acceptance contract and
+has not received the human review needed to freeze it. Local Git is initialized without
+a remote; nothing has been pushed, published, or deployed.
 
 There is currently:
 
