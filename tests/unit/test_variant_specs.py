@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from collections.abc import Callable
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
 
 from reactorbench.schemas import PlantVariant, StateVariable
+from reactorbench.simulator import variants as variant_module
 from reactorbench.simulator.content_guard import assert_no_prohibited_content
 from reactorbench.simulator.variants import (
     ASTER_A_SPEC,
@@ -150,6 +152,84 @@ def test_specs_are_frozen_and_internal_mappings_are_read_only() -> None:
         ASTER_A_SPEC.all_aliases["other"] = "aster-train-cirrus"  # type: ignore[index]
     with pytest.raises(TypeError):
         VARIANT_REGISTRY[PlantVariant.ASTER_A] = ASTER_B_SPEC  # type: ignore[index]
+
+
+def _component_alias_identifier_collision(spec: AsterVariantSpec) -> AsterVariantSpec:
+    return replace(
+        spec,
+        components=(
+            spec.components[0],
+            replace(spec.components[1], alias=spec.components[0].component_id),
+            *spec.components[2:],
+        ),
+    )
+
+
+def _sensor_alias_identifier_collision(spec: AsterVariantSpec) -> AsterVariantSpec:
+    return replace(
+        spec,
+        channels=(
+            replace(spec.channels[0], sensor_alias=spec.channels[0].channel_id),
+            *spec.channels[1:],
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutator", [_component_alias_identifier_collision, _sensor_alias_identifier_collision]
+)
+def test_variant_constructor_rejects_alias_identifier_collisions(
+    mutator: Callable[[AsterVariantSpec], AsterVariantSpec],
+) -> None:
+    with pytest.raises(ValueError, match="aliases must not collide with identifiers"):
+        mutator(ASTER_A_SPEC)
+
+
+def test_registry_rejects_alias_matching_identifier_in_another_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alias_collision = replace(
+        ASTER_B_SPEC,
+        components=(
+            ASTER_B_SPEC.components[0],
+            replace(ASTER_B_SPEC.components[1], alias=ASTER_A_SPEC.components[0].component_id),
+            *ASTER_B_SPEC.components[2:],
+        ),
+    )
+    monkeypatch.setattr(
+        variant_module,
+        "VARIANT_REGISTRY",
+        {
+            PlantVariant.ASTER_A: ASTER_A_SPEC,
+            PlantVariant.ASTER_B: alias_collision,
+            PlantVariant.ASTER_C: ASTER_C_SPEC,
+        },
+    )
+    with pytest.raises(ValueError, match="aliases and identifiers"):
+        variant_module._validate_registry()
+
+
+def test_registry_rejects_identifier_matching_alias_in_another_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identifier_collision = replace(
+        ASTER_B_SPEC,
+        channels=(
+            replace(ASTER_B_SPEC.channels[0], channel_id=ASTER_A_SPEC.aliases[0]),
+            *ASTER_B_SPEC.channels[1:],
+        ),
+    )
+    monkeypatch.setattr(
+        variant_module,
+        "VARIANT_REGISTRY",
+        {
+            PlantVariant.ASTER_A: ASTER_A_SPEC,
+            PlantVariant.ASTER_B: identifier_collision,
+            PlantVariant.ASTER_C: ASTER_C_SPEC,
+        },
+    )
+    with pytest.raises(ValueError, match="aliases and identifiers"):
+        variant_module._validate_registry()
 
 
 def test_variant_cards_pass_the_existing_prohibited_content_guard() -> None:

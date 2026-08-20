@@ -167,6 +167,11 @@ class ScenarioDefinition(ContractModel):
 
     @model_validator(mode="after")
     def scheduled_items_fit_the_trajectory(self) -> ScenarioDefinition:
+        if (
+            self.dependency_map_context is not None
+            and self.dependency_map_context.plant_variant_id is not self.plant_variant_id
+        ):
+            raise ValueError("dependency_map_context.plant_variant_id must match plant_variant_id")
         if any(injection.onset_tick >= self.duration_ticks for injection in self.fault_injections):
             raise ValueError("fault onset must be before duration_ticks")
         if any(

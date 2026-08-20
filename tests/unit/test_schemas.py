@@ -448,6 +448,38 @@ def test_dependency_map_context_is_strict_frozen_and_round_trips_with_scenario()
         context.links = ()
 
 
+def test_scenario_rejects_dependency_map_for_a_different_variant() -> None:
+    context = _dependency_map_context()
+    with pytest.raises(ValidationError, match="must match plant_variant_id"):
+        ScenarioDefinition(
+            scenario_id="scenario-dependency-map-mismatch-001",
+            plant_variant_id=PlantVariant.ASTER_A,
+            seed=7,
+            duration_ticks=10,
+            driver=ScenarioDriver.STEADY_OPERATION,
+            dependency_map_context=context,
+        )
+
+
+def test_scenario_model_copy_lookalike_is_revalidated_for_variant_context() -> None:
+    scenario = ScenarioDefinition(
+        scenario_id="scenario-dependency-map-copy-001",
+        plant_variant_id=PlantVariant.ASTER_B,
+        seed=7,
+        duration_ticks=10,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        dependency_map_context=_dependency_map_context(),
+    )
+    assert scenario.dependency_map_context is not None
+    mismatched_context = scenario.dependency_map_context.model_copy(
+        update={"plant_variant_id": PlantVariant.ASTER_A}
+    )
+    lookalike = scenario.model_copy(update={"dependency_map_context": mismatched_context})
+
+    with pytest.raises(ValidationError, match="must match plant_variant_id"):
+        ScenarioDefinition.model_validate(lookalike.model_dump(warnings=False))
+
+
 def test_dependency_link_rejects_unknown_fields_and_identical_endpoints() -> None:
     payload: dict[str, object] = {
         "support_bus_id": "aster-bus-amber",

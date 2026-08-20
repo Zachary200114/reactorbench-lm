@@ -304,6 +304,14 @@ def _validate_variant_shape(spec: AsterVariantSpec) -> None:
     ):
         raise ValueError("every StateVariable requires PRIMARY and REDUNDANT channels")
 
+    # Aliases are lookup conveniences, not a second identifier namespace.  A
+    # collision with either kind of model-visible identifier would make
+    # resolution ambiguous and could silently map an alias to the wrong
+    # object.  Check this after both collections have been built so the rule
+    # is order-independent for component and sensor records.
+    if aliases & (component_ids | channel_ids):
+        raise ValueError("component and sensor aliases must not collide with identifiers")
+
     supplied_dependents: set[str] = set()
     support_bus_ids = {
         component.component_id
@@ -594,10 +602,12 @@ def _validate_registry() -> None:
         }
         if identifiers & all_ids:
             raise ValueError("component and channel identifiers must be unique across variants")
-        all_ids.update(identifiers)
         aliases = set(spec.all_aliases)
         if aliases & all_aliases:
             raise ValueError("aliases must be unique across variants")
+        if aliases & all_ids or identifiers & all_aliases:
+            raise ValueError("aliases and identifiers must be disjoint across variants")
+        all_ids.update(identifiers)
         all_aliases.update(aliases)
 
         role_by_id = {component.component_id: component.role for component in spec.components}
