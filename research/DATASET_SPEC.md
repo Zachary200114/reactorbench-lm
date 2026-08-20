@@ -1,6 +1,9 @@
 # ReactorBench-LM dataset specification
 
-Status: Phase 3 design specification; no dataset, renderer output, tokenizer, or model input has been generated yet.
+Status: Phase 3 is technically complete at the mandatory project-owner pre-render
+review checkpoint, and the intended-repository verification gate passed.
+Developmental structured projections and split manifests exist; no real owner-approved
+narrative candidate, tokenizer, or model exists.
 
 ## 1. Dataset purpose
 
@@ -35,8 +38,8 @@ Every released example must be reproducible from:
 - `split_name`
 - `task_name`
 
-Before the Phase 3 pilot, trajectory-index and split-manifest provenance must also add
-two explicit matched-context fields:
+The developmental trajectory-index and split-manifest contracts add two explicit
+matched-context fields:
 
 - `counterfactual_group_id`: one stable identifier derived only from the pair's
   preregistered shared factors. Its derivation explicitly excludes every decisive
@@ -47,36 +50,69 @@ two explicit matched-context fields:
 For G07 specifically, group siblings share plant variant, seed, active component role,
 duration, `PUMP_TRIP` family, onset, severity, and pre-branch causal schedule; standby
 availability is the varied factor. Other counterfactual families may vary the fault
-itself—for example, the future G08/G09 lag-versus-stuck comparison—so a generic group
+itself—for example, the implemented G08/G09 lag-versus-stuck comparison—so a generic group
 key must not assume that fault family, onset, or severity are always shared.
 
-These fields are grouping metadata, not prompt text or target labels. The current
-developmental `ProvenanceRecord` does not yet contain them, so either that schema or a
-separate strict split-manifest contract must be extended and snapshot-reviewed before a
-dataset pilot. A raw simulator `context_id` is audit metadata and must never substitute
-for these fields because its current value contains the availability word.
+These fields are grouping metadata, not prompt text or target labels. Phase 3 implements
+them in separate strict grouping and split-manifest contracts, which are included in the
+developmental dataset snapshot. A raw simulator `context_id` is audit metadata and must
+never substitute for these fields because its value can encode the availability word.
+The snapshot is reviewed implementation evidence, not a version-1 schema freeze.
 
-## 2.1 Phase 2 handoff: projection and group audit
+## 2.1 Implemented projection and group audit
 
 The completed G01–G15 generator produces truth-filtered audit trajectories, not model
-prompts. Before a renderer or pilot dataset exists, Phase 3 must implement a strict,
-read-only projection that (1) ends each decision task at its exact decision tick, (2)
-selects only task-allowed event/channel facts, and (3) rejects latent state, injection,
-targets, scenario/provenance IDs, audit-only context identifiers, and later action
+prompts. Phase 3 implements a strict, read-only projection that (1) ends each decision
+task at its exact decision/event cut, (2) selects only task-allowed event/channel/context
+facts, and (3) rejects latent state, injection, targets, source IDs and evidence
+annotations, scenario/provenance IDs, audit-only context identifiers, and later action
 effects. Full audit trajectories remain available only for provenance and review.
 
-The split manifest must assign every related family as a group before rendering:
+The split manifest assigns every supported related family as a group before rendering:
 
 - G07 matched standby-availability contexts;
 - G08/G09 lag-versus-stuck resolution/persistence counterfactuals;
 - G12 included versus withheld dependency-map contexts;
 - G14 compound, its single-factor comparators, and affected component/channel roles; and
-- G15 sparse evidence and any evidence-expanded counterfactual relatives.
+- G15 sparse evidence only. The 24 sparse groups are explicitly incomplete because
+  evidence-expanded relatives are not generator-supported.
 
-The audit must report and reject group separation, target/context or template shortcuts,
-post-decision leakage, duplicate structured records, and prohibited cross-split
-scenario/template/component/fault-composition overlap. It must not claim that a
-truth-filtered payload is automatically safe prompt text.
+The current deterministic structured audit contains 204 trajectories, 1,762
+single-input projections, and 14 atomic counterfactual pairs. It reports and rejects
+group separation, target/context or renderer-plan shortcuts, post-decision leakage,
+duplicate structured records, and prohibited cross-split
+scenario/template/component/fault-composition overlap. G07 omits standby context from
+fault-family and continuation views and exposes its semantic relationship only for
+evidence, action, and summary views. G12 exposes dependency links only for the included
+sibling and emits no withheld marker. G15 exposes one sparse primary-flow fact. It
+never claims that a truth-filtered payload is automatically safe prompt text.
+
+Task counts are 148 `continue_log`, 399 `fault_family`, and 405 each for
+`extract_evidence`, `next_action`, and `incident_summary`. Six otherwise eligible
+`component_test` continuation projections are intentionally excluded because the
+held-out component alias identified their next-event target inside that task. The
+split therefore has no `continue_log` coverage and supports no component-generalization
+claim for that task. The quality report is task-scoped and contains every
+marginal feature/target contingency plus pairwise and full renderer-plan
+`renderer_nuisance` interactions, rather than aggregating incompatible labels across
+tasks. `semantic_context` remains in the report under its own feature class, while only
+exclusive nuisance features or interactions may raise shortcut findings.
+
+Five explicit alias-plan overrides rebalance the measured joint nuisance cues before
+freeze. Their keys contain only split, seed, and case; generation never looks up a
+runtime target to choose a renderer plan. D-059 records the exact five entries.
+
+All 405 evidence targets are nonempty, and every target fact reference resolves to a
+fact actually visible in that projection. Four G12 map-withheld targets intentionally
+omit `MAPPED_COMPONENT_CHANGE`: those prompts withhold the dependency map, so including
+that semantic slot would create an ungrounded target. This bounded omission is counted
+and tested rather than silently discarded. The structured gate separately requires
+`single_input_structured_duplicate_count=0` and
+`counterfactual_input_structured_duplicate_count=0`.
+
+G14's single-factor set uses the same-role pump comparator plus an exact primary-
+thermal sensor-drift comparator for the sensor-only member. This prevents a component
+or channel-role mismatch from masquerading as compound-composition generalization.
 
 No manually edited generated record should enter a release. If a template or rule is corrected, regenerate the affected shard and bump the appropriate version.
 
@@ -141,6 +177,12 @@ Example style—not final training content:
 ```
 
 All tags, component names, values, and relationships are fictional.
+
+The current catalog is project-authored and deterministic: four template families by
+four alias families by eleven event types create 176 full-preview combinations. No
+production narrative view exists until the exact hash-bound pre-render catalog review
+is approved by the project owner. A second human review is required for the exact
+post-render inventory before candidate use.
 
 ### C. Task view
 
@@ -216,12 +258,28 @@ Do not use a frontier LLM to write training examples. That would blur ownership,
 - Maintain at least several template families per event type.
 - Partition template families across train and template-holdout test sets.
 - Track lexical overlap and duplicate n-grams across splits.
-- Limit any single rendered string or template skeleton to a declared maximum share.
-- Generate matched counterfactual pairs where one evidence fact changes the target.
+- Report every repeated rendered string and normalized template skeleton. Exact text
+  duplicates fail. During development, skeleton overlap fails when it violates the
+  explicit template-family or alias-family holdout. Preregister a maximum skeleton
+  share only after pilot evidence and before freezing the dataset; do not select it
+  after inspecting a held-out result.
+- Generate matched counterfactual pairs that differ in one preregistered causal factor
+  or intervention. That factor may produce multiple visible evidence facts; report all
+  decisive prompt-local facts rather than pretending the rendered traces differ in a
+  single line.
 - Balance and filter structural context cues. A non-null `standby_context`, a G07-only
   tick-0 note, or one template family must not by itself identify `PUMP_TRIP` or its
   action label; add suitable negative controls or exclude the structural field from a
   task view until that shortcut test passes.
+- Compute shortcut contingencies separately for each task. Report the full table for
+  every audited marginal feature value and the pairwise/full-plan
+  `renderer_nuisance` interactions against structured targets, even when no finding is
+  raised.
+  Report `semantic_context` under its own feature class rather than treating it as a
+  `renderer_nuisance` feature. The current matrix excludes six
+  `component_test` continuation examples because the held-out alias would otherwise be
+  a sole-target cue for that task. Report that this leaves no component-test
+  continuation coverage or component-generalization claim for `continue_log`.
 - Include both explicit and indirect evidence, but never require outside nuclear knowledge.
 
 ### Controlled noise
@@ -234,6 +292,10 @@ Do not use a frontier LLM to write training examples. That would blur ownership,
 - Contradict channels to create an abstention case.
 
 Noise must be applied before target computation when it affects evidence sufficiency.
+
+For the current renderer-only `noise_test`, the four bounded corruption plans are
+assigned across multiple task outcomes as a balanced matrix so the plan itself is not a
+sole-target cue. Corruption provenance remains separate from simulator fault truth.
 
 `SENSOR_NOISE` and `noise_test` are separate dimensions. `SENSOR_NOISE` is structured
 simulator ground truth for an injected observation-layer fault. `noise_test` is a later
@@ -277,8 +339,12 @@ Assign splits from structured scenario definitions **before** narrative renderin
 - Preserve and report counts by fault family, context presence, and
   `counterfactual_variant_id`. For G07-derived records, require paired 1:1 availability
   roles before rendering; any later filtering must remove or retain the pair together.
-- Deduplicate exact text and normalized template skeletons globally.
-- Measure n-gram overlap across train/test and publish it.
+- Reject duplicate structured model inputs separately for single-input task records and
+  two-input counterfactual task records; report both duplicate counts even when zero.
+- Reject exact text duplicates globally. Report every normalized skeleton overlap and
+  reject overlap that defeats the explicit template-family or alias-family holdout.
+- Measure normalized-token 3/4/5-gram overlap across train/test and publish it. The
+  development report is descriptive because no threshold was preregistered.
 - Freeze test manifests before the main run.
 
 ## 8. Task definitions
@@ -287,6 +353,10 @@ Assign splits from structured scenario definitions **before** narrative renderin
 
 Input: prefix of a synthetic event narrative.
 Target: next text tokens and separately the next structured event type.
+
+The structured next-event view uses an event-index-exclusive prefix and never selects
+`ACTION_APPLIED` as its target. This prevents the applied form of a policy label from
+turning continuation into target disclosure.
 
 ### `fault_family`
 
@@ -297,6 +367,12 @@ Target: diagnostic status plus zero or more fault-family labels. An abstaining t
 
 Input: synthetic narrative.
 Target: canonical evidence slots present in the input.
+
+Every target slot must carry one or more prompt-local fact references, and each
+reference must resolve to a visible observation, event, or context fact. The current
+development matrix has 405 nonempty evidence targets and zero unresolved references.
+For four G12 map-withheld projections, the target deliberately omits
+`MAPPED_COMPONENT_CHANGE` because no dependency-map fact is visible.
 
 ### `next_action`
 
@@ -315,8 +391,11 @@ Target: compact structured summary with affected invented subsystem, observed tr
 
 ### `counterfactual_compare`
 
-Input: two matched narratives differing in one evidence fact.
-Target: identify which structured conclusion changes and why, using canonical evidence labels.
+Input: two matched narratives differing in one preregistered causal factor or
+intervention. Its bounded causal consequences may change multiple visible facts.
+Target: identify which structured conclusion changes and why, using canonical evidence
+labels and prompt-local decisive facts. The benchmark reports the number of differing
+visible facts for each pair; it does not claim a literal one-line edit.
 
 ## 9. Validation and quality gates
 
@@ -343,6 +422,16 @@ Target: identify which structured conclusion changes and why, using canonical ev
   variant roles, remain in one split, and survive filtering together.
 - Context presence, tick-0 context-note templates, and availability wording are tested
   for fault-family and action-label shortcuts; contingency counts are reported.
+- Shortcut checks are task-scoped and publish full feature/target contingency counts;
+  `semantic_context` is reported separately, and only `renderer_nuisance` exclusivity
+  in marginal or pairwise/full-plan features raises a finding. Use path-aware
+  categorical target keys for within-task
+  contingencies and distinct leak-oriented labels for input-text leakage scans.
+- The quality report binds `task_record_count=1,776` and every audited task-record
+  ID/hash, including both render foreign keys for all 14 paired examples; preserve the
+  exact inputs as `task-shortcut-records.jsonl`.
+- Duplicate single-input and paired counterfactual structured fingerprints both equal
+  zero before rendering.
 - No malformed timestamps, component aliases, or unfinished templates.
 - No real facility names, people, contact information, addresses, emails, phone numbers, or real incident identifiers.
 
@@ -359,7 +448,58 @@ Maintain a versioned denylist and pattern suite covering:
 - URLs, emails, phone numbers, and postal addresses;
 - copied spans from any reviewed reference document.
 
-Automated scanning is a gate, not proof; manually review stratified samples from every dataset release.
+Automated scanning is a gate, not proof. The implemented denylist/pattern suite and
+copied-span fingerprint registry are intentionally non-exhaustive. Before any local
+candidate is generated, the project owner must review the exact hash-bound packet
+containing all authored renderer and corruption language surfaces, the catalog and
+guard, and the complete structured-target inventory. The packet is bound to the
+resolved configuration, generator commit, structured bundle, and split manifest. After
+generation, a separate owner review must cover the full distinct render inventory and
+its quality report. Automated test-only approval fixtures are never human evidence.
+
+## 9.1 Development checkpoint and artifact policy
+
+The current configuration fixes 204 structured trajectories, 1,762 single-input
+projections, and 14 counterfactual comparisons. When exercised under an explicit
+test-only approval fixture, the full path creates 553 distinct render candidates, 1,776
+task examples, and 18 bounded corruption records. No real owner approval exists, so
+those test counts do not identify an approved corpus and no candidate artifact is
+committed for training.
+
+With placeholder test commit `abcdef0`, the corrected fixture audits all 1,776 task
+records and 1,977,422 rendered UTF-8 bytes. It reports 402 contingencies (358
+`renderer_nuisance`, 44 `semantic_context`), 120 normalized-skeleton groups, and zero
+exact-text, forbidden-skeleton, shortcut, target-text, or provenance findings;
+`passed=true`. These measurements are contract evidence only, not real artifact or
+release hashes, a human-approved candidate, or permission to train.
+
+Canonical JSONL is the developmental storage format. At this scale it keeps every
+record human-inspectable without adding a binary table dependency. The sole write-
+capable command resolves a validated checkout from the config and targets
+`data/generated/<artifact_name>`; arbitrary output roots/directories are rejected and
+existing candidates are not overwritten. Output is canonical and bounded by explicit
+file, record, per-file-byte, and total-byte limits. Its manifest binds the exact candidate,
+resolved configuration, structured bundle, split manifest, Aster and dataset schema
+snapshots, catalog, guard, pre-render packet and record, post-render packet, and quality
+report. Verification re-parses every file through its strict typed contract and checks
+all cross-file links and hashes. Dataset JSON Schema snapshots are packaged and
+validated alongside the Aster snapshots. Parquet remains a later option only if
+measured scale or analysis requirements justify it.
+
+At generator implementation commit
+`d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`, the intended-repository gate passed
+Ruff formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 649 tests
+on Python 3.12.11 in 297.78 seconds with 87.24% branch coverage; build and isolated
+no-network artifact verification also passed. The exact config, structured, split,
+schema, catalog, authored-surface, guard, target-inventory, packet, and package hashes
+are recorded in `docs/IMPLEMENTATION_STATUS.md`. The strict-parsed unapproved packet is
+the ignored 896,151-byte local file
+`artifacts/review/catalog-review-v0.1.0.json`, with raw-file SHA-256
+`2bc3e226e202a4c5c9baddaef512cf195e6086db7194b158856a782bb880dfce`
+and internal checksum
+`faa50900db2890b3bc167a44aabcb416b0a3eaa756cb578978f8e58fc3a24b8a`.
+The real candidate, quality report, post-render packet, and candidate artifact manifest
+have intentionally not been created because mandatory owner review remains open.
 
 ## 10. Data documentation
 

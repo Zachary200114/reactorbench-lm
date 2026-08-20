@@ -315,11 +315,65 @@ golden review, or model result. The schema/generator remain `0.1.0`, `frozen=fal
   prohibited-content scanning, duplicate/leakage checks, and a tiny pilot dataset.
 - Expand scenario coverage without using real records or hosted-LLM corpus text.
 
-**First milestone:** read-only task projection and split-manifest audit only. Project
-truth-filtered audit trajectories to allowed decision-tick/channel prefixes, reject
-truth/identity/later-action shortcuts, and group G07, G08/G09, G12, G14, and G15
-relatives before any renderer or pilot-data generation. The narrow Phase 2 scanner does
-not replace a full reviewed denylist and stratified human sample review.
+**Local checkpoint:** Phase 3 is technically complete at the mandatory project-owner
+pre-render review checkpoint, and the intended-repository verification gate passed.
+The deterministic split-first audit has 204 trajectories, 1,762 single-input
+projections, and 14 atomic counterfactual comparisons. `ModelInput` permits only
+task-cut observation/event/context facts and strips source IDs, evidence annotations,
+latent/target/provenance truth, and later action effects. Complete supported groups
+cover G07, G08/G09, G12, and G14; G14 uses a primary-thermal sensor-only comparator,
+and 24 sparse-only G15 groups remain explicitly incomplete because expanded siblings
+are unsupported.
+
+The 1,762 projections comprise 148 continuation, 399 fault-family, and 405 each for
+evidence extraction, next action, and incident summary. All evidence targets are
+nonempty and resolve to visible prompt-local facts. Four map-withheld G12 targets
+intentionally omit `MAPPED_COMPONENT_CHANGE`; six `component_test` continuation
+examples are intentionally excluded because the held-out alias would otherwise
+identify their label within that task. That split therefore has no continuation
+coverage and supports no component-generalization claim for `continue_log`. Single-
+input and paired structured duplicate counts are both zero.
+
+The project-authored renderer catalog has four template families and four alias
+families across eleven event types, producing 176 mandatory catalog-review entries.
+The pre-render packet also covers every actual renderer and corruption language surface
+and binds them to the exact resolved configuration, generator commit, structured
+bundle, split manifest, and full target inventory. Exact text and structured
+duplicates fail; all normalized skeleton and 3/4/5-gram overlap is reported; skeleton
+overlap fails when it violates an explicit template or alias holdout. Shortcut audit is
+task-scoped, publishes marginal contingencies plus pairwise/full-plan
+`renderer_nuisance` interactions, reports `semantic_context` in a separate class, and
+raises findings only for exclusive nuisance features or interactions.
+Its path-aware categorical target keys remain distinct from leak-oriented labels. The
+report binds all 1,776 task-record IDs/hashes and paired render foreign keys. No post-
+hoc global overlap threshold has been invented. Under a test-only synthetic
+approval fixture, the pipeline yields 553
+distinct render candidates, 1,776 task examples, and 18 bounded corruption records.
+This is contract evidence, not human approval or a training corpus.
+
+Five explicit pre-freeze alias-plan overrides rebalance the measured joint nuisance
+cues. They are keyed only by split, seed, and case, never by runtime target lookup, so
+the corrected plan remains deterministic and split-first rather than answer-selected.
+
+No real owner approval is recorded. The exact hash-bound authored-language and
+structured-target packet must be reviewed before local candidate generation, and a
+separate full post-render human review is required afterward. Non-exhaustive
+denylist/pattern/fingerprint scans cannot
+prove safety. Phase 3 therefore stops safely at this review gate; no tokenizer, model,
+training, service, or UI work may begin. The sole write command uses the validated
+config-selected `data/generated/<artifact_name>` path, accepts no arbitrary output
+root, and is non-overwriting, size/count bounded, and provenance-complete. Read-only
+verification strictly re-parses typed records and cross-file links.
+
+At generator implementation commit
+`d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`, the intended repository passed Ruff
+formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 649 tests on
+Python 3.12.11 in 297.78 seconds with 87.24% branch coverage. Build and isolated
+no-network artifact verification passed. The exact implementation, schema, config,
+lineage, packet, and package hashes are recorded in `docs/IMPLEMENTATION_STATUS.md`.
+The unapproved packet is prepared and checksum-known; the real candidate, quality
+report, post-render packet, and candidate artifact manifest have intentionally not been
+created because mandatory project-owner review remains open.
 
 ### Phase 4 — Model correctness
 

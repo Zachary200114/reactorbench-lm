@@ -1,6 +1,8 @@
 # ReactorBench-LM research dossier
 
-Status: **research complete; Phase 2 structured generator complete locally on 2026-08-20; Phase 3 has not started**
+Status: **research complete; Phase 3 technically complete at the mandatory
+project-owner pre-render review checkpoint on 2026-08-20; intended-repository
+verification passed; human dataset approval remains open**
 Prepared: 2026-08-18
 
 ## Recommended project
@@ -53,10 +55,50 @@ The current computer is an Apple M3 MacBook Air with 16 GB unified memory. PyTor
 
 ## Immediate next step
 
-Phase 2 now provides developmental G01–G15 generator fixtures, including immutable
-Aster-A/B/C cards/maps, exact single-family coverage, a narrow G14 compound, and G15
-required abstention. It does not provide a dataset, tokenizer, model, service, UI, or
-measured result. Phase 3 begins with a read-only decision-tick/channel projection and
-split-first manifest audit; truth-filtered audit trajectories are not model prompts, and
-no pilot rendering may begin before shortcut/leakage groups and full content-review gates
-are defined. GitHub pushing and Vercel deployment remain reserved for Zachary.
+Phase 3 now provides developmental split-first manifests, strict decision-tick/channel
+`ModelInput` projection, atomic supported counterfactual groups, the project-authored
+renderer/catalog, duplicate/leakage/shortcut/content audits, bounded corruption plans,
+hash-bound review contracts, and config-selected non-overwriting typed JSONL artifact
+handling under `data/generated/<artifact_name>` with no arbitrary output root.
+The structured inventory is 204 trajectories, 1,762 single-input projections, and 14
+counterfactual pairs. G15 expanded siblings remain unsupported and its 24 sparse-only
+groups are explicitly incomplete.
+
+The task inventory is 148 continuation, 399 fault-family, and 405 each for evidence,
+action, and summary. All evidence targets are nonempty and grounded in visible facts;
+four map-withheld G12 targets intentionally omit `MAPPED_COMPONENT_CHANGE`. Six
+heldout-alias continuation examples are excluded from `component_test` to remove a
+task-scoped shortcut; that split consequently has no continuation coverage or
+component-generalization claim for `continue_log`. The full audit reports
+marginal contingencies plus pairwise/full-plan `renderer_nuisance`
+interactions, reports `semantic_context` separately, binds all 1,776 task-record
+IDs/hashes and paired render foreign keys, and reports zero single-input or paired
+structured duplicates.
+
+Five explicit alias-plan overrides rebalance the measured joint nuisance cues before
+freeze. They are keyed only by split, seed, and case, never by a runtime target lookup.
+
+The project owner must now review the existing unapproved pre-render packet at
+`artifacts/review/catalog-review-v0.1.0.json`: its 176-entry catalog, all authored
+renderer/corruption language surfaces, complete 1,776-target inventory, and exact
+resolved-config/generator/structured-bundle binding. Its strict parse passed; the
+896,151-byte file has raw SHA-256
+`2bc3e226e202a4c5c9baddaef512cf195e6086db7194b158856a782bb880dfce`
+and internal checksum
+`faa50900db2890b3bc167a44aabcb416b0a3eaa756cb578978f8e58fc3a24b8a`.
+Only an approved `project-owner` record bound to that packet may unlock local candidate
+generation, which is then followed by a separate full post-render human review.
+Automated test-only approval fixtures are not review evidence. The test-only path
+contains 553 distinct render candidates, 1,776 task examples, and 18 corruptions; no
+real candidate has been generated.
+
+At implementation commit
+`d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`, the intended repository passed Ruff
+formatting for 106 files, Ruff lint, strict mypy for 80 source files, 649 tests on
+Python 3.12.11 in 297.78 seconds with 87.24% branch coverage, build, and isolated
+no-network artifact verification. Exact hashes are recorded in
+`docs/IMPLEMENTATION_STATUS.md`. The candidate, quality report, post-render packet, and
+candidate artifact manifest have intentionally not been created because human review
+remains open. Consequently no approved narrative dataset, tokenizer, model, training
+run, service, UI, or measured model result exists. GitHub pushing and Vercel deployment
+remain reserved for Zachary.

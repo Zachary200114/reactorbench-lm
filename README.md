@@ -15,15 +15,54 @@ audit fixture. It separates latent truth from observations/events and applies
 fail-closed validation, bounded deterministic transitions, and a narrow redacting
 prohibited-content scanner.
 
-The recorded 2026-08-20 Python 3.12 full gate passed **434 tests** with **92.20% branch
-coverage**; Ruff format/lint, strict typing across 41 source files, sdist/wheel builds,
-and isolated artifact verification passed. This is generator evidence only: the golden
-suite is still a draft pending human review and freeze. Phase 3 begins with split-first
-projection/manifests, not rendering.
+Phase 3 is technically complete at the mandatory project-owner pre-render review
+checkpoint. Its deterministic, split-first development audit contains **204 structured
+trajectories**, **1,762 single-input task projections**, and **14 atomic counterfactual
+pairs**. Strict
+`ModelInput` projection removes source IDs, latent truth, targets, evidence annotations,
+provenance, and later action effects before the project-authored renderer boundary.
+The development matrix covers IID and template, alias/component, severity,
+composition, counterfactual, and bounded-corruption holdouts.
+
+All 405 evidence targets are grounded in visible prompt-local facts; none is empty.
+Four map-withheld G12 records intentionally omit `MAPPED_COMPONENT_CHANGE` because the
+dependency fact is not visible in those inputs. Six `component_test` continuation
+examples are intentionally excluded because the held-out alias made their next-event
+label a task-scoped shortcut. Consequently, `component_test` has no `continue_log`
+coverage and does not claim component generalization for that task. The audit reports
+per-task marginal contingencies plus pairwise and full renderer-plan
+`renderer_nuisance` interactions, reports `semantic_context` separately, limits
+shortcut findings to nuisance features/interactions, and requires zero duplicate single
+or paired structured inputs.
+
+Five explicit alias-plan overrides rebalance the measured nuisance interactions before
+freeze. They are keyed only by split, seed, and case—not by a runtime task target. The
+corrected test-only audit reports zero shortcut findings.
+
+The pre-render owner packet binds the exact resolved configuration, generator commit,
+structured bundle and target inventory to the complete project-authored renderer and
+corruption language surfaces. Its catalog has four template families and four alias
+families across eleven event types (**176 required catalog-review entries**).
+Automated test-only review fixtures demonstrate that the gated path would produce
+**553 distinct render candidates**, **1,776 task examples**, and **18 corruption
+records**. Those fixtures are not human approval and are not an approved corpus. No
+real owner approval is recorded, so no narrative candidate artifact has been generated
+or committed for training. The separate pre-render and post-render human gates remain
+mandatory, and the golden suite is still a draft pending human review and freeze.
+
+At implementation commit
+`d3d22b7f9b2888d281c1c92cd283e10b4f0e3af1`, the intended-repository gate passed
+Ruff formatting for 106 files, Ruff lint, strict mypy for 80 source files, and 649 tests
+on Python 3.12.11 in 297.78 seconds with 87.24% branch coverage. The same 649-test suite
+passed in staging in 307.07 seconds; the sdist/wheel build and isolated no-network
+artifact verification also passed. A fresh independent SHIP review passed 58 focused
+tests in 173.95 seconds. These gates establish the technical checkpoint, not either
+mandatory human review or an approved corpus. Exact hashes and evolving status are
+recorded in the implementation handoff.
 
 There is currently:
 
-- no generated training dataset;
+- no human-approved or generated training dataset;
 - no trained tokenizer;
 - no trained model or checkpoint;
 - no measured model result or benchmark;
@@ -51,6 +90,7 @@ latent Aster state
 ```
 
 Ground truth belongs to the structured generator, never to rendered prose or model output.
+Developmental dataset contracts are snapshot-reviewed, not frozen as version 1.
 
 ## Non-negotiable boundaries
 
