@@ -1,0 +1,72 @@
+[phase5]
+config_version = "0.1.0"
+phase4_config_path = "configs/model/phase4-smoke-v0.1.0.toml"
+phase4_run_path = "runs/phase4-smoke-v0.1.0"
+run_root = "runs"
+run_name = "phase5-pilot-v0.1.0"
+
+[data]
+train_split = "iid_train"
+validation_split = "iid_validation"
+prohibited_splits = [
+  "iid_test",
+  "template_test",
+  "component_test",
+  "severity_test",
+  "composition_test",
+  "counterfactual_test",
+  "noise_test",
+]
+classification_tasks = ["fault_family", "next_action", "continue_log"]
+
+[serialization]
+serialization_version = "0.1.0"
+prompt_prefix = "<|prompt|>"
+target_prefix = "<|target|>"
+record_separator = "<|sep|>"
+truncation = "retain_prompt_suffix"
+maximum_prompt_utf8_bytes = 65536
+
+[baselines]
+ngram_order = 3
+ngram_additive_smoothing = 0.1
+bow_max_features = 2048
+bow_steps = 400
+bow_learning_rate = 0.25
+bow_l2 = 0.001
+gru_embedding_width = 64
+gru_hidden_width = 96
+gru_epochs = 60
+gru_batch_size = 16
+gru_learning_rate = 0.005
+gru_max_tokens = 256
+
+[smaller_transformer]
+seed = 5501
+device = "mps"
+allow_cpu_fallback = true
+steps = 300
+batch_size = 8
+learning_rate = 0.0005
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+evaluation_interval = 50
+
+[pilot_transformer]
+seed = 5502
+device = "mps"
+allow_cpu_fallback = true
+steps = 500
+batch_size = 8
+learning_rate = 0.0003
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+evaluation_interval = 50
+
+[acceptance]
+minimum_validation_nll_reduction_fraction = 0.02
+maximum_report_bytes = 4194304
+maximum_run_bytes = 1073741824
+require_all_baselines = true
+require_validation_only_selection = true
+
