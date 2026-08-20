@@ -16,6 +16,8 @@ from reactorbench.schemas import (
     ComponentLatentState,
     ComponentState,
     DecisionTarget,
+    DependencyLink,
+    DependencyMapContext,
     DiagnosisStatus,
     EventType,
     FaultFamily,
@@ -410,6 +412,136 @@ def test_standby_context_rejects_python_type_coercion(field_name: str, bad_value
 
     with pytest.raises(ValidationError):
         StandbyContext.model_validate(payload)
+
+
+def _dependency_map_context() -> DependencyMapContext:
+    return DependencyMapContext(
+        plant_variant_id=PlantVariant.ASTER_B,
+        links=(
+            DependencyLink(
+                support_bus_id="aster-bus-amber",
+                dependent_component_id="aster-train-bravo",
+            ),
+            DependencyLink(
+                support_bus_id="aster-bus-blue",
+                dependent_component_id="aster-train-charlie",
+            ),
+        ),
+    )
+
+
+def test_dependency_map_context_is_strict_frozen_and_round_trips_with_scenario() -> None:
+    context = _dependency_map_context()
+    scenario = ScenarioDefinition(
+        scenario_id="scenario-dependency-map-001",
+        plant_variant_id=PlantVariant.ASTER_B,
+        seed=7,
+        duration_ticks=10,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        dependency_map_context=context,
+    )
+
+    assert DependencyMapContext.model_validate_json(context.model_dump_json()) == context
+    assert ScenarioDefinition.model_validate_json(scenario.model_dump_json()) == scenario
+    assert scenario.dependency_map_context == context
+    with pytest.raises(ValidationError, match="frozen"):
+        context.links = ()
+
+
+def test_dependency_link_rejects_unknown_fields_and_identical_endpoints() -> None:
+    payload: dict[str, object] = {
+        "support_bus_id": "aster-bus-amber",
+        "dependent_component_id": "aster-train-bravo",
+    }
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        DependencyLink.model_validate({**payload, "unexpected": "rejected"})
+    with pytest.raises(ValidationError, match="must be different"):
+        DependencyLink.model_validate({**payload, "dependent_component_id": "aster-bus-amber"})
+
+
+@pytest.mark.parametrize(
+    ("links", "message"),
+    [
+        ((), "at least 1 item"),
+        (
+            (
+                DependencyLink(
+                    support_bus_id="aster-bus-amber",
+                    dependent_component_id="aster-train-bravo",
+                ),
+                DependencyLink(
+                    support_bus_id="aster-bus-amber",
+                    dependent_component_id="aster-train-bravo",
+                ),
+            ),
+            "duplicate support-bus/dependent pairs",
+        ),
+        (
+            (
+                DependencyLink(
+                    support_bus_id="aster-bus-amber",
+                    dependent_component_id="aster-train-bravo",
+                ),
+                DependencyLink(
+                    support_bus_id="aster-bus-blue",
+                    dependent_component_id="aster-train-bravo",
+                ),
+            ),
+            "exactly one support_bus_id",
+        ),
+        (
+            (
+                DependencyLink(
+                    support_bus_id="aster-bus-blue",
+                    dependent_component_id="aster-train-charlie",
+                ),
+                DependencyLink(
+                    support_bus_id="aster-bus-amber",
+                    dependent_component_id="aster-train-bravo",
+                ),
+            ),
+            "canonical",
+        ),
+    ],
+)
+def test_dependency_map_context_rejects_empty_duplicate_conflicting_and_noncanonical_links(
+    links: tuple[DependencyLink, ...], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        DependencyMapContext(plant_variant_id=PlantVariant.ASTER_B, links=links)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("plant_variant_id", "ASTER_B"),
+        ("plant_variant_id", 2),
+        ("links", []),
+        (
+            "links",
+            [
+                {
+                    "support_bus_id": "aster-bus-amber",
+                    "dependent_component_id": "aster-train-bravo",
+                }
+            ],
+        ),
+    ],
+)
+def test_dependency_map_context_rejects_coercion_and_noncanonical_containers(
+    field_name: str, bad_value: object
+) -> None:
+    payload = _dependency_map_context().model_dump()
+    payload[field_name] = bad_value
+    with pytest.raises(ValidationError):
+        DependencyMapContext.model_validate(payload)
+
+
+def test_dependency_map_context_revalidates_model_copy_lookalikes() -> None:
+    context = _dependency_map_context()
+    lookalike = context.model_copy(update={"links": [*context.links]})
+    with pytest.raises(ValidationError):
+        DependencyMapContext.model_validate(lookalike.model_dump(warnings=False))
 
 
 @pytest.mark.parametrize("bad_seed", [-1, 4_294_967_296, True, "7"])

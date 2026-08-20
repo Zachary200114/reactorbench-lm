@@ -1,4 +1,4 @@
-"""Phase 2 deterministic Aster-A simulation entry points."""
+"""Phase 2 deterministic synthetic Aster simulation entry points."""
 
 from .content_guard import (
     ContentFinding,
@@ -7,7 +7,6 @@ from .content_guard import (
     scan_prohibited_content,
 )
 from .core import (
-    ASTER_A_SPEC,
     GENERATOR_VERSION,
     SimulationTrace,
     UnsupportedScenarioError,
@@ -20,13 +19,36 @@ from .core import (
     build_stable_scenario,
     build_valve_lag_scenario,
     build_valve_stuck_scenario,
+    dependency_map_context_for,
     generate_trace,
+)
+from .variants import (
+    ASTER_A_SPEC,
+    ASTER_B_SPEC,
+    ASTER_C_SPEC,
+    VARIANT_REGISTRY,
+    AsterVariantSpec,
+    ChannelRole,
+    ChannelSpec,
+    ComponentRole,
+    ComponentSpec,
+    DependencyLinkSpec,
+    get_variant_spec,
 )
 
 __all__ = [
     "ASTER_A_SPEC",
+    "ASTER_B_SPEC",
+    "ASTER_C_SPEC",
     "GENERATOR_VERSION",
+    "VARIANT_REGISTRY",
+    "AsterVariantSpec",
+    "ChannelRole",
+    "ChannelSpec",
+    "ComponentRole",
+    "ComponentSpec",
     "ContentFinding",
+    "DependencyLinkSpec",
     "ProhibitedContentError",
     "SimulationTrace",
     "UnsupportedScenarioError",
@@ -40,6 +62,8 @@ __all__ = [
     "build_stable_scenario",
     "build_valve_lag_scenario",
     "build_valve_stuck_scenario",
+    "dependency_map_context_for",
     "generate_trace",
+    "get_variant_spec",
     "scan_prohibited_content",
 ]

@@ -15,6 +15,8 @@ from reactorbench.schemas import (
     CounterfactualComparisonTarget,
     CounterfactualConclusion,
     DecisionTarget,
+    DependencyLink,
+    DependencyMapContext,
     DiagnosisStatus,
     EventType,
     EvidenceExtractionTarget,
@@ -133,6 +135,32 @@ def test_standby_context_invalid_state_property(
 
     with pytest.raises(ValidationError, match=f"{field_name} must be AVAILABLE or UNAVAILABLE"):
         StandbyContext.model_validate(payload)
+
+
+@given(
+    variant=st.sampled_from(tuple(PlantVariant)),
+    bus_suffixes=st.lists(
+        st.integers(min_value=0, max_value=999), min_size=1, max_size=12, unique=True
+    ),
+)
+def test_dependency_map_context_round_trip_property(
+    variant: PlantVariant, bus_suffixes: list[int]
+) -> None:
+    links = tuple(
+        DependencyLink(
+            support_bus_id=f"bus-{suffix:03d}",
+            dependent_component_id=f"dependent-{suffix:03d}",
+        )
+        for suffix in bus_suffixes
+    )
+    context = DependencyMapContext(
+        plant_variant_id=variant,
+        links=tuple(
+            sorted(links, key=lambda link: (link.support_bus_id, link.dependent_component_id))
+        ),
+    )
+
+    assert DependencyMapContext.model_validate_json(context.model_dump_json()) == context
 
 
 def _property_trajectory(duration: int) -> StructuredTrajectory:

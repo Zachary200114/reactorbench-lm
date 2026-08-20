@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .base import (
     SCHEMA_VERSION,
@@ -77,6 +77,51 @@ class StandbyContext(ContractModel):
         return self
 
 
+class DependencyLink(ContractModel):
+    """One fictional support-bus dependency edge exposed to a scenario."""
+
+    support_bus_id: ContractId
+    dependent_component_id: ContractId
+
+    @model_validator(mode="after")
+    def endpoints_are_distinct(self) -> DependencyLink:
+        if self.support_bus_id == self.dependent_component_id:
+            raise ValueError("support_bus_id and dependent_component_id must be different")
+        return self
+
+
+class DependencyMapContext(ContractModel):
+    """Canonical, bounded dependency map for a fictional plant variant.
+
+    This contract deliberately validates only the structure of the map.  The
+    simulator owns validation that the supplied links match a variant's reviewed
+    component registry exactly.
+    """
+
+    plant_variant_id: PlantVariant
+    links: tuple[DependencyLink, ...] = Field(min_length=1)
+
+    @field_validator("links", mode="after")
+    @classmethod
+    def links_are_a_canonical_function(
+        cls, values: tuple[DependencyLink, ...]
+    ) -> tuple[DependencyLink, ...]:
+        pairs = tuple((link.support_bus_id, link.dependent_component_id) for link in values)
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("links must not contain duplicate support-bus/dependent pairs")
+
+        dependents = tuple(link.dependent_component_id for link in values)
+        if len(dependents) != len(set(dependents)):
+            raise ValueError("each dependent_component_id must have exactly one support_bus_id")
+
+        canonical_pairs = tuple(sorted(pairs))
+        if pairs != canonical_pairs:
+            raise ValueError(
+                "links must use canonical (support_bus_id, dependent_component_id) order"
+            )
+        return values
+
+
 class ScenarioDefinition(ContractModel):
     schema_version: SchemaVersion = SCHEMA_VERSION
     scenario_id: ContractId
@@ -87,6 +132,7 @@ class ScenarioDefinition(ContractModel):
     fault_injections: tuple[FaultInjection, ...] = ()
     action_sequence: tuple[ScenarioAction, ...] = ()
     standby_context: StandbyContext | None = None
+    dependency_map_context: DependencyMapContext | None = None
 
     @field_validator("fault_injections", mode="after")
     @classmethod

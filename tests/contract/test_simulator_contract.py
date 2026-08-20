@@ -27,7 +27,16 @@ def test_visible_payload_hides_truth_and_structured_trajectory_validates() -> No
     payload = trace.visible_payload()
     serialized = json.dumps(payload, sort_keys=True)
 
-    assert set(payload) == {"schema_version", "standby_context", "observations", "events"}
+    assert set(payload) == {
+        "schema_version",
+        "plant_variant_id",
+        "dependency_map_context",
+        "standby_context",
+        "observations",
+        "events",
+    }
+    assert payload["plant_variant_id"] == trace.scenario.plant_variant_id.value
+    assert payload["dependency_map_context"] is None
     assert payload["standby_context"] is None
     for forbidden in ("SENSOR_DRIFT", "fault_family", "fault_injection", "latent", "targets"):
         assert forbidden not in serialized
@@ -139,11 +148,14 @@ def test_sensor_noise_visible_payload_hides_truth_and_trajectory_validates() -> 
 
     assert set(trace.visible_payload()) == {
         "schema_version",
+        "plant_variant_id",
+        "dependency_map_context",
         "standby_context",
         "observations",
         "events",
     }
     assert trace.visible_payload()["standby_context"] is None
+    assert trace.visible_payload()["dependency_map_context"] is None
     assert trace.scenario.scenario_id not in payload
     for forbidden in (
         "SENSOR_NOISE",
@@ -189,11 +201,14 @@ def test_pump_degradation_visible_payload_hides_fault_and_health_truth() -> None
 
     assert set(trace.visible_payload()) == {
         "schema_version",
+        "plant_variant_id",
+        "dependency_map_context",
         "standby_context",
         "observations",
         "events",
     }
     assert trace.visible_payload()["standby_context"] is None
+    assert trace.visible_payload()["dependency_map_context"] is None
     assert trace.scenario.scenario_id not in payload
     for forbidden in (
         "PUMP_DEGRADATION",

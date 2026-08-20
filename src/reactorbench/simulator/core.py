@@ -15,6 +15,8 @@ from reactorbench.schemas import (
     ComponentLatentState,
     ComponentState,
     DecisionTarget,
+    DependencyLink,
+    DependencyMapContext,
     DiagnosisStatus,
     EventType,
     EvidenceSlot,
@@ -39,8 +41,19 @@ from reactorbench.schemas import (
 )
 
 from .content_guard import assert_no_prohibited_content
+from .variants import (
+    ASTER_A_SPEC,
+    AsterVariantSpec,
+    ChannelRole,
+    get_variant_spec,
+)
+from .variants import (
+    GENERATOR_VERSION as _VARIANT_GENERATOR_VERSION,
+)
 
 GENERATOR_VERSION = "0.1.0"
+if GENERATOR_VERSION != _VARIANT_GENERATOR_VERSION:
+    raise RuntimeError("simulator and variant registry generator versions must match")
 _MIN_DURATION = 8
 _MAX_DURATION = 64
 _MAX_SEED = 4_294_967_295
@@ -101,85 +114,14 @@ class UnsupportedScenarioError(ValueError):
     """Raised when a valid generic schema record is outside this milestone."""
 
 
-@dataclass(frozen=True)
-class ComponentSpec:
-    component_id: str
-    subsystem: str
-
-
-@dataclass(frozen=True)
-class ChannelSpec:
-    channel_id: str
-    variable: StateVariable
-    component_id: str
-
-
 class _ComponentPositionFields(TypedDict):
     commanded_position: float | None
     actual_position: float | None
 
 
-@dataclass(frozen=True)
-class AsterVariantSpec:
-    version: str
-    plant_variant: PlantVariant
-    components: tuple[ComponentSpec, ...]
-    channels: tuple[ChannelSpec, ...]
-    aliases: tuple[str, ...]
-    baseline_noise_bound: float
-    max_per_tick_step: float
-    primary_train_ids: tuple[str, ...]
-    primary_flow_valve_ids: tuple[str, ...]
-    support_bus_ids: tuple[str, ...]
-    primary_train_support_bus_pairs: tuple[tuple[str, str], ...]
-    standby_start_delay_ticks: int
-    instrumentation_id: str
-
-
-_PRIMARY_TRAINS = ("aster-train-cirrus", "aster-train-kestrel")
-_PRIMARY_FLOW_VALVES = ("aster-valve-lark",)
-_SUPPORT_BUSES = ("aster-bus-rill", "aster-bus-quill")
-_INSTRUMENTATION = "aster-instrument-vireo"
-_COMPONENTS = (
-    *(ComponentSpec(component_id, "PRIMARY_LOOP") for component_id in _PRIMARY_TRAINS),
-    *(ComponentSpec(component_id, "PRIMARY_LOOP") for component_id in _PRIMARY_FLOW_VALVES),
-    *(ComponentSpec(component_id, "SUPPORT_POWER") for component_id in _SUPPORT_BUSES),
-    ComponentSpec(_INSTRUMENTATION, "INSTRUMENTATION"),
-)
-_CHANNELS = tuple(
-    ChannelSpec(
-        channel_id=f"aster-{variable.value.replace('_', '-')}-a",
-        variable=variable,
-        component_id=_PRIMARY_TRAINS[0]
-        if variable is StateVariable.PRIMARY_FLOW
-        else _INSTRUMENTATION,
-    )
-    for variable in StateVariable
-) + tuple(
-    ChannelSpec(
-        channel_id=f"aster-{variable.value.replace('_', '-')}-b",
-        variable=variable,
-        component_id=_PRIMARY_TRAINS[0]
-        if variable is StateVariable.PRIMARY_FLOW
-        else _INSTRUMENTATION,
-    )
-    for variable in StateVariable
-)
-ASTER_A_SPEC = AsterVariantSpec(
-    version=GENERATOR_VERSION,
-    plant_variant=PlantVariant.ASTER_A,
-    components=_COMPONENTS,
-    channels=_CHANNELS,
-    aliases=("cirrus", "kestrel", "lark", "rill", "quill", "vireo"),
-    baseline_noise_bound=_NOISE_BOUND,
-    max_per_tick_step=_MAX_TICK_STEP,
-    primary_train_ids=_PRIMARY_TRAINS,
-    primary_flow_valve_ids=_PRIMARY_FLOW_VALVES,
-    support_bus_ids=_SUPPORT_BUSES,
-    primary_train_support_bus_pairs=tuple(zip(_PRIMARY_TRAINS, _SUPPORT_BUSES, strict=True)),
-    standby_start_delay_ticks=1,
-    instrumentation_id=_INSTRUMENTATION,
-)
+_INSTRUMENTATION = ASTER_A_SPEC.instrumentation_id
+_PRIMARY_TRAINS = ASTER_A_SPEC.primary_train_ids
+_SUPPORT_BUSES = ASTER_A_SPEC.support_bus_ids
 
 
 @dataclass(frozen=True)
@@ -197,6 +139,12 @@ class SimulationTrace:
 
         return {
             "schema_version": SCHEMA_VERSION,
+            "plant_variant_id": self.scenario.plant_variant_id.value,
+            "dependency_map_context": (
+                self.scenario.dependency_map_context.model_dump(mode="json")
+                if self.scenario.dependency_map_context is not None
+                else None
+            ),
             "standby_context": (
                 self.scenario.standby_context.model_dump(mode="json")
                 if self.scenario.standby_context is not None
@@ -219,6 +167,66 @@ class SimulationTrace:
             events=self.events,
             targets=self.targets,
         )
+
+
+def dependency_map_context_for(spec: AsterVariantSpec) -> DependencyMapContext:
+    """Derive the sole canonical visible dependency map from a reviewed card."""
+
+    if type(spec) is not AsterVariantSpec:
+        raise TypeError("spec must be an AsterVariantSpec")
+    return DependencyMapContext(
+        plant_variant_id=spec.plant_variant,
+        links=tuple(
+            DependencyLink(
+                support_bus_id=link.supplier_component_id,
+                dependent_component_id=link.dependent_component_id,
+            )
+            for link in sorted(
+                spec.dependency_links,
+                key=lambda link: (link.supplier_component_id, link.dependent_component_id),
+            )
+        ),
+    )
+
+
+def _spec_for(scenario: ScenarioDefinition) -> AsterVariantSpec:
+    """Resolve only an exact registered variant selected by a canonical scenario."""
+
+    if type(scenario.plant_variant_id) is not PlantVariant:
+        raise UnsupportedScenarioError("plant variant must use the canonical enum")
+    try:
+        return get_variant_spec(scenario.plant_variant_id)
+    except (KeyError, TypeError) as error:
+        raise UnsupportedScenarioError("plant variant is not registered") from error
+
+
+def _injections_for(
+    scenario: ScenarioDefinition, fault_family: FaultFamily
+) -> tuple[FaultInjection, ...]:
+    """Return only exact canonical injections for one family without index assumptions."""
+
+    if type(fault_family) is not FaultFamily:
+        raise TypeError("fault_family must be a FaultFamily")
+    return tuple(
+        injection
+        for injection in scenario.fault_injections
+        if type(injection) is FaultInjection and injection.fault_family is fault_family
+    )
+
+
+def _fault_signature(scenario: ScenarioDefinition) -> tuple[FaultFamily, ...]:
+    """Return the canonical ordered family signature for strict dispatch."""
+
+    return tuple(injection.fault_family for injection in scenario.fault_injections)
+
+
+def _single_injection_for(
+    scenario: ScenarioDefinition, fault_family: FaultFamily
+) -> FaultInjection | None:
+    injections = _injections_for(scenario, fault_family)
+    if _fault_signature(scenario) == (fault_family,) and len(injections) == 1:
+        return injections[0]
+    return None
 
 
 def _require_uint32(value: int, *, name: str) -> None:
@@ -256,14 +264,19 @@ def _sensor_noise_channels() -> tuple[str, ...]:
     )
 
 
-def build_stable_scenario(*, seed: int, duration_ticks: int = 12) -> ScenarioDefinition:
-    """Build the sole supported no-fault Aster-A scenario shape."""
+def build_stable_scenario(
+    *, seed: int, duration_ticks: int = 12, plant_variant: PlantVariant = PlantVariant.ASTER_A
+) -> ScenarioDefinition:
+    """Build one deterministic no-fault scenario from a reviewed Aster variant card."""
 
     _require_uint32(seed, name="seed")
     _require_duration(duration_ticks)
+    if type(plant_variant) is not PlantVariant:
+        raise ValueError("plant_variant must be a PlantVariant")
+    spec = get_variant_spec(plant_variant)
     scenario = ScenarioDefinition(
-        scenario_id=f"aster-a-stable-{seed}-{duration_ticks}",
-        plant_variant_id=PlantVariant.ASTER_A,
+        scenario_id=f"{spec.plant_variant.value.lower()}-stable-{seed}-{duration_ticks}",
+        plant_variant_id=spec.plant_variant,
         seed=seed,
         duration_ticks=duration_ticks,
         driver=ScenarioDriver.STEADY_OPERATION,
@@ -732,29 +745,19 @@ def build_sensor_drift_scenario(
 
 
 def _pump_degradation_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
-    if (
-        len(scenario.fault_injections) == 1
-        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_DEGRADATION
-    ):
-        return scenario.fault_injections[0]
-    return None
+    return _single_injection_for(scenario, FaultFamily.PUMP_DEGRADATION)
 
 
 def _pump_trip_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
-    if (
-        len(scenario.fault_injections) == 1
-        and scenario.fault_injections[0].fault_family is FaultFamily.PUMP_TRIP
-    ):
-        return scenario.fault_injections[0]
-    return None
+    return _single_injection_for(scenario, FaultFamily.PUMP_TRIP)
 
 
 def _valve_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
-    if len(scenario.fault_injections) == 1 and scenario.fault_injections[0].fault_family in {
-        FaultFamily.VALVE_LAG,
-        FaultFamily.VALVE_STUCK,
-    }:
-        return scenario.fault_injections[0]
+    signature = _fault_signature(scenario)
+    if signature == (FaultFamily.VALVE_LAG,):
+        return _single_injection_for(scenario, FaultFamily.VALVE_LAG)
+    if signature == (FaultFamily.VALVE_STUCK,):
+        return _single_injection_for(scenario, FaultFamily.VALVE_STUCK)
     return None
 
 
@@ -1032,6 +1035,7 @@ def _trip_components(
 
 
 def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]:
+    spec = _spec_for(scenario)
     baseline = _baseline_values(scenario.seed)
     trip = _pump_trip_injection(scenario)
     if trip is not None:
@@ -1121,7 +1125,7 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
             health=1.0,
             **_component_positions(scenario=scenario, tick=0, component_id=component.component_id),
         )
-        for component in ASTER_A_SPEC.components
+        for component in spec.components
     )
     return tuple(
         LatentPlantState(
@@ -1143,9 +1147,9 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
     )
 
 
-def _noise(seed: int, tick: int, variable_index: int) -> float:
+def _noise(seed: int, tick: int, variable_index: int, *, bound: float = _NOISE_BOUND) -> float:
     stream = seed * 2_000_033 + tick * 4_099 + variable_index * 101 + 29
-    return Random(stream).uniform(-_NOISE_BOUND, _NOISE_BOUND)  # noqa: S311
+    return Random(stream).uniform(-bound, bound)  # noqa: S311
 
 
 def _clip(value: float) -> float:
@@ -1153,12 +1157,9 @@ def _clip(value: float) -> float:
 
 
 def _drift_bias(*, scenario: ScenarioDefinition, tick: int, channel_id: str) -> float:
-    if (
-        not scenario.fault_injections
-        or scenario.fault_injections[0].fault_family is not FaultFamily.SENSOR_DRIFT
-    ):
+    injection = _single_injection_for(scenario, FaultFamily.SENSOR_DRIFT)
+    if injection is None:
         return 0.0
-    injection = scenario.fault_injections[0]
     if tick <= injection.onset_tick or channel_id != injection.channel_id:
         return 0.0
     plateau = {SeverityBand.LOW: 0.042, SeverityBand.MEDIUM: 0.056, SeverityBand.HIGH: 0.07}[
@@ -1170,21 +1171,11 @@ def _drift_bias(*, scenario: ScenarioDefinition, tick: int, channel_id: str) -> 
 
 
 def _sensor_stuck_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
-    if (
-        len(scenario.fault_injections) == 1
-        and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_STUCK
-    ):
-        return scenario.fault_injections[0]
-    return None
+    return _single_injection_for(scenario, FaultFamily.SENSOR_STUCK)
 
 
 def _sensor_noise_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
-    if (
-        len(scenario.fault_injections) == 1
-        and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_NOISE
-    ):
-        return scenario.fault_injections[0]
-    return None
+    return _single_injection_for(scenario, FaultFamily.SENSOR_NOISE)
 
 
 def _sensor_noise_offset(*, seed: int, tick: int) -> float:
@@ -1291,9 +1282,11 @@ def _valve_overall_status(scenario: ScenarioDefinition, tick: int) -> Observatio
 def _selected_channel_status(
     scenario: ScenarioDefinition, tick: int, channel_id: str
 ) -> ObservationStatus:
-    if not scenario.fault_injections or channel_id != scenario.fault_injections[0].channel_id:
+    if len(scenario.fault_injections) != 1:
         return ObservationStatus.NORMAL
     injection = scenario.fault_injections[0]
+    if channel_id != injection.channel_id:
+        return ObservationStatus.NORMAL
     if injection.fault_family is FaultFamily.SENSOR_STUCK:
         if tick < _LOAD_OUTPUT_TICK:
             return ObservationStatus.NORMAL
@@ -1333,12 +1326,8 @@ def _selected_channel_quality(
         and tick >= _SENSOR_NOISE_FLAG_APPLY_TICK
     ):
         return ChannelQuality.SUSPECT
-    if (
-        scenario.fault_injections
-        and scenario.fault_injections[0].fault_family is FaultFamily.SENSOR_DRIFT
-        and channel_id == scenario.fault_injections[0].channel_id
-        and tick >= scenario.fault_injections[0].onset_tick + 4
-    ):
+    drift = _single_injection_for(scenario, FaultFamily.SENSOR_DRIFT)
+    if drift is not None and channel_id == drift.channel_id and tick >= drift.onset_tick + 4:
         return ChannelQuality.SUSPECT
     return ChannelQuality.GOOD
 
@@ -1346,6 +1335,7 @@ def _selected_channel_quality(
 def _observations(
     scenario: ScenarioDefinition, latent_states: tuple[LatentPlantState, ...]
 ) -> tuple[ObservationFrame, ...]:
+    spec = _spec_for(scenario)
     frames: list[ObservationFrame] = []
     pump = _pump_degradation_injection(scenario)
     trip = _pump_trip_injection(scenario)
@@ -1356,11 +1346,9 @@ def _observations(
         channels: list[SensorChannelObservation] = []
         for index, variable in enumerate(StateVariable):
             base = getattr(latent.values, variable.value) + _noise(
-                scenario.seed, latent.tick, index
+                scenario.seed, latent.tick, index, bound=spec.baseline_noise_bound
             )
-            for channel in (
-                channel for channel in ASTER_A_SPEC.channels if channel.variable is variable
-            ):
+            for channel in (channel for channel in spec.channels if channel.variable is variable):
                 observed_value = _clip(
                     base
                     + _drift_bias(
@@ -1374,7 +1362,10 @@ def _observations(
                 ):
                     reference_latent = latent_states[stuck.onset_tick - 1]
                     reference = getattr(reference_latent.values, variable.value) + _noise(
-                        scenario.seed, stuck.onset_tick - 1, index
+                        scenario.seed,
+                        stuck.onset_tick - 1,
+                        index,
+                        bound=spec.baseline_noise_bound,
                     )
                     observed_value = _clip(reference)
                 if (
@@ -1418,7 +1409,7 @@ def _observations(
             else ObservationStatus.NORMAL
         )
         if pump is None and trip is None and valve is None and scenario.fault_injections:
-            selected = scenario.fault_injections[0].channel_id or _INSTRUMENTATION
+            selected = scenario.fault_injections[0].channel_id or spec.instrumentation_id
             overall_status = _selected_channel_status(scenario, latent.tick, selected)
         frames.append(
             ObservationFrame(
@@ -1452,10 +1443,8 @@ def _event(
     return event
 
 
-def _first_channel_id(variable: StateVariable) -> str:
-    return next(
-        channel.channel_id for channel in ASTER_A_SPEC.channels if channel.variable is variable
-    )
+def _first_channel_id(variable: StateVariable, *, spec: AsterVariantSpec = ASTER_A_SPEC) -> str:
+    return spec.channel_for(variable, ChannelRole.PRIMARY).channel_id
 
 
 def _observed_value(
@@ -2127,12 +2116,13 @@ def _valve_events_and_targets(
 def _events_and_targets(
     scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
 ) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    spec = _spec_for(scenario)
     events: list[CanonicalEvent] = []
     stable = _event(
         events,
         sim_time=0,
         event_type=EventType.BENIGN_NOTE,
-        subject_id=_INSTRUMENTATION,
+        subject_id=spec.instrumentation_id,
         evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
     )
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and not scenario.fault_injections:
@@ -2626,8 +2616,10 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         raise UnsupportedScenarioError("unsupported scenario schema version")
     if type(scenario.plant_variant_id) is not PlantVariant:
         raise UnsupportedScenarioError("plant variant must use the canonical enum")
-    if scenario.plant_variant_id is not PlantVariant.ASTER_A:
-        raise UnsupportedScenarioError("only ASTER-A is supported")
+    try:
+        spec = get_variant_spec(scenario.plant_variant_id)
+    except (KeyError, TypeError) as error:
+        raise UnsupportedScenarioError("plant variant is not registered") from error
     if type(scenario.driver) is not ScenarioDriver:
         raise UnsupportedScenarioError("scenario driver must use the canonical enum")
     if scenario.driver not in {ScenarioDriver.STEADY_OPERATION, ScenarioDriver.LOAD_TRANSIENT}:
@@ -2645,6 +2637,10 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         raise UnsupportedScenarioError("fault injection must use the canonical contract")
     if type(scenario.action_sequence) is not tuple:
         raise UnsupportedScenarioError("action_sequence must use a tuple container")
+    if scenario.dependency_map_context is not None:
+        if type(scenario.dependency_map_context) is not DependencyMapContext:
+            raise UnsupportedScenarioError("dependency map context must use the canonical contract")
+        raise UnsupportedScenarioError("dependency map context is not supported before G12")
     for action in scenario.action_sequence:
         if type(action) is not ScenarioAction:
             raise UnsupportedScenarioError("action sequence must use the canonical contract")
@@ -2687,6 +2683,10 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     elif scenario.standby_context is not None:
         raise UnsupportedScenarioError("standby context is only supported for pump trip")
     if not scenario.fault_injections:
+        if scenario.plant_variant_id is not PlantVariant.ASTER_A and (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+        ):
+            raise UnsupportedScenarioError("only steady no-fault scenarios support Aster-B/C")
         expected: tuple[ScenarioAction, ...] = (
             ScenarioAction(
                 decision_tick=scenario.duration_ticks - 1,
@@ -2696,7 +2696,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         if scenario.action_sequence != expected:
             raise UnsupportedScenarioError("no-fault scenario action sequence is noncanonical")
         expected_id = (
-            f"aster-a-stable-{scenario.seed}-{scenario.duration_ticks}"
+            f"{spec.plant_variant.value.lower()}-stable-{scenario.seed}-{scenario.duration_ticks}"
             if scenario.driver is ScenarioDriver.STEADY_OPERATION
             else f"aster-a-load-{scenario.seed}-{scenario.duration_ticks}"
         )
@@ -2707,6 +2707,8 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         ):
             raise UnsupportedScenarioError("load transient has insufficient response history")
         return
+    if scenario.plant_variant_id is not PlantVariant.ASTER_A:
+        raise UnsupportedScenarioError("fault scenarios currently support only ASTER-A")
     if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
         injection = scenario.fault_injections[0]
         if injection.fault_family is not FaultFamily.SENSOR_STUCK:
@@ -2997,6 +2999,6 @@ def generate_trace(scenario: ScenarioDefinition) -> SimulationTrace:
         events=events,
         targets=targets,
     )
-    assert_no_prohibited_content(ASTER_A_SPEC)
+    assert_no_prohibited_content(_spec_for(scenario))
     assert_no_prohibited_content(trace)
     return trace

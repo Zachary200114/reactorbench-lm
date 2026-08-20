@@ -62,6 +62,25 @@ def test_standby_context_is_nested_in_the_scenario_root_with_exact_fields() -> N
     }
 
 
+def test_dependency_map_context_is_nested_in_the_scenario_root_with_exact_fields() -> None:
+    documents = schema_documents()
+    scenario_schema = documents["scenario.schema.json"]
+    link_schema = scenario_schema["$defs"]["DependencyLink"]
+    context_schema = scenario_schema["$defs"]["DependencyMapContext"]
+
+    assert set(link_schema["properties"]) == {"support_bus_id", "dependent_component_id"}
+    assert set(link_schema["required"]) == {"support_bus_id", "dependent_component_id"}
+    assert link_schema["additionalProperties"] is False
+    assert set(context_schema["properties"]) == {"plant_variant_id", "links"}
+    assert set(context_schema["required"]) == {"plant_variant_id", "links"}
+    assert context_schema["properties"]["links"]["minItems"] == 1
+    assert context_schema["additionalProperties"] is False
+    assert scenario_schema["properties"]["dependency_map_context"] == {
+        "anyOf": [{"$ref": "#/$defs/DependencyMapContext"}, {"type": "null"}],
+        "default": None,
+    }
+
+
 def test_committed_generated_snapshot_matches_the_models() -> None:
     documents, manifest = load_snapshot(SNAPSHOT_DIRECTORY)
     assert documents == schema_documents()

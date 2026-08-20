@@ -22,8 +22,13 @@ from reactorbench.schemas import (
     SeverityBand,
     StateVariable,
 )
+from reactorbench.schemas.base import canonical_sha256
 from reactorbench.simulator import (
     ASTER_A_SPEC,
+    ASTER_B_SPEC,
+    ASTER_C_SPEC,
+    VARIANT_REGISTRY,
+    AsterVariantSpec,
     SimulationTrace,
     UnsupportedScenarioError,
     build_load_transient_scenario,
@@ -35,6 +40,7 @@ from reactorbench.simulator import (
     build_stable_scenario,
     build_valve_lag_scenario,
     build_valve_stuck_scenario,
+    dependency_map_context_for,
     generate_trace,
     scan_prohibited_content,
 )
@@ -833,9 +839,18 @@ def test_global_random_state_is_unchanged_and_distinct_seeds_vary() -> None:
         noise = generate_trace(build_sensor_noise_scenario(seed=10))
         assert random.getstate() == before
         second = generate_trace(build_stable_scenario(seed=11))
+        stable_b = generate_trace(
+            build_stable_scenario(seed=10, plant_variant=PlantVariant.ASTER_B)
+        )
+        assert random.getstate() == before
+        stable_c = generate_trace(
+            build_stable_scenario(seed=10, plant_variant=PlantVariant.ASTER_C)
+        )
+        assert random.getstate() == before
 
         assert first.latent_states != second.latent_states
         assert first.visible_payload() != second.visible_payload()
+        assert stable_b.visible_payload() != stable_c.visible_payload()
         assert drift.latent_states == first.latent_states
         assert load.latent_states != first.latent_states
         assert stuck.latent_states == load.latent_states
@@ -2062,3 +2077,161 @@ def test_pump_trip_builder_and_model_copy_shapes_fail_closed() -> None:
             build_pump_trip_scenario(seed=4, standby_state=invalid_state)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="between 8 and 64"):
         build_pump_trip_scenario(seed=4, duration_ticks=7)
+
+
+@pytest.mark.parametrize(
+    ("plant_variant", "spec"),
+    [
+        (PlantVariant.ASTER_B, ASTER_B_SPEC),
+        (PlantVariant.ASTER_C, ASTER_C_SPEC),
+    ],
+)
+def test_stable_variant_cards_are_replayable_bounded_and_visible(
+    plant_variant: PlantVariant, spec: AsterVariantSpec
+) -> None:
+    """B/C stable traces use only their fixed reviewed component/channel cards."""
+
+    assert plant_variant in VARIANT_REGISTRY
+    scenario = build_stable_scenario(seed=23, duration_ticks=12, plant_variant=plant_variant)
+    trace = generate_trace(scenario)
+    assert trace == generate_trace(scenario)
+    assert scenario.scenario_id == f"{plant_variant.value.lower()}-stable-23-12"
+    assert {component.component_id for component in trace.latent_states[0].components} == {
+        component.component_id for component in spec.components
+    }
+    expected_channels = tuple(channel.channel_id for channel in spec.channels)
+    assert {channel.channel_id for channel in trace.observations[0].channels} == set(
+        expected_channels
+    )
+    assert len(expected_channels) == len(set(expected_channels)) == 2 * len(StateVariable)
+    for frame, latent in zip(trace.observations, trace.latent_states, strict=True):
+        for channel in frame.channels:
+            assert channel.value is not None
+            assert abs(channel.value - getattr(latent.values, channel.variable.value)) <= (
+                spec.baseline_noise_bound + 0.000001
+            )
+    payload = trace.visible_payload()
+    assert payload["plant_variant_id"] == plant_variant.value
+    assert payload["dependency_map_context"] is None
+    assert scan_prohibited_content(trace) == ()
+
+
+def test_variant_selection_and_dependency_context_fail_closed_before_g12() -> None:
+    stable_b = build_stable_scenario(seed=23, plant_variant=PlantVariant.ASTER_B)
+    canonical_context = dependency_map_context_for(ASTER_B_SPEC)
+    assert canonical_context.plant_variant_id is PlantVariant.ASTER_B
+    assert tuple(
+        (link.support_bus_id, link.dependent_component_id) for link in canonical_context.links
+    ) == tuple(
+        sorted(
+            (link.support_bus_id, link.dependent_component_id) for link in canonical_context.links
+        )
+    )
+    with pytest.raises(UnsupportedScenarioError, match="dependency map context"):
+        generate_trace(stable_b.model_copy(update={"dependency_map_context": canonical_context}))
+    with pytest.raises(UnsupportedScenarioError, match="dependency map context"):
+        generate_trace(
+            stable_b.model_copy(
+                update={
+                    "dependency_map_context": canonical_context.model_dump(mode="json"),
+                }
+            )
+        )
+    with pytest.raises(UnsupportedScenarioError, match="canonical enum"):
+        generate_trace(stable_b.model_copy(update={"plant_variant_id": "ASTER-B"}))
+    with pytest.raises(UnsupportedScenarioError, match="id"):
+        generate_trace(stable_b.model_copy(update={"plant_variant_id": PlantVariant.ASTER_A}))
+    with pytest.raises(ValueError, match="plant_variant"):
+        build_stable_scenario(seed=23, plant_variant="ASTER-B")  # type: ignore[arg-type]
+
+
+_LEGACY_ASTER_A_COMPONENT_IDS = frozenset(
+    {
+        "aster-train-cirrus",
+        "aster-train-kestrel",
+        "aster-valve-lark",
+        "aster-bus-rill",
+        "aster-bus-quill",
+        "aster-instrument-vireo",
+    }
+)
+_ADDED_ASTER_A_COMPONENT_IDS = frozenset(
+    {
+        "aster-domain-orchid",
+        "aster-transfer-wren",
+        "aster-feed-brindle",
+    }
+)
+_LEGACY_ASTER_A_PROJECTION_HASHES = {
+    "stable": "bb56540974a6c262335c819d245b567b6a5f1172dba19d3936adf30d46efc2be",
+    "load": "530cf8bea0c833069b54aec320347981553b269fa8a40c8672cfb709937672db",
+    "drift": "e963c7ce13a2697e165cbfc1f698642ce18e6c8a9ea93231685dcf9dff70cb71",
+    "stuck_load": "514628a6bebf0bf5ebf3bc22df7b82d709fffa285b62e8e9bb3abc053230b969",
+    "noise": "0753c772b1153be893bd000ca4267da7dfc84a78ea1e200345815450556bfe0b",
+    "pump_deg": "37194ad9a5b08345cf5bb66ecd5ad22191c0c1e658cdffb489658369a20c8f9d",
+    "trip_avail": "7d4ecbed6580866198d5ead29550057d314d8cb3603e36019c8609d07569cf11",
+    "trip_unavail": "c5ab0b6b76dd3efb3f7c1b01716a31f55c961b2e70d1faf5cea7ffd09c2d7ec3",
+    "valve_lag3": "31b0459d5438d4befe5556df1342bf03c4fdab89b4a6555e1377635195abd3a2",
+    "valve_lag4": "3d11a7d2f003625d6a2e31da367dd17e7c0211be6fa65b8d495f264cf88329c3",
+    "valve_stuck": "02f5990f06dc158d3baa1bcd3c5652d080ee7b6aa40c4415e3074a7bd4a33a27",
+}
+
+
+def _legacy_aster_a_projection(trace: SimulationTrace) -> dict[str, object]:
+    """Normalize a trace exactly as before the registry's three additive roles."""
+
+    latent_states = []
+    for state in trace.latent_states:
+        projected = state.model_dump(mode="json")
+        projected["components"] = [
+            component
+            for component in projected["components"]
+            if component["component_id"] in _LEGACY_ASTER_A_COMPONENT_IDS
+        ]
+        latent_states.append(projected)
+    return {
+        "scenario": trace.scenario.model_dump(mode="json", exclude={"dependency_map_context"}),
+        "latent_states": latent_states,
+        "observations": [frame.model_dump(mode="json") for frame in trace.observations],
+        "events": [event.model_dump(mode="json") for event in trace.events],
+        "targets": trace.targets.model_dump(mode="json"),
+    }
+
+
+def test_variant_registry_adds_only_audited_aster_a_component_records() -> None:
+    """A registry refactor may add roles, but cannot perturb historic A behavior."""
+
+    scenarios = {
+        "stable": build_stable_scenario(seed=23),
+        "load": build_load_transient_scenario(seed=23),
+        "drift": build_sensor_drift_scenario(seed=23),
+        "stuck_load": build_sensor_stuck_load_scenario(seed=23),
+        "noise": build_sensor_noise_scenario(seed=23),
+        "pump_deg": build_pump_degradation_scenario(seed=23),
+        "trip_avail": build_pump_trip_scenario(seed=23, standby_state=ComponentState.AVAILABLE),
+        "trip_unavail": build_pump_trip_scenario(seed=23, standby_state=ComponentState.UNAVAILABLE),
+        "valve_lag3": build_valve_lag_scenario(seed=23, lag_ticks=3),
+        "valve_lag4": build_valve_lag_scenario(seed=23, lag_ticks=4),
+        "valve_stuck": build_valve_stuck_scenario(seed=23),
+    }
+    for name, scenario in scenarios.items():
+        trace = generate_trace(scenario)
+        assert (
+            canonical_sha256(_legacy_aster_a_projection(trace))
+            == (_LEGACY_ASTER_A_PROJECTION_HASHES[name])
+        )
+        for state in trace.latent_states:
+            added = {
+                component.component_id: component
+                for component in state.components
+                if component.component_id in _ADDED_ASTER_A_COMPONENT_IDS
+            }
+            assert set(added) == _ADDED_ASTER_A_COMPONENT_IDS
+            assert all(
+                component.state is ComponentState.AVAILABLE
+                and component.health == 1.0
+                and component.commanded_position is None
+                and component.actual_position is None
+                and component.pending_maintenance is False
+                for component in added.values()
+            )
