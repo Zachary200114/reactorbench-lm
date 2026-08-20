@@ -6,22 +6,20 @@ ReactorBench-LM is a research project for building and evaluating a small decode
 
 ## Current status
 
-The Phase 0 audit and Phase 1 foundation are complete. Phase 2 now includes reviewed
-deterministic Aster-A stable operation, single-channel `SENSOR_DRIFT`, a benign staged
-`LOAD_TRANSIENT` with `NO_FAULT` truth, and one deliberately narrow composition:
-`LOAD_TRANSIENT` plus a single `SENSOR_STUCK` electrical-output channel. It also has a
-bounded, alternating single-channel `SENSOR_NOISE` case over stable latent state, a
-gradual `PUMP_DEGRADATION` process fault, and matched `PUMP_TRIP` cases whose fictional
-standby context changes the correct action without changing the trip diagnosis. The
-trip fixture exposes only a strict allowlisted context, preserves component-to-flow
-ordering and delayed dependent trends, and never models real equipment logic. These cases retain
-hidden/visible separation and use the non-exhaustive prohibited-content guard. The
-recorded 2026-08-20 Python 3.12 gate passed 206 tests with 92.57% total coverage
-while branch measurement was enabled,
-strict typing, package builds, and isolated wheel verification. The golden suite,
-including the matching G04 through G07 cases, remains a draft acceptance contract and
-has not received the human review needed to freeze it. Local Git is initialized without
-a remote; nothing has been pushed, published, or deployed.
+The Phase 0 audit, Phase 1 foundation, and local Phase 2 structured-generator work are
+complete. The developmental generator (`0.1.0`, `frozen=false`) covers G01–G15 across
+immutable Aster-A/B/C fictional variant cards: normal and benign behavior, all planned
+single-family fixtures, matched counterfactuals, support-power context, abstract
+inventory loss, a deliberately narrow G14 compound, and the G15 required-abstention
+audit fixture. It separates latent truth from observations/events and applies
+fail-closed validation, bounded deterministic transitions, and a narrow redacting
+prohibited-content scanner.
+
+The recorded 2026-08-20 Python 3.12 full gate passed **434 tests** with **92.20% branch
+coverage**; Ruff format/lint, strict typing across 41 source files, sdist/wheel builds,
+and isolated artifact verification passed. This is generator evidence only: the golden
+suite is still a draft pending human review and freeze. Phase 3 begins with split-first
+projection/manifests, not rendering.
 
 There is currently:
 

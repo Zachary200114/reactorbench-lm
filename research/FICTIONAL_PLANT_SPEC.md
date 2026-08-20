@@ -1,6 +1,6 @@
 # Fictional plant specification
 
-Status: developmental design contract; selected Aster-A fixtures are implemented, but the golden suite is not frozen
+Status: developmental design contract; G01–G15 fixtures and Aster-A/B/C cards are implemented locally, but the golden suite is not frozen
 Plant type: wholly fictional, civilian, pressurized-water-inspired teaching abstraction
 Working plant name: **Aster Station**
 
@@ -355,6 +355,29 @@ The fixed fictional schedule is:
 The tripped active train stays unavailable in both branches. G07 remains a
 developmental fixture outside training and is not frozen until the required human
 golden-scenario review occurs.
+
+### 7.2 Completed developmental G08–G15 fixtures
+
+Phase 2 also implements the remaining planned fixture families on the same fictional,
+normalized state machine. G08/G09 use the same command/position surface and differ only
+through bounded resolution (`VALVE_LAG`) versus persistent mismatch (`VALVE_STUCK`).
+G10 preserves primary flow while an invented transfer proxy falls; G11 makes an
+invented feed/steam mismatch drive secondary inventory; G12 uses only the current
+variant's project-authored dependency map; and G13 models abstract inventory decline
+with agreeing channels and delayed fictional effects. Their values, timing, aliases,
+and maps are software design constants, not operating guidance.
+
+G14 is intentionally the sole developmental compound: pump degradation plus one
+independent primary-thermal sensor drift. The semantic pair may be described in that
+human order, but D-039 requires canonical serialized fault order
+`(SENSOR_DRIFT, PUMP_DEGRADATION)`. G15 is a sparse primary-flow audit fixture: its
+single isolated reading must resolve to `UNRESOLVED` and `INSUFFICIENT_EVIDENCE`.
+Neither the truth-filtered audit payload nor its full trace is a model prompt; Phase 3
+must construct decision-tick/channel projections and split groups before rendering.
+
+All G01–G15 fixtures are developmental, outside training, and unfrozen pending the
+documented human golden review. The current scanner is a narrow redacting check only;
+the full denylist and human sample review remain Phase 3 gates.
 
 ## 8. Action-label semantics
 

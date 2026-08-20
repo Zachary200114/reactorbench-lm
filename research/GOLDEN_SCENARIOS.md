@@ -1,11 +1,14 @@
 # Golden scenario suite
 
-Status: human-authored pre-implementation acceptance contract
+Status: human-authored developmental acceptance contract; fixture implementation exists, but human review, freeze, and final evaluation remain pending
 Scope: Aster Station, a wholly fictional normalized state machine
 
 ## Purpose
 
 These cases define behavior that the generator, labels, baselines, and trained model must eventually be tested against. They are not training templates. Their exact combinations, event order, aliases, and surface wording must be withheld from training and development data.
+
+The local G01–G15 generator fixtures are development evidence only. They do not freeze
+these golden cases, create a golden checksum, or establish a model-evaluation result.
 
 All values are dimensionless and normalized to `[0, 1]`. Approximate bands are `LOW < 0.35`, `NOMINAL 0.35–0.75`, and `HIGH > 0.75`; final implementation thresholds remain invented and versioned. Actions are fictional classification labels, not instructions.
 
@@ -199,7 +202,8 @@ Each scenario must be rendered through multiple unseen wording and component-ali
 - **Injection:** gradually degrade a pump while independently biasing one `PT` observation channel.
 - **Expected sequence:** pump health and agreeing flow observations establish real degradation → downstream latent-correlated trends appear → one thermal channel separates beyond the true trend → two fault labels become supported.
 - **Visible evidence:** redundant and cross-variable evidence separates a process fault from a simultaneous observation fault.
-- **Target:** ordered multi-label result `PUMP_DEGRADATION` + `SENSOR_DRIFT`.
+- **Target:** semantic multi-label set `PUMP_DEGRADATION` + `SENSOR_DRIFT`; under
+  D-039 its canonical serialized order is `(SENSOR_DRIFT, PUMP_DEGRADATION)`.
 - **Target action:** `VERIFY_REDUNDANT_CHANNEL`, `FLAG_SENSOR_SUSPECT`, and `REQUEST_COMPONENT_INSPECTION`, with `REDUCE_SIMULATED_LOAD` when the declared persistent-degradation policy requires it.
 - **Abstention:** no after both evidence chains mature; partial output is expected earlier.
 - **Metamorphic checks:** swap the drifting channel and component aliases; preserve the pair. Remove the channel disagreement; the secondary sensor label must disappear.
@@ -236,7 +240,7 @@ Each scenario must be rendered through multiple unseen wording and component-ali
 | Abstention | G03, G05, G08–G10, G12–G13, G15 | Coverage-risk curve and required-abstention accuracy |
 | Wording invariance | all | Prediction consistency across held-out renderers |
 
-## Human review record required before implementation
+## Human review record required before freeze and final evaluation
 
 The repository must later record, for each scenario version:
 

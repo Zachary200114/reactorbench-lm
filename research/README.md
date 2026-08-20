@@ -1,6 +1,6 @@
 # ReactorBench-LM research dossier
 
-Status: **research complete; local implementation began 2026-08-18**
+Status: **research complete; Phase 2 structured generator complete locally on 2026-08-20; Phase 3 has not started**
 Prepared: 2026-08-18
 
 ## Recommended project
@@ -53,4 +53,10 @@ The current computer is an Apple M3 MacBook Air with 16 GB unified memory. PyTor
 
 ## Immediate next step
 
-Implementation begins with repository contracts and strict versioned schemas, followed by a tiny deterministic scenario generator and its invariants. The first model may be trained only after the generated dataset passes the gates in `PREBUILD_CHECKLIST.md`. The web interface remains deferred until the inference contract and trained checkpoint are stable. GitHub pushing and Vercel deployment are reserved for Zachary; this project phase prepares and verifies the local artifacts only.
+Phase 2 now provides developmental G01–G15 generator fixtures, including immutable
+Aster-A/B/C cards/maps, exact single-family coverage, a narrow G14 compound, and G15
+required abstention. It does not provide a dataset, tokenizer, model, service, UI, or
+measured result. Phase 3 begins with a read-only decision-tick/channel projection and
+split-first manifest audit; truth-filtered audit trajectories are not model prompts, and
+no pilot rendering may begin before shortcut/leakage groups and full content-review gates
+are defined. GitHub pushing and Vercel deployment remain reserved for Zachary.

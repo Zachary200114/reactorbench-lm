@@ -1,7 +1,9 @@
 # Pre-build checklist
 
 This began as a pre-implementation gate. It now records which research and Phase 1
-foundation items are complete and which later gates remain open.
+foundation items are complete and which later gates remain open. The local Phase 2
+structured generator is complete through developmental G01–G15; Phase 3 dataset work
+has not started and no pilot data exists.
 
 ## Workspace
 
@@ -25,6 +27,8 @@ foundation items are complete and which later gates remain open.
 - [ ] Freeze the task names and structured target formats.
 - [x] Define generator invariants before generating the pilot dataset.
 - [ ] Define split manifests before narrative rendering.
+- [ ] Implement and snapshot-review the decision-tick/channel task-projection contract. A truth-filtered audit payload is not itself a prompt.
+- [ ] Group and audit G07, G08/G09, G12, G14, and G15 counterfactual relatives before assigning any split.
 - [ ] Create template-family IDs and component-alias families.
 - [ ] Create prohibited-content patterns and the real-facility denylist. A redacting, non-exhaustive Phase 2 pattern guard and fixtures now exist; complete the reviewed denylist and manual sample procedure before the dataset pilot.
 - [ ] Define duplicate and cross-split leakage tests.

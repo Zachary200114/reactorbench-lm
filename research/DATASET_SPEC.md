@@ -1,6 +1,6 @@
 # ReactorBench-LM dataset specification
 
-Status: design specification; no dataset has been generated yet.
+Status: Phase 3 design specification; no dataset, renderer output, tokenizer, or model input has been generated yet.
 
 ## 1. Dataset purpose
 
@@ -55,6 +55,28 @@ developmental `ProvenanceRecord` does not yet contain them, so either that schem
 separate strict split-manifest contract must be extended and snapshot-reviewed before a
 dataset pilot. A raw simulator `context_id` is audit metadata and must never substitute
 for these fields because its current value contains the availability word.
+
+## 2.1 Phase 2 handoff: projection and group audit
+
+The completed G01–G15 generator produces truth-filtered audit trajectories, not model
+prompts. Before a renderer or pilot dataset exists, Phase 3 must implement a strict,
+read-only projection that (1) ends each decision task at its exact decision tick, (2)
+selects only task-allowed event/channel facts, and (3) rejects latent state, injection,
+targets, scenario/provenance IDs, audit-only context identifiers, and later action
+effects. Full audit trajectories remain available only for provenance and review.
+
+The split manifest must assign every related family as a group before rendering:
+
+- G07 matched standby-availability contexts;
+- G08/G09 lag-versus-stuck resolution/persistence counterfactuals;
+- G12 included versus withheld dependency-map contexts;
+- G14 compound, its single-factor comparators, and affected component/channel roles; and
+- G15 sparse evidence and any evidence-expanded counterfactual relatives.
+
+The audit must report and reject group separation, target/context or template shortcuts,
+post-decision leakage, duplicate structured records, and prohibited cross-split
+scenario/template/component/fault-composition overlap. It must not claim that a
+truth-filtered payload is automatically safe prompt text.
 
 No manually edited generated record should enter a release. If a template or rule is corrected, regenerate the affected shard and bump the appropriate version.
 

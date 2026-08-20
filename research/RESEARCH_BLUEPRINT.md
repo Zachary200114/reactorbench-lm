@@ -304,11 +304,22 @@ used by implementation and security gates is:
 - Produce structured development trajectories only after the Phase 1 gate is
   recorded.
 
+**Local checkpoint:** complete through developmental G01–G15 on 2026-08-20. The
+generator has Aster-A/B/C cards/maps, exact single-family fixtures, the narrow G14
+compound, and the G15 sparse-abstention audit fixture. This is not a frozen dataset,
+golden review, or model result. The schema/generator remain `0.1.0`, `frozen=false`.
+
 ### Phase 3 — Dataset and renderer
 
 - Add split-first manifests, deterministic project-authored rendering, provenance,
   prohibited-content scanning, duplicate/leakage checks, and a tiny pilot dataset.
 - Expand scenario coverage without using real records or hosted-LLM corpus text.
+
+**First milestone:** read-only task projection and split-manifest audit only. Project
+truth-filtered audit trajectories to allowed decision-tick/channel prefixes, reject
+truth/identity/later-action shortcuts, and group G07, G08/G09, G12, G14, and G15
+relatives before any renderer or pilot-data generation. The narrow Phase 2 scanner does
+not replace a full reviewed denylist and stratified human sample review.
 
 ### Phase 4 — Model correctness
 
