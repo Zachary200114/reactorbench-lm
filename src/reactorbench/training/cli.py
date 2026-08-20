@@ -15,6 +15,7 @@ from reactorbench.evaluation import (
     load_golden_review_packet,
     load_golden_review_record,
     load_phase5_config,
+    load_phase6_config,
     prepare_golden_review_packet,
     verify_golden_review,
     write_golden_review_packet,
@@ -22,6 +23,12 @@ from reactorbench.evaluation import (
 from reactorbench.model import load_phase4_config
 from reactorbench.schemas.base import canonical_json_bytes
 
+from .main import (
+    run_phase6_evaluation,
+    run_phase6_selection,
+    verify_phase6_evaluation,
+    verify_phase6_selection,
+)
 from .pilot import run_phase5_pilot, verify_phase5_run
 from .smoke import run_phase4_smoke, verify_phase4_run
 
@@ -57,6 +64,16 @@ def _parser() -> argparse.ArgumentParser:
     verify_golden.add_argument("--packet", required=True, type=Path)
     verify_golden.add_argument("--record", required=True, type=Path)
     verify_golden.add_argument("--expected-packet-sha256", required=True)
+    selection = subparsers.add_parser("run-phase6-selection")
+    selection.add_argument("--config", required=True, type=Path)
+    selection.add_argument("--source-commit", required=True)
+    verify_selection = subparsers.add_parser("verify-phase6-selection")
+    verify_selection.add_argument("--config", required=True, type=Path)
+    evaluation = subparsers.add_parser("run-phase6-evaluation")
+    evaluation.add_argument("--config", required=True, type=Path)
+    evaluation.add_argument("--source-commit", required=True)
+    verify_evaluation = subparsers.add_parser("verify-phase6-evaluation")
+    verify_evaluation.add_argument("--config", required=True, type=Path)
     return parser
 
 
@@ -171,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 "decision": record.decision.value,
                 "record_sha256": record.record_sha256,
             }
-        else:
+        elif args.command == "verify-golden-review":
             packet_path = args.packet.resolve(strict=True)
             record_path = args.record.resolve(strict=True)
             if not packet_path.is_relative_to(project_root) or not record_path.is_relative_to(
@@ -190,6 +207,62 @@ def main(argv: list[str] | None = None) -> int:
                 "decision": record.decision.value,
                 "packet_sha256": packet.packet_sha256,
                 "review_status": "golden_suite_approved",
+            }
+        elif args.command == "run-phase6-selection":
+            if config_path is None:
+                raise ValueError("run-phase6-selection requires a config")
+            phase6_config = load_phase6_config(config_path)
+            selection_report = run_phase6_selection(
+                phase6_config,
+                project_root=project_root,
+                source_commit=args.source_commit,
+            )
+            result = {
+                "main_selected_step": selection_report.results[0].selected_step,
+                "main_validation_nll": selection_report.results[0].selected_validation_nll,
+                "report_sha256": selection_report.checksum_sha256,
+                "run_status": selection_report.run_status,
+                "selection_thresholds_passed": selection_report.selection_thresholds_passed,
+            }
+        elif args.command == "verify-phase6-selection":
+            if config_path is None:
+                raise ValueError("verify-phase6-selection requires a config")
+            phase6_config = load_phase6_config(config_path)
+            selection_report = verify_phase6_selection(phase6_config, project_root=project_root)
+            result = {
+                "main_selected_step": selection_report.results[0].selected_step,
+                "main_validation_nll": selection_report.results[0].selected_validation_nll,
+                "report_sha256": selection_report.checksum_sha256,
+                "run_status": selection_report.run_status,
+                "selection_thresholds_passed": selection_report.selection_thresholds_passed,
+            }
+        elif args.command == "run-phase6-evaluation":
+            if config_path is None:
+                raise ValueError("run-phase6-evaluation requires a config")
+            phase6_config = load_phase6_config(config_path)
+            evaluation_report = run_phase6_evaluation(
+                phase6_config,
+                project_root=project_root,
+                source_commit=args.source_commit,
+            )
+            result = {
+                "acceptance_failures": list(evaluation_report.negative_results),
+                "golden_exact_match_rate": evaluation_report.golden_exact_match_rate,
+                "report_sha256": evaluation_report.checksum_sha256,
+                "run_status": evaluation_report.run_status,
+                "test_example_count": evaluation_report.test_example_count,
+            }
+        else:
+            if config_path is None:
+                raise ValueError("verify-phase6-evaluation requires a config")
+            phase6_config = load_phase6_config(config_path)
+            evaluation_report = verify_phase6_evaluation(phase6_config, project_root=project_root)
+            result = {
+                "acceptance_failures": list(evaluation_report.negative_results),
+                "golden_exact_match_rate": evaluation_report.golden_exact_match_rate,
+                "report_sha256": evaluation_report.checksum_sha256,
+                "run_status": evaluation_report.run_status,
+                "test_example_count": evaluation_report.test_example_count,
             }
         print(json.dumps(result, separators=(",", ":"), sort_keys=True))
         return 0

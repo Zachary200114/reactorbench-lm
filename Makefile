@@ -2,7 +2,7 @@ UV ?= uv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify phase6-verify-golden
+.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review phase4-smoke phase4-verify reproduce-smoke phase5-pilot phase5-verify phase6-verify-golden phase6-selection phase6-verify-selection phase6-evaluate phase6-verify
 
 help: ## Show the available development commands.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -56,3 +56,15 @@ phase5-verify: ## Verify the complete Phase 5 report and safe checkpoints.
 
 phase6-verify-golden: ## Verify the owner-approved golden packet before held-out access.
 	$(UV) run --frozen python -m reactorbench.training verify-golden-review --packet golden/golden-suite-v0.1.0.json --record artifacts/review/golden-review-record-v0.1.0.json --expected-packet-sha256 c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c
+
+phase6-selection: phase6-verify-golden ## Train and validation-select E3, E5, and E6 without test access.
+	$(UV) run --frozen python -m reactorbench.training run-phase6-selection --config configs/experiments/phase6-main-v0.1.0.toml --source-commit "$$(git rev-parse --verify HEAD)"
+
+phase6-verify-selection: ## Verify the validation-only Phase 6 selection artifact.
+	$(UV) run --frozen python -m reactorbench.training verify-phase6-selection --config configs/experiments/phase6-main-v0.1.0.toml
+
+phase6-evaluate: phase6-verify-golden phase6-verify-selection ## Run the single authorized held-out and golden evaluation.
+	$(UV) run --frozen python -m reactorbench.training run-phase6-evaluation --config configs/experiments/phase6-main-v0.1.0.toml --source-commit "$$(git rev-parse --verify HEAD)"
+
+phase6-verify: ## Verify Phase 6 reports, predictions, access record, and checkpoints.
+	$(UV) run --frozen python -m reactorbench.training verify-phase6-evaluation --config configs/experiments/phase6-main-v0.1.0.toml
