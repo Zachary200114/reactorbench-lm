@@ -37,6 +37,7 @@ packages = ["src/reactorbench"]
 [tool.hatch.build.targets.wheel.force-include]
 "configs/default.toml" = "reactorbench/_data/configs/default.toml"
 "schemas/aster/v0" = "reactorbench/_data/schemas/aster/v0"
+"schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
 
 [tool.pytest.ini_options]
 minversion = "8.3"

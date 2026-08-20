@@ -36,4 +36,14 @@ def canonical_schema_snapshot_resource() -> Traversable:
     return _reviewed_resource("schemas", "aster", "v0", directory=True)
 
 
-__all__ = ["canonical_schema_snapshot_resource", "default_config_resource"]
+def canonical_dataset_schema_snapshot_resource() -> Traversable:
+    """Return the current reviewed dataset schema snapshot directory as a resource."""
+
+    return _reviewed_resource("schemas", "dataset", "v0", directory=True)
+
+
+__all__ = [
+    "canonical_dataset_schema_snapshot_resource",
+    "canonical_schema_snapshot_resource",
+    "default_config_resource",
+]

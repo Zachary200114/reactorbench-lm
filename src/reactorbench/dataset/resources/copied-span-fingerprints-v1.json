@@ -1,0 +1,14 @@
+{
+  "version": "0.1.0",
+  "algorithm": "sha256",
+  "normalization": "NFKC+casefold+collapsed-whitespace",
+  "minimum_tokens": 8,
+  "review_status": "reference-registry-requires-human-approval-before-pilot",
+  "fingerprints": [
+    {
+      "fingerprint_sha256": "218df52cf885dc90f34a43bb6b36319333398302ede4971de3fac4d1d0d24f9c",
+      "source_id": "PROJECT-TEST-SENTINEL",
+      "token_count": 9
+    }
+  ]
+}

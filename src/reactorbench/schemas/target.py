@@ -176,7 +176,7 @@ class NextActionTarget(ContractModel):
 
 class IncidentSummaryTarget(ContractModel):
     task_name: Literal[TaskName.INCIDENT_SUMMARY] = TaskName.INCIDENT_SUMMARY
-    affected_subsystem: AsterSubsystem
+    affected_subsystems: tuple[AsterSubsystem, ...] = ()
     observed_trend: ObservedTrend
     diagnosis_status: DiagnosisStatus
     fault_labels: tuple[FaultFamily, ...] = ()
@@ -189,6 +189,17 @@ class IncidentSummaryTarget(ContractModel):
     def faults_are_a_canonical_set(cls, values: tuple[FaultFamily, ...]) -> tuple[FaultFamily, ...]:
         return _canonical_fault_labels(values)
 
+    @field_validator("affected_subsystems", mode="after")
+    @classmethod
+    def subsystems_are_a_canonical_set(
+        cls, values: tuple[AsterSubsystem, ...]
+    ) -> tuple[AsterSubsystem, ...]:
+        return canonical_enum_tuple(
+            values,
+            enum_type=AsterSubsystem,
+            field_name="affected_subsystems",
+        )
+
     @model_validator(mode="after")
     def summary_is_consistent(self) -> IncidentSummaryTarget:
         _validate_diagnosis(
@@ -197,6 +208,10 @@ class IncidentSummaryTarget(ContractModel):
             abstention_reason=self.abstention_reason,
             immediate_action=self.immediate_action,
         )
+        if self.diagnosis_status is DiagnosisStatus.DIAGNOSED and not self.affected_subsystems:
+            raise ValueError("DIAGNOSED incident summaries require affected_subsystems")
+        if self.diagnosis_status is DiagnosisStatus.NO_FAULT and self.affected_subsystems:
+            raise ValueError("NO_FAULT incident summaries cannot claim affected_subsystems")
         return self
 
 

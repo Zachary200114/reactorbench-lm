@@ -298,6 +298,16 @@ def _drift_channels() -> tuple[str, ...]:
     )
 
 
+def _thermal_drift_channels() -> tuple[str, ...]:
+    """Return only the two reviewed G14 primary-thermal observation channels."""
+
+    return tuple(
+        channel.channel_id
+        for channel in ASTER_A_SPEC.channels
+        if channel.variable is StateVariable.PRIMARY_THERMAL_STATE
+    )
+
+
 def _stuck_channels() -> tuple[str, ...]:
     return tuple(
         channel.channel_id
@@ -1170,6 +1180,75 @@ def build_sensor_drift_scenario(
             ),
             ScenarioAction(
                 decision_tick=onset_tick + 3,
+                action=ActionLabel.FLAG_SENSOR_SUSPECT,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_thermal_sensor_drift_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    channel_id: str | None = None,
+) -> ScenarioDefinition:
+    """Build G14's exact primary-thermal observation-only drift comparator.
+
+    This intentionally narrow builder fixes onset and severity to the reviewed
+    compound fixture. It exists so Phase 3 can compare process-only,
+    observation-only, and compound traces without accepting arbitrary drift
+    profiles or additional plant variants.
+    """
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if duration_ticks < _COMPOUND_MIN_DURATION:
+        raise ValueError("thermal sensor drift needs at least 9 ticks")
+    thermal_channels = ASTER_A_SPEC.channels_for(StateVariable.PRIMARY_THERMAL_STATE)
+    if channel_id is None:
+        selected_channel = thermal_channels[(seed // 2) % len(thermal_channels)].channel_id
+    elif type(channel_id) is str and channel_id in {
+        channel.channel_id for channel in thermal_channels
+    }:
+        selected_channel = channel_id
+    else:
+        raise ValueError("channel_id must be an Aster-A primary-thermal-state channel or None")
+    sensor_component = next(
+        channel.component_id
+        for channel in thermal_channels
+        if channel.channel_id == selected_channel
+    )
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"aster-a-thermal-drift-{seed}-{duration_ticks}-"
+            f"{_PUMP_DEGRADATION_ONSET_TICK}-low-{selected_channel}"
+        ),
+        plant_variant_id=PlantVariant.ASTER_A,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.SENSOR_DRIFT,
+                component_id=sensor_component,
+                onset_tick=_PUMP_DEGRADATION_ONSET_TICK,
+                severity=SeverityBand.LOW,
+                channel_id=selected_channel,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_PUMP_DEGRADATION_ONSET_TICK + 1,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_DEGRADATION_ONSET_TICK + 2,
+                action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+            ),
+            ScenarioAction(
+                decision_tick=_PUMP_DEGRADATION_ONSET_TICK + 3,
                 action=ActionLabel.FLAG_SENSOR_SUSPECT,
             ),
         ),
@@ -5074,12 +5153,15 @@ def _events_and_targets(
         )
         for frame in observations
     }
+    selected_variable = next(
+        channel.variable for channel in spec.channels if channel.channel_id == selected_channel
+    )
     early = _event(
         events,
         sim_time=early_tick,
         event_type=EventType.OBSERVATION_CHANGED,
         subject_id=selected_channel,
-        variable=StateVariable.PRIMARY_FLOW,
+        variable=selected_variable,
         value_before=observed_by_tick[injection.onset_tick].value,
         value_after=observed_by_tick[early_tick].value,
         observation_status=ObservationStatus.WATCH,
@@ -5099,7 +5181,7 @@ def _events_and_targets(
         sim_time=mature_tick,
         event_type=EventType.CHANNEL_DISAGREEMENT,
         subject_id=selected_channel,
-        variable=StateVariable.PRIMARY_FLOW,
+        variable=selected_variable,
         observation_status=ObservationStatus.CONFLICTING,
         evidence_slots=(EvidenceSlot.CHANNEL_DISAGREEMENT,),
         related_event_ids=(stable.event_id, early.event_id),
@@ -5729,13 +5811,18 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         _require_uint32(injection.onset_tick, name="fault onset")
     except ValueError as error:
         raise UnsupportedScenarioError(str(error)) from error
-    drift_expected_component = {
-        channel.channel_id: channel.component_id
-        for channel in ASTER_A_SPEC.channels
-        if channel.variable is StateVariable.PRIMARY_FLOW
-    }.get(channel_id)
-    if channel_id not in _drift_channels() or injection.component_id != drift_expected_component:
-        raise UnsupportedScenarioError("sensor drift must use an Aster-A primary-flow mapping")
+    drift_channel = next(
+        (
+            channel
+            for channel in ASTER_A_SPEC.channels
+            if channel.channel_id == channel_id
+            and channel.variable
+            in {StateVariable.PRIMARY_FLOW, StateVariable.PRIMARY_THERMAL_STATE}
+        ),
+        None,
+    )
+    if drift_channel is None or injection.component_id != drift_channel.component_id:
+        raise UnsupportedScenarioError("sensor drift must use a supported Aster-A channel mapping")
     if injection.duration_ticks is not None:
         raise UnsupportedScenarioError("finite-duration sensor drift is not supported")
     if injection.onset_tick + 4 >= scenario.duration_ticks:
@@ -5756,10 +5843,23 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     )
     if scenario.action_sequence != expected:
         raise UnsupportedScenarioError("sensor drift action sequence is noncanonical")
-    expected_id = (
-        f"aster-a-drift-{scenario.seed}-{scenario.duration_ticks}-{injection.onset_tick}-"
-        f"{injection.severity.value.lower()}-{channel_id}"
-    )
+    if drift_channel.variable is StateVariable.PRIMARY_THERMAL_STATE:
+        if (
+            channel_id not in _thermal_drift_channels()
+            or injection.onset_tick != _PUMP_DEGRADATION_ONSET_TICK
+            or injection.severity is not SeverityBand.LOW
+            or scenario.duration_ticks < _COMPOUND_MIN_DURATION
+        ):
+            raise UnsupportedScenarioError("unsupported thermal sensor-drift comparator")
+        expected_id = (
+            f"aster-a-thermal-drift-{scenario.seed}-{scenario.duration_ticks}-"
+            f"{_PUMP_DEGRADATION_ONSET_TICK}-low-{channel_id}"
+        )
+    else:
+        expected_id = (
+            f"aster-a-drift-{scenario.seed}-{scenario.duration_ticks}-{injection.onset_tick}-"
+            f"{injection.severity.value.lower()}-{channel_id}"
+        )
     if scenario.scenario_id != expected_id:
         raise UnsupportedScenarioError("sensor drift scenario id is noncanonical")
 

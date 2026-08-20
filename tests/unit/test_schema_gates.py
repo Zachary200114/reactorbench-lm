@@ -342,7 +342,7 @@ def _task_targets() -> dict[TaskName, ConcreteTaskTarget]:
         ),
         TaskName.NEXT_ACTION: NextActionTarget(immediate_action=ActionLabel.CONTINUE_MONITORING),
         TaskName.INCIDENT_SUMMARY: IncidentSummaryTarget(
-            affected_subsystem=AsterSubsystem.PRIMARY_LOOP,
+            affected_subsystems=(),
             observed_trend=ObservedTrend.STABLE,
             diagnosis_status=DiagnosisStatus.NO_FAULT,
             operating_mode=OperatingMode.STABLE,
@@ -368,6 +368,42 @@ def test_each_task_name_has_one_discriminated_structured_target() -> None:
     for task_name, target in targets.items():
         wrapped = TaskTarget(task_name=task_name, target=target)
         assert wrapped.target.task_name is task_name
+
+
+def test_incident_summary_subsystems_follow_diagnosis_semantics() -> None:
+    diagnosed = IncidentSummaryTarget(
+        affected_subsystems=(
+            AsterSubsystem.INSTRUMENTATION,
+            AsterSubsystem.PRIMARY_LOOP,
+        ),
+        observed_trend=ObservedTrend.MIXED,
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=(FaultFamily.SENSOR_DRIFT, FaultFamily.PUMP_DEGRADATION),
+        operating_mode=OperatingMode.DISTURBED,
+        immediate_action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+    )
+    assert diagnosed.affected_subsystems == (
+        AsterSubsystem.PRIMARY_LOOP,
+        AsterSubsystem.INSTRUMENTATION,
+    )
+
+    with pytest.raises(ValidationError, match="require affected_subsystems"):
+        IncidentSummaryTarget(
+            observed_trend=ObservedTrend.FALLING,
+            diagnosis_status=DiagnosisStatus.DIAGNOSED,
+            fault_labels=(FaultFamily.PUMP_DEGRADATION,),
+            operating_mode=OperatingMode.DISTURBED,
+            immediate_action=ActionLabel.REQUEST_COMPONENT_INSPECTION,
+        )
+
+    with pytest.raises(ValidationError, match="cannot claim affected_subsystems"):
+        IncidentSummaryTarget(
+            affected_subsystems=(AsterSubsystem.PRIMARY_LOOP,),
+            observed_trend=ObservedTrend.STABLE,
+            diagnosis_status=DiagnosisStatus.NO_FAULT,
+            operating_mode=OperatingMode.STABLE,
+            immediate_action=ActionLabel.CONTINUE_MONITORING,
+        )
 
 
 def test_task_wrapper_rejects_task_target_mismatch() -> None:

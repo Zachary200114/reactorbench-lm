@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from reactorbench.schemas import (
     AbstentionReason,
     ActionLabel,
-    AsterSubsystem,
     CausalContinuationTarget,
     ComponentState,
     CounterfactualChange,
@@ -260,7 +259,7 @@ _TASK_TARGETS = (
     EvidenceExtractionTarget(evidence_slots=(EvidenceSlot.STABLE_OPERATION,)),
     NextActionTarget(immediate_action=ActionLabel.CONTINUE_MONITORING),
     IncidentSummaryTarget(
-        affected_subsystem=AsterSubsystem.PRIMARY_LOOP,
+        affected_subsystems=(),
         observed_trend=ObservedTrend.STABLE,
         diagnosis_status=DiagnosisStatus.NO_FAULT,
         operating_mode=OperatingMode.STABLE,

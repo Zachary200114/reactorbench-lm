@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import tomllib
+from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from reactorbench.resources import (
+    canonical_dataset_schema_snapshot_resource,
     canonical_schema_snapshot_resource,
     default_config_resource,
 )
@@ -12,6 +14,8 @@ from reactorbench.resources import (
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "configs" / "default.toml"
 SNAPSHOT_DIRECTORY = ROOT / "schemas" / "aster" / "v0"
+DATASET_SNAPSHOT_DIRECTORY = ROOT / "schemas" / "dataset" / "v0"
+DATASET_GUARD_DIRECTORY = ROOT / "src" / "reactorbench" / "dataset" / "resources"
 
 
 def _resource_file_tree(directory: Traversable) -> dict[str, bytes]:
@@ -41,6 +45,14 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
     assert _resource_file_tree(canonical_schema_snapshot_resource()) == _source_file_tree(
         SNAPSHOT_DIRECTORY
     )
+    assert _resource_file_tree(canonical_dataset_schema_snapshot_resource()) == _source_file_tree(
+        DATASET_SNAPSHOT_DIRECTORY
+    )
+
+
+def test_dataset_guard_resources_are_importlib_readable_without_drift() -> None:
+    packaged = files("reactorbench.dataset.resources")
+    assert _resource_file_tree(packaged) == _source_file_tree(DATASET_GUARD_DIRECTORY)
 
 
 def test_distribution_configuration_packages_canonical_root_assets() -> None:
@@ -54,4 +66,5 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
     assert hatch_targets["wheel"]["force-include"] == {
         "configs/default.toml": "reactorbench/_data/configs/default.toml",
         "schemas/aster/v0": "reactorbench/_data/schemas/aster/v0",
+        "schemas/dataset/v0": "reactorbench/_data/schemas/dataset/v0",
     }

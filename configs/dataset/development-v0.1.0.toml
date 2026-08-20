@@ -1,0 +1,74 @@
+[dataset]
+dataset_version = "0.1.0"
+renderer_version = "0.1.0"
+projection_version = "0.1.0"
+manifest_version = "0.1.0"
+schema_snapshot_version = "0.1.0"
+artifact_name = "phase3-development-v0.1.0-candidate"
+duration_ticks = 12
+minimum_trajectories = 100
+maximum_trajectories = 500
+maximum_task_records = 5000
+maximum_rendered_bytes = 5000000
+golden_reserved_seed_max = 99
+overwrite = false
+
+[splits.iid_train]
+seeds = [1000, 1001, 1002, 1003, 1004]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.iid_validation]
+seeds = [1100, 1101]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.iid_test]
+seeds = [1200, 1201]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.template_test]
+seeds = [1300, 1301]
+template_families = ["research-editorial-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.component_test]
+seeds = [1400, 1401]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["heldout-v1"]
+
+[splits.severity_test]
+seeds = [1500, 1501]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.composition_test]
+seeds = [1600, 1601]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.counterfactual_test]
+seeds = [1700, 1701]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[splits.noise_test]
+seeds = [1800, 1801]
+template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+
+[review]
+required_pre_render_status = "APPROVED"
+generated_status = "PENDING_POSTRENDER_HUMAN_REVIEW"
+reviewer_role = "project-owner"
+require_catalog_hash_match = true
+require_rules_hash_match = true
+
+[quality]
+ngram_sizes = [3, 4, 5]
+fail_on_exact_duplicate = true
+fail_on_task_scoped_model_input_duplicate = true
+fail_on_forbidden_skeleton_overlap = true
+fail_on_prohibited_content = true
+report_ngram_overlap_without_threshold = true

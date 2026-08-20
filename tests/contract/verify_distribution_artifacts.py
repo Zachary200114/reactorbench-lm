@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DIST_DIRECTORY = ROOT / "dist"
 PACKAGE_DATA_PREFIX = "reactorbench/_data"
+DATASET_GUARD_PREFIX = "reactorbench/dataset/resources"
 
 
 def _project_version() -> str:
@@ -30,11 +31,20 @@ def _expected_resource_files() -> dict[str, bytes]:
             ROOT / "configs" / "default.toml"
         ).read_bytes()
     }
-    snapshot_root = ROOT / "schemas" / "aster" / "v0"
-    for path in snapshot_root.rglob("*"):
+    for snapshot_family in ("aster", "dataset"):
+        snapshot_root = ROOT / "schemas" / snapshot_family / "v0"
+        for path in snapshot_root.rglob("*"):
+            if path.is_file():
+                relative_path = path.relative_to(snapshot_root).as_posix()
+                packaged_path = (
+                    f"{PACKAGE_DATA_PREFIX}/schemas/{snapshot_family}/v0/{relative_path}"
+                )
+                expected[packaged_path] = path.read_bytes()
+    guard_root = ROOT / "src" / "reactorbench" / "dataset" / "resources"
+    for path in guard_root.rglob("*"):
         if path.is_file():
-            relative_path = path.relative_to(snapshot_root).as_posix()
-            expected[f"{PACKAGE_DATA_PREFIX}/schemas/aster/v0/{relative_path}"] = path.read_bytes()
+            relative_path = path.relative_to(guard_root).as_posix()
+            expected[f"{DATASET_GUARD_PREFIX}/{relative_path}"] = path.read_bytes()
     return expected
 
 
@@ -44,7 +54,9 @@ def _verify_wheel(wheel_path: Path, expected_resources: dict[str, bytes]) -> Non
         if len(members) != len(set(members)):
             raise AssertionError("wheel contains duplicate archive members")
         packaged_resources = {
-            member for member in members if member.startswith(f"{PACKAGE_DATA_PREFIX}/")
+            member
+            for member in members
+            if member.startswith((f"{PACKAGE_DATA_PREFIX}/", f"{DATASET_GUARD_PREFIX}/"))
         }
         if packaged_resources != set(expected_resources):
             raise AssertionError("wheel package resources do not match reviewed root assets")
@@ -60,10 +72,15 @@ def _verify_sdist(
     expected_resources: dict[str, bytes],
 ) -> None:
     archive_root = f"reactorbench_lm-{version}"
-    expected_sources = {
-        f"{archive_root}/{member.removeprefix(f'{PACKAGE_DATA_PREFIX}/')}": content
-        for member, content in expected_resources.items()
-    }
+    expected_sources: dict[str, bytes] = {}
+    for resource_member, content in expected_resources.items():
+        if resource_member.startswith(f"{PACKAGE_DATA_PREFIX}/"):
+            source_path = resource_member.removeprefix(f"{PACKAGE_DATA_PREFIX}/")
+        elif resource_member.startswith(f"{DATASET_GUARD_PREFIX}/"):
+            source_path = f"src/{resource_member}"
+        else:
+            raise AssertionError(f"unknown packaged resource root: {resource_member}")
+        expected_sources[f"{archive_root}/{source_path}"] = content
     with tarfile.open(sdist_path, mode="r:gz") as sdist:
         members = sdist.getmembers()
         member_names = [member.name for member in members]
@@ -78,10 +95,10 @@ def _verify_sdist(
             )
         members_by_name = {member.name: member for member in members}
         for member_name, expected_bytes in expected_sources.items():
-            member = members_by_name.get(member_name)
-            if member is None:
+            archive_member = members_by_name.get(member_name)
+            if archive_member is None:
                 raise AssertionError(f"sdist is missing a wheel source asset: {member_name}")
-            extracted = sdist.extractfile(member)
+            extracted = sdist.extractfile(archive_member)
             if extracted is None or extracted.read() != expected_bytes:
                 raise AssertionError(f"sdist asset drifted from its reviewed source: {member_name}")
 
@@ -96,8 +113,14 @@ installation = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(installation))
 
 import reactorbench
+from reactorbench.dataset.content_guard import guard_manifest
+from reactorbench.dataset import dataset_schema_documents, load_dataset_snapshot
 from reactorbench.config import load_project_config
-from reactorbench.resources import canonical_schema_snapshot_resource, default_config_resource
+from reactorbench.resources import (
+    canonical_dataset_schema_snapshot_resource,
+    canonical_schema_snapshot_resource,
+    default_config_resource,
+)
 from reactorbench.schemas import load_snapshot, schema_documents
 
 package_path = Path(reactorbench.__file__).resolve()
@@ -107,12 +130,18 @@ with as_file(default_config_resource()) as config_path:
 with as_file(canonical_schema_snapshot_resource()) as snapshot_path:
     documents, _manifest = load_snapshot(snapshot_path)
     assert documents == schema_documents()
+with as_file(canonical_dataset_schema_snapshot_resource()) as snapshot_path:
+    documents, _manifest, _contract = load_dataset_snapshot(snapshot_path)
+    assert documents == dataset_schema_documents()
+guard = guard_manifest()
+assert len(str(guard["denylist_sha256"])) == 64
+assert len(str(guard["fingerprints_sha256"])) == 64
 """
     with tempfile.TemporaryDirectory(prefix="reactorbench-wheel-") as temporary_directory:
         installation = Path(temporary_directory) / "site-packages"
-        base_python = Path(sys.base_prefix) / (
-            "python.exe" if sys.platform == "win32" else "bin/python"
-        )
+        base_python = Path(sys.executable).resolve()
+        if not base_python.is_file():
+            raise FileNotFoundError("current Python executable cannot be resolved")
         subprocess.run(  # noqa: S603
             [
                 str(base_python),

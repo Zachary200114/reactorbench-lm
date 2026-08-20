@@ -2,7 +2,7 @@ UV ?= uv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test check build artifact-test
+.PHONY: help sync format format-check lint typecheck test check build artifact-test phase3-audit phase3-prepare-review
 
 help: ## Show the available development commands.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -33,3 +33,9 @@ build: ## Build source and wheel distributions from the locked environment.
 
 artifact-test: build ## Verify distribution contents and an isolated local wheel install.
 	$(UV) run --frozen python tests/contract/verify_distribution_artifacts.py
+
+phase3-audit: ## Build the structured Phase 3 graph in memory and print its audit summary.
+	$(UV) run --frozen python -m reactorbench.dataset audit-development --config configs/dataset/development-v0.1.0.toml --generator-commit "$$(git rev-parse --verify HEAD)"
+
+phase3-prepare-review: ## Print the hash-bound pre-render catalog review packet; does not approve it.
+	$(UV) run --frozen python -m reactorbench.dataset prepare-review --config configs/dataset/development-v0.1.0.toml --generator-commit "$$(git rev-parse --verify HEAD)"
