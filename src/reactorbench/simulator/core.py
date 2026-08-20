@@ -115,6 +115,23 @@ _FLOW_IMBALANCE_STEAM_TICK = 5
 _FLOW_IMBALANCE_OUTPUT_TICK = 6
 _FLOW_IMBALANCE_STABILIZE_APPLY_TICK = 7
 _FLOW_IMBALANCE_MIN_DURATION = 8
+_INVENTORY_ONSET_TICK = 2
+_INVENTORY_PRIMARY_TICK = 3
+_INVENTORY_REDUNDANT_TICK = 4
+_INVENTORY_FLOW_TICK = 5
+_INVENTORY_THERMAL_TICK = 6
+_INVENTORY_REDUCE_DECISION_TICK = 6
+_INVENTORY_REDUCE_APPLY_TICK = 7
+_INVENTORY_STABLE_DECISION_TICK = 7
+_INVENTORY_STABLE_APPLY_TICK = 8
+_INVENTORY_STABILIZED_TICK = 9
+_INVENTORY_MIN_DURATION = 10
+_INVENTORY_STREAM_OFFSET = 419
+_SPARSE_PRIMARY_FLOW_TICK = 2
+_SPARSE_PRIMARY_FLOW_DECISION_TICK = 2
+_SPARSE_PRIMARY_FLOW_ACTION_TICK = 3
+_SPARSE_PRIMARY_FLOW_MIN_DURATION = 8
+_SPARSE_PRIMARY_FLOW_STREAM_OFFSET = 613
 _SUPPORT_POWER_ONSET_TICK = 2
 _SUPPORT_POWER_COMPONENT_TICK = 3
 _SUPPORT_POWER_EFFECT_TICK = 4
@@ -158,7 +175,12 @@ class SimulationTrace:
     targets: ScenarioTargets
 
     def visible_payload(self) -> dict[str, object]:
-        """Return only model-visible observations and canonical events."""
+        """Return truth-filtered audit-source data, not a model-task prompt.
+
+        Hidden scenario, latent, target, and provenance truth is excluded here.
+        Phase 3 must still project an allowlisted decision prefix, permitted
+        channels, and task-specific context before rendering model input.
+        """
 
         return {
             "schema_version": SCHEMA_VERSION,
@@ -505,6 +527,102 @@ def build_flow_imbalance_scenario(
             ScenarioAction(
                 decision_tick=_FLOW_IMBALANCE_OUTPUT_TICK,
                 action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def build_abstract_inventory_loss_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 12,
+    plant_variant: PlantVariant = PlantVariant.ASTER_A,
+) -> ScenarioDefinition:
+    """Build G13's bounded, wholly fictional inventory-loss process case."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if type(plant_variant) is not PlantVariant:
+        raise ValueError("plant_variant must be a PlantVariant")
+    if duration_ticks < _INVENTORY_MIN_DURATION:
+        raise ValueError("abstract inventory loss needs at least 10 ticks")
+    spec = get_variant_spec(plant_variant)
+    component_id = spec.primary_loop_domain_id
+    scenario = ScenarioDefinition(
+        scenario_id=(
+            f"{spec.plant_variant.value.lower()}-inventory-loss-{seed}-{duration_ticks}-"
+            f"{_INVENTORY_ONSET_TICK}-low-{component_id}"
+        ),
+        plant_variant_id=spec.plant_variant,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        fault_injections=(
+            FaultInjection(
+                fault_family=FaultFamily.ABSTRACT_INVENTORY_LOSS,
+                component_id=component_id,
+                onset_tick=_INVENTORY_ONSET_TICK,
+                severity=SeverityBand.LOW,
+            ),
+        ),
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_INVENTORY_ONSET_TICK + 1,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_INVENTORY_REDUCE_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+            ScenarioAction(
+                decision_tick=_INVENTORY_STABLE_DECISION_TICK,
+                action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            ),
+        ),
+    )
+    assert_no_prohibited_content(scenario)
+    return scenario
+
+
+def _sparse_primary_flow_scenario_id(
+    *, spec: AsterVariantSpec, seed: int, duration_ticks: int
+) -> str:
+    selected_channel = spec.channels_for(StateVariable.PRIMARY_FLOW)[seed % 2].channel_id
+    return (
+        f"{spec.plant_variant.value.lower()}-sparse-primary-flow-{seed}-{duration_ticks}-"
+        f"{_SPARSE_PRIMARY_FLOW_TICK}-low-{selected_channel}"
+    )
+
+
+def build_sparse_primary_flow_scenario(
+    *,
+    seed: int,
+    duration_ticks: int = 8,
+    plant_variant: PlantVariant = PlantVariant.ASTER_A,
+) -> ScenarioDefinition:
+    """Build G15's no-fault sparse-evidence counterfactual fixture."""
+
+    _require_uint32(seed, name="seed")
+    _require_duration(duration_ticks)
+    if type(plant_variant) is not PlantVariant:
+        raise ValueError("plant_variant must be a PlantVariant")
+    if duration_ticks < _SPARSE_PRIMARY_FLOW_MIN_DURATION:
+        raise ValueError("sparse primary-flow evidence needs at least 8 ticks")
+    spec = get_variant_spec(plant_variant)
+    scenario = ScenarioDefinition(
+        scenario_id=_sparse_primary_flow_scenario_id(
+            spec=spec, seed=seed, duration_ticks=duration_ticks
+        ),
+        plant_variant_id=spec.plant_variant,
+        seed=seed,
+        duration_ticks=duration_ticks,
+        driver=ScenarioDriver.STEADY_OPERATION,
+        action_sequence=(
+            ScenarioAction(
+                decision_tick=_SPARSE_PRIMARY_FLOW_DECISION_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
             ),
         ),
     )
@@ -979,6 +1097,10 @@ def _flow_imbalance_injection(scenario: ScenarioDefinition) -> FaultInjection | 
     return _single_injection_for(scenario, FaultFamily.FLOW_IMBALANCE)
 
 
+def _abstract_inventory_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
+    return _single_injection_for(scenario, FaultFamily.ABSTRACT_INVENTORY_LOSS)
+
+
 def _support_power_injection(scenario: ScenarioDefinition) -> FaultInjection | None:
     return _single_injection_for(scenario, FaultFamily.SUPPORT_POWER_INTERRUPTION)
 
@@ -1003,6 +1125,34 @@ def _valve_decisive_tick(scenario: ScenarioDefinition) -> int:
 
 def _valve_action_tick(scenario: ScenarioDefinition) -> int:
     return _valve_decisive_tick(scenario) + 1
+
+
+def _is_sparse_primary_flow_scenario(scenario: ScenarioDefinition) -> bool:
+    """Return whether ``scenario`` is the exact G15 no-fault shape."""
+
+    try:
+        spec = get_variant_spec(scenario.plant_variant_id)
+    except (KeyError, TypeError):
+        return False
+    expected_actions = (
+        ScenarioAction(
+            decision_tick=_SPARSE_PRIMARY_FLOW_DECISION_TICK,
+            action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        ),
+    )
+    return (
+        type(scenario) is ScenarioDefinition
+        and scenario.driver is ScenarioDriver.STEADY_OPERATION
+        and not scenario.fault_injections
+        and scenario.standby_context is None
+        and scenario.dependency_map_context is None
+        and scenario.action_sequence == expected_actions
+        and scenario.scenario_id
+        == _sparse_primary_flow_scenario_id(
+            spec=spec, seed=scenario.seed, duration_ticks=scenario.duration_ticks
+        )
+        and scenario.duration_ticks >= _SPARSE_PRIMARY_FLOW_MIN_DURATION
+    )
 
 
 def _valve_initial_position(seed: int) -> float:
@@ -1180,6 +1330,31 @@ def _flow_imbalance_values(seed: int, tick: int) -> PlantValues:
         values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(
             baseline.heat_source_level - reduction
         )
+    return PlantValues(**values)
+
+
+def _inventory_values(seed: int, tick: int) -> PlantValues:
+    """Return G13's normalized loss chain with a bounded post-action hold."""
+
+    baseline = _baseline_values(seed)
+    values = baseline.model_dump()
+    step = _process_loss_step(seed, stream_offset=_INVENTORY_STREAM_OFFSET)
+    effective_tick = min(tick, _INVENTORY_STABLE_APPLY_TICK - 1)
+    if effective_tick >= _INVENTORY_PRIMARY_TICK:
+        values[StateVariable.PRIMARY_INVENTORY.value] = _clip(
+            baseline.primary_inventory - min(0.12, step * (effective_tick - 2))
+        )
+    if effective_tick >= _INVENTORY_FLOW_TICK:
+        values[StateVariable.PRIMARY_FLOW.value] = _clip(
+            baseline.primary_flow - min(0.12, 0.8 * step * (effective_tick - 4))
+        )
+    if effective_tick >= _INVENTORY_THERMAL_TICK:
+        values[StateVariable.PRIMARY_THERMAL_STATE.value] = _clip(
+            baseline.primary_thermal_state + min(0.10, 0.8 * step * (effective_tick - 5))
+        )
+    if effective_tick >= _INVENTORY_REDUCE_APPLY_TICK:
+        values[StateVariable.LOAD_DEMAND.value] = _clip(baseline.load_demand - 0.012)
+        values[StateVariable.HEAT_SOURCE_LEVEL.value] = _clip(baseline.heat_source_level - 0.012)
     return PlantValues(**values)
 
 
@@ -1501,6 +1676,25 @@ def _latent_states(scenario: ScenarioDefinition) -> tuple[LatentPlantState, ...]
                     else OperatingMode.STABILIZED
                 ),
                 values=_flow_imbalance_values(scenario.seed, tick),
+                components=_healthy_components(scenario=scenario, tick=tick, spec=spec),
+            )
+            for tick in range(scenario.duration_ticks)
+        )
+    inventory = _abstract_inventory_injection(scenario)
+    if inventory is not None:
+        return tuple(
+            LatentPlantState(
+                tick=tick,
+                operating_mode=(
+                    OperatingMode.STABLE
+                    if tick < _INVENTORY_PRIMARY_TICK
+                    else OperatingMode.DISTURBED
+                    if tick < _INVENTORY_STABLE_APPLY_TICK
+                    else OperatingMode.RECOVERY
+                    if tick < _INVENTORY_STABILIZED_TICK
+                    else OperatingMode.STABILIZED
+                ),
+                values=_inventory_values(scenario.seed, tick),
                 components=_healthy_components(scenario=scenario, tick=tick, spec=spec),
             )
             for tick in range(scenario.duration_ticks)
@@ -1872,6 +2066,47 @@ def _support_power_overall_status(tick: int) -> ObservationStatus:
     )
 
 
+def _inventory_channel_status(tick: int, variable: StateVariable) -> ObservationStatus:
+    if variable is StateVariable.PRIMARY_INVENTORY and tick >= _INVENTORY_PRIMARY_TICK:
+        return (
+            ObservationStatus.WATCH
+            if tick <= _INVENTORY_THERMAL_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.PRIMARY_FLOW and tick >= _INVENTORY_FLOW_TICK:
+        return (
+            ObservationStatus.WATCH
+            if tick <= _INVENTORY_THERMAL_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    if variable is StateVariable.PRIMARY_THERMAL_STATE and tick >= _INVENTORY_THERMAL_TICK:
+        return (
+            ObservationStatus.WATCH
+            if tick == _INVENTORY_THERMAL_TICK
+            else ObservationStatus.ABNORMAL
+        )
+    return ObservationStatus.NORMAL
+
+
+def _inventory_overall_status(tick: int) -> ObservationStatus:
+    if tick < _INVENTORY_PRIMARY_TICK:
+        return ObservationStatus.NORMAL
+    return (
+        ObservationStatus.WATCH if tick <= _INVENTORY_THERMAL_TICK else ObservationStatus.ABNORMAL
+    )
+
+
+def _sparse_primary_flow_offset(seed: int) -> float:
+    """Return the bounded, deterministic low-reading offset for G15."""
+
+    return round(
+        Random(  # noqa: S311
+            seed * 9_000_017 + _SPARSE_PRIMARY_FLOW_STREAM_OFFSET
+        ).uniform(0.018, 0.024),
+        6,
+    )
+
+
 def _valve_channel_status(
     scenario: ScenarioDefinition, tick: int, variable: StateVariable
 ) -> ObservationStatus:
@@ -1960,6 +2195,7 @@ def _observations(
     trip = _pump_trip_injection(scenario)
     transfer = _transfer_injection(scenario)
     flow_imbalance = _flow_imbalance_injection(scenario)
+    inventory = _abstract_inventory_injection(scenario)
     support_power = _support_power_injection(scenario)
     valve = _valve_injection(scenario)
     stuck = _sensor_stuck_injection(scenario)
@@ -1977,6 +2213,15 @@ def _observations(
                         scenario=scenario, tick=latent.tick, channel_id=channel.channel_id
                     )
                 )
+                if (
+                    _is_sparse_primary_flow_scenario(scenario)
+                    and latent.tick == _SPARSE_PRIMARY_FLOW_TICK
+                    and channel.channel_id
+                    == spec.channels_for(StateVariable.PRIMARY_FLOW)[scenario.seed % 2].channel_id
+                ):
+                    observed_value = _clip(
+                        observed_value - _sparse_primary_flow_offset(scenario.seed)
+                    )
                 if (
                     stuck is not None
                     and channel.channel_id == stuck.channel_id
@@ -1999,7 +2244,18 @@ def _observations(
                         observed_value + _sensor_noise_offset(seed=scenario.seed, tick=latent.tick)
                     )
                 channel_status = (
-                    _trip_channel_status(scenario, latent.tick, variable)
+                    ObservationStatus.WATCH
+                    if (
+                        _is_sparse_primary_flow_scenario(scenario)
+                        and latent.tick == _SPARSE_PRIMARY_FLOW_TICK
+                        and channel.channel_id
+                        == spec.channels_for(StateVariable.PRIMARY_FLOW)[
+                            scenario.seed % 2
+                        ].channel_id
+                    )
+                    else ObservationStatus.NORMAL
+                    if _is_sparse_primary_flow_scenario(scenario)
+                    else _trip_channel_status(scenario, latent.tick, variable)
                     if trip is not None
                     else _pump_channel_status(latent.tick, variable)
                     if pump is not None
@@ -2007,6 +2263,8 @@ def _observations(
                     if transfer is not None
                     else _flow_imbalance_channel_status(latent.tick, variable)
                     if flow_imbalance is not None
+                    else _inventory_channel_status(latent.tick, variable)
+                    if inventory is not None
                     else _support_power_channel_status(scenario, latent.tick, variable)
                     if support_power is not None
                     else _valve_channel_status(scenario, latent.tick, variable)
@@ -2016,7 +2274,9 @@ def _observations(
                 channel_quality = (
                     ChannelQuality.GOOD
                     if (
-                        pump is not None
+                        _is_sparse_primary_flow_scenario(scenario)
+                        or inventory is not None
+                        or pump is not None
                         or trip is not None
                         or transfer is not None
                         or flow_imbalance is not None
@@ -2035,7 +2295,12 @@ def _observations(
                     )
                 )
         overall_status = (
-            _trip_overall_status(latent.tick)
+            ObservationStatus.WATCH
+            if _is_sparse_primary_flow_scenario(scenario)
+            and latent.tick == _SPARSE_PRIMARY_FLOW_TICK
+            else ObservationStatus.NORMAL
+            if _is_sparse_primary_flow_scenario(scenario)
+            else _trip_overall_status(latent.tick)
             if trip is not None
             else _pump_overall_status(latent.tick)
             if pump is not None
@@ -2043,6 +2308,8 @@ def _observations(
             if transfer is not None
             else _flow_imbalance_overall_status(latent.tick)
             if flow_imbalance is not None
+            else _inventory_overall_status(latent.tick)
+            if inventory is not None
             else _support_power_overall_status(latent.tick)
             if support_power is not None
             else _valve_overall_status(scenario, latent.tick)
@@ -2054,6 +2321,7 @@ def _observations(
             and trip is None
             and transfer is None
             and flow_imbalance is None
+            and inventory is None
             and support_power is None
             and valve is None
             and scenario.fault_injections
@@ -2103,6 +2371,17 @@ def _observed_value(
     value = next(channel.value for channel in frame.channels if channel.variable is variable)
     if value is None:
         raise ValueError("pump process observations must remain available")
+    return value
+
+
+def _observed_channel_value(
+    observations: tuple[ObservationFrame, ...], *, tick: int, channel_id: str
+) -> float:
+    value = next(
+        channel.value for channel in observations[tick].channels if channel.channel_id == channel_id
+    )
+    if value is None:
+        raise ValueError("selected channel observations must remain available")
     return value
 
 
@@ -2787,13 +3066,38 @@ def _process_observation_event(
     )
 
 
+def _process_channel_observation_event(
+    events: list[CanonicalEvent],
+    *,
+    observations: tuple[ObservationFrame, ...],
+    tick: int,
+    channel_id: str,
+    variable: StateVariable,
+    status: ObservationStatus,
+    evidence_slots: tuple[EvidenceSlot, ...],
+    related_event_ids: tuple[str, ...],
+) -> CanonicalEvent:
+    return _event(
+        events,
+        sim_time=tick,
+        event_type=EventType.OBSERVATION_CHANGED,
+        subject_id=channel_id,
+        variable=variable,
+        value_before=_observed_channel_value(observations, tick=tick - 1, channel_id=channel_id),
+        value_after=_observed_channel_value(observations, tick=tick, channel_id=channel_id),
+        observation_status=status,
+        evidence_slots=evidence_slots,
+        related_event_ids=related_event_ids,
+    )
+
+
 def _decision_from_process_evidence(
     *,
     scenario_id: str,
     decision_tick: int,
     events: tuple[CanonicalEvent, ...],
 ) -> DecisionTarget:
-    """Infer only G10/G11 conclusions from a canonical visible-event prefix.
+    """Infer only G10/G11/G13 conclusions from a canonical visible-event prefix.
 
     This deliberately has no access to a scenario, injection, latent state, or
     hidden family hint.  Anything other than a complete, internally canonical
@@ -2805,17 +3109,20 @@ def _decision_from_process_evidence(
     if type(events) is not tuple:
         raise TypeError("process evidence must use a tuple of canonical events")
     prior_ids: set[str] = set()
+    prior_sim_time = -1
     for index, event in enumerate(events):
         if type(event) is not CanonicalEvent:
             raise TypeError("process evidence must contain canonical events")
         if (
             event.event_index != index
             or event.event_id != f"e-{index:04d}"
+            or event.sim_time < prior_sim_time
             or event.sim_time > decision_tick
             or any(related_id not in prior_ids for related_id in event.related_event_ids)
         ):
             raise ValueError("process evidence must be an ordered visible-event prefix")
         prior_ids.add(event.event_id)
+        prior_sim_time = event.sim_time
 
     def observed(
         *, tick: int, variable: StateVariable, slots: tuple[EvidenceSlot, ...]
@@ -2967,6 +3274,71 @@ def _decision_from_process_evidence(
                 EvidenceSlot.CORRELATED_STATE_CHANGE,
             ),
             immediate_action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+        )
+
+    g13_inventory_events = tuple(
+        event
+        for event in events
+        if event.event_type is EventType.OBSERVATION_CHANGED
+        and event.variable is StateVariable.PRIMARY_INVENTORY
+        and event.sim_time in {_INVENTORY_PRIMARY_TICK, _INVENTORY_REDUNDANT_TICK}
+        and EvidenceSlot.INVENTORY_TREND_DECLINING in event.evidence_slots
+    )
+    g13_pi_subjects = {event.subject_id for event in g13_inventory_events}
+    g13_primary_inventory = next(
+        (event for event in g13_inventory_events if event.sim_time == _INVENTORY_PRIMARY_TICK),
+        None,
+    )
+    g13_redundant_inventory = next(
+        (
+            event
+            for event in g13_inventory_events
+            if event.sim_time == _INVENTORY_REDUNDANT_TICK
+            and EvidenceSlot.MULTIPLE_CHANNELS_AGREE in event.evidence_slots
+        ),
+        None,
+    )
+    g13_flow = observed(
+        tick=_INVENTORY_FLOW_TICK,
+        variable=StateVariable.PRIMARY_FLOW,
+        slots=(EvidenceSlot.FLOW_DECLINING,),
+    )
+    g13_thermal = observed(
+        tick=_INVENTORY_THERMAL_TICK,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+    )
+    if (
+        decision_tick in {_INVENTORY_REDUCE_DECISION_TICK, _INVENTORY_STABLE_DECISION_TICK}
+        and g13_primary_inventory is not None
+        and g13_redundant_inventory is not None
+        and len(g13_pi_subjects) == 2
+        and g13_flow is not None
+        and g13_thermal is not None
+    ):
+        evidence = (
+            g13_primary_inventory,
+            g13_redundant_inventory,
+            g13_flow,
+            g13_thermal,
+        )
+        return DecisionTarget(
+            scenario_id=scenario_id,
+            decision_tick=decision_tick,
+            diagnosis_status=DiagnosisStatus.DIAGNOSED,
+            fault_labels=(FaultFamily.ABSTRACT_INVENTORY_LOSS,),
+            evidence_event_ids=tuple(event.event_id for event in evidence),
+            evidence_slots=(
+                EvidenceSlot.INVENTORY_TREND_DECLINING,
+                EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+                EvidenceSlot.FLOW_DECLINING,
+                EvidenceSlot.CORRELATED_STATE_CHANGE,
+            ),
+            immediate_action=(
+                ActionLabel.REDUCE_SIMULATED_LOAD
+                if decision_tick == _INVENTORY_REDUCE_DECISION_TICK
+                else ActionLabel.ENTER_SIMULATED_STABLE_STATE
+            ),
         )
 
     return DecisionTarget(
@@ -3539,10 +3911,231 @@ def _support_power_events_and_targets(
     return tuple(events), ScenarioTargets(scenario_id=scenario.scenario_id, decisions=(decision,))
 
 
+def _abstract_inventory_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit G13's causal process evidence and action sequence.
+
+    Full audit frames contain both primary-inventory channels at tick 3.  A
+    Phase 3 projector will expose the sparse decision prefixes that reveal the
+    redundant channel only at tick 4; the structured simulator does not hide
+    truth in its audit-source observations.
+    """
+
+    injection = _abstract_inventory_injection(scenario)
+    if injection is None:
+        raise ValueError("inventory-loss events require an inventory-loss injection")
+    spec = _spec_for(scenario)
+    primary_pi, redundant_pi = spec.channels_for(StateVariable.PRIMARY_INVENTORY)
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION, EvidenceSlot.RELATED_STATE_STABLE),
+    )
+    primary_inventory = _process_channel_observation_event(
+        events,
+        observations=observations,
+        tick=_INVENTORY_PRIMARY_TICK,
+        channel_id=primary_pi.channel_id,
+        variable=StateVariable.PRIMARY_INVENTORY,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.INVENTORY_TREND_DECLINING,),
+        related_event_ids=(stable.event_id,),
+    )
+    missing = _event(
+        events,
+        sim_time=_INVENTORY_PRIMARY_TICK,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        related_event_ids=(primary_inventory.event_id,),
+    )
+    early = _decision_from_process_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_INVENTORY_PRIMARY_TICK,
+        events=tuple(events),
+    )
+    early = early.model_copy(
+        update={
+            "evidence_event_ids": (missing.event_id,),
+            "evidence_slots": (EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        }
+    )
+    applied_abstention = _event(
+        events,
+        sim_time=_INVENTORY_REDUNDANT_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.instrumentation_id,
+        action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+        related_event_ids=(primary_inventory.event_id,),
+    )
+    redundant_inventory = _process_channel_observation_event(
+        events,
+        observations=observations,
+        tick=_INVENTORY_REDUNDANT_TICK,
+        channel_id=redundant_pi.channel_id,
+        variable=StateVariable.PRIMARY_INVENTORY,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(
+            EvidenceSlot.INVENTORY_TREND_DECLINING,
+            EvidenceSlot.MULTIPLE_CHANNELS_AGREE,
+        ),
+        related_event_ids=(primary_inventory.event_id, applied_abstention.event_id),
+    )
+    flow = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_INVENTORY_FLOW_TICK,
+        variable=StateVariable.PRIMARY_FLOW,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.FLOW_DECLINING,),
+        related_event_ids=(redundant_inventory.event_id,),
+        spec=spec,
+    )
+    thermal = _process_observation_event(
+        events,
+        observations=observations,
+        tick=_INVENTORY_THERMAL_TICK,
+        variable=StateVariable.PRIMARY_THERMAL_STATE,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.CORRELATED_STATE_CHANGE,),
+        related_event_ids=(flow.event_id,),
+        spec=spec,
+    )
+    mature = _decision_from_process_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_INVENTORY_REDUCE_DECISION_TICK,
+        events=tuple(events),
+    )
+    reduce_load = _event(
+        events,
+        sim_time=_INVENTORY_REDUCE_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.primary_loop_domain_id,
+        action_label=ActionLabel.REDUCE_SIMULATED_LOAD,
+        related_event_ids=(thermal.event_id,),
+    )
+    load_target = _event(
+        events,
+        sim_time=_INVENTORY_REDUCE_APPLY_TICK,
+        event_type=EventType.TARGET_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        variable=StateVariable.LOAD_DEMAND,
+        value_before=_inventory_values(scenario.seed, _INVENTORY_REDUCE_APPLY_TICK - 1).load_demand,
+        value_after=_inventory_values(scenario.seed, _INVENTORY_REDUCE_APPLY_TICK).load_demand,
+        related_event_ids=(reduce_load.event_id,),
+    )
+    heat_target = _event(
+        events,
+        sim_time=_INVENTORY_REDUCE_APPLY_TICK,
+        event_type=EventType.TARGET_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        variable=StateVariable.HEAT_SOURCE_LEVEL,
+        value_before=_inventory_values(
+            scenario.seed, _INVENTORY_REDUCE_APPLY_TICK - 1
+        ).heat_source_level,
+        value_after=_inventory_values(
+            scenario.seed, _INVENTORY_REDUCE_APPLY_TICK
+        ).heat_source_level,
+        related_event_ids=(reduce_load.event_id,),
+    )
+    stable_decision = _decision_from_process_evidence(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_INVENTORY_STABLE_DECISION_TICK,
+        events=tuple(events),
+    )
+    enter_stable = _event(
+        events,
+        sim_time=_INVENTORY_STABLE_APPLY_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.primary_loop_domain_id,
+        action_label=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+        related_event_ids=(load_target.event_id, heat_target.event_id),
+    )
+    recovery = _event(
+        events,
+        sim_time=_INVENTORY_STABLE_APPLY_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        operating_mode_before=OperatingMode.DISTURBED,
+        operating_mode_after=OperatingMode.RECOVERY,
+        related_event_ids=(enter_stable.event_id,),
+    )
+    _event(
+        events,
+        sim_time=_INVENTORY_STABILIZED_TICK,
+        event_type=EventType.OPERATING_MODE_CHANGED,
+        subject_id=spec.primary_loop_domain_id,
+        operating_mode_before=OperatingMode.RECOVERY,
+        operating_mode_after=OperatingMode.STABILIZED,
+        related_event_ids=(recovery.event_id,),
+    )
+    return tuple(events), ScenarioTargets(
+        scenario_id=scenario.scenario_id,
+        decisions=(early, mature, stable_decision),
+    )
+
+
+def _sparse_primary_flow_events_and_targets(
+    scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
+) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
+    """Emit G15's sparse fact plus its audit-only post-decision action.
+
+    The full observation frames remain audit-source data. Phase 3 must project
+    the selected channel and stop the model-facing prefix at the decision tick.
+    """
+
+    if not _is_sparse_primary_flow_scenario(scenario):
+        raise ValueError("sparse-primary-flow events require the exact G15 scenario shape")
+    spec = _spec_for(scenario)
+    selected_channel = spec.channels_for(StateVariable.PRIMARY_FLOW)[scenario.seed % 2].channel_id
+    events: list[CanonicalEvent] = []
+    stable = _event(
+        events,
+        sim_time=0,
+        event_type=EventType.BENIGN_NOTE,
+        subject_id=spec.instrumentation_id,
+        evidence_slots=(EvidenceSlot.STABLE_OPERATION,),
+    )
+    sparse = _process_channel_observation_event(
+        events,
+        observations=observations,
+        tick=_SPARSE_PRIMARY_FLOW_TICK,
+        channel_id=selected_channel,
+        variable=StateVariable.PRIMARY_FLOW,
+        status=ObservationStatus.WATCH,
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        related_event_ids=(stable.event_id,),
+    )
+    decision = DecisionTarget(
+        scenario_id=scenario.scenario_id,
+        decision_tick=_SPARSE_PRIMARY_FLOW_DECISION_TICK,
+        diagnosis_status=DiagnosisStatus.UNRESOLVED,
+        evidence_event_ids=(sparse.event_id,),
+        evidence_slots=(EvidenceSlot.MISSING_DECISIVE_EVIDENCE,),
+        immediate_action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE,
+    )
+    _event(
+        events,
+        sim_time=_SPARSE_PRIMARY_FLOW_ACTION_TICK,
+        event_type=EventType.ACTION_APPLIED,
+        subject_id=spec.instrumentation_id,
+        action_label=ActionLabel.INSUFFICIENT_EVIDENCE,
+        related_event_ids=(sparse.event_id,),
+    )
+    return tuple(events), ScenarioTargets(scenario_id=scenario.scenario_id, decisions=(decision,))
+
+
 def _events_and_targets(
     scenario: ScenarioDefinition, observations: tuple[ObservationFrame, ...]
 ) -> tuple[tuple[CanonicalEvent, ...], ScenarioTargets]:
     spec = _spec_for(scenario)
+    if _is_sparse_primary_flow_scenario(scenario):
+        return _sparse_primary_flow_events_and_targets(scenario, observations)
     events: list[CanonicalEvent] = []
     stable = _event(
         events,
@@ -3584,6 +4177,10 @@ def _events_and_targets(
     flow_imbalance = _flow_imbalance_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and flow_imbalance is not None:
         return _flow_imbalance_events_and_targets(scenario, observations)
+
+    inventory = _abstract_inventory_injection(scenario)
+    if scenario.driver is ScenarioDriver.STEADY_OPERATION and inventory is not None:
+        return _abstract_inventory_events_and_targets(scenario, observations)
 
     support_power = _support_power_injection(scenario)
     if scenario.driver is ScenarioDriver.STEADY_OPERATION and support_power is not None:
@@ -4125,6 +4722,24 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             raise UnsupportedScenarioError("pump-trip standby context is noncanonical")
     elif scenario.standby_context is not None:
         raise UnsupportedScenarioError("standby context is only supported for pump trip")
+    sparse_expected_actions = (
+        ScenarioAction(
+            decision_tick=_SPARSE_PRIMARY_FLOW_DECISION_TICK,
+            action=ActionLabel.INSUFFICIENT_EVIDENCE,
+        ),
+    )
+    sparse_expected_id = _sparse_primary_flow_scenario_id(
+        spec=spec,
+        seed=scenario.seed,
+        duration_ticks=scenario.duration_ticks,
+    )
+    if not scenario.fault_injections and (
+        scenario.action_sequence == sparse_expected_actions
+        or scenario.scenario_id == sparse_expected_id
+    ):
+        if not _is_sparse_primary_flow_scenario(scenario):
+            raise UnsupportedScenarioError("unsupported sparse primary-flow scenario")
+        return
     if not scenario.fault_injections:
         if scenario.plant_variant_id is not PlantVariant.ASTER_A and (
             scenario.driver is not ScenarioDriver.STEADY_OPERATION
@@ -4150,6 +4765,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         ):
             raise UnsupportedScenarioError("load transient has insufficient response history")
         return
+    injection = scenario.fault_injections[0]
     process_faults = {
         FaultFamily.TRANSFER_EFFICIENCY_LOSS,
         FaultFamily.FLOW_IMBALANCE,
@@ -4157,6 +4773,7 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
     if (
         scenario.plant_variant_id is not PlantVariant.ASTER_A
         and scenario.fault_injections[0].fault_family not in process_faults
+        and scenario.fault_injections[0].fault_family is not FaultFamily.ABSTRACT_INVENTORY_LOSS
         and not is_support_power
     ):
         raise UnsupportedScenarioError("this fault scenario currently supports only ASTER-A")
@@ -4207,6 +4824,42 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
             or scenario.dependency_map_context != g12_context
         ):
             raise UnsupportedScenarioError("unsupported support-power interruption scenario")
+        return
+    if injection.fault_family is FaultFamily.ABSTRACT_INVENTORY_LOSS:
+        expected_component = spec.primary_loop_domain_id
+        expected_actions: tuple[ScenarioAction, ...] = (
+            ScenarioAction(
+                decision_tick=_INVENTORY_PRIMARY_TICK,
+                action=ActionLabel.INSUFFICIENT_EVIDENCE,
+            ),
+            ScenarioAction(
+                decision_tick=_INVENTORY_REDUCE_DECISION_TICK,
+                action=ActionLabel.REDUCE_SIMULATED_LOAD,
+            ),
+            ScenarioAction(
+                decision_tick=_INVENTORY_STABLE_DECISION_TICK,
+                action=ActionLabel.ENTER_SIMULATED_STABLE_STATE,
+            ),
+        )
+        expected_id = (
+            f"{spec.plant_variant.value.lower()}-inventory-loss-{scenario.seed}-"
+            f"{scenario.duration_ticks}-{_INVENTORY_ONSET_TICK}-low-{expected_component}"
+        )
+        if (
+            scenario.driver is not ScenarioDriver.STEADY_OPERATION
+            or type(injection.component_id) is not str
+            or injection.component_id != expected_component
+            or injection.channel_id is not None
+            or injection.severity is not SeverityBand.LOW
+            or injection.onset_tick != _INVENTORY_ONSET_TICK
+            or injection.duration_ticks is not None
+            or scenario.duration_ticks < _INVENTORY_MIN_DURATION
+            or scenario.action_sequence != expected_actions
+            or scenario.standby_context is not None
+            or scenario.dependency_map_context is not None
+            or scenario.scenario_id != expected_id
+        ):
+            raise UnsupportedScenarioError("unsupported abstract inventory-loss scenario")
         return
     if scenario.driver is ScenarioDriver.LOAD_TRANSIENT:
         injection = scenario.fault_injections[0]
@@ -4500,12 +5153,12 @@ def _validate_supported_scenario(scenario: ScenarioDefinition) -> None:
         _require_uint32(injection.onset_tick, name="fault onset")
     except ValueError as error:
         raise UnsupportedScenarioError(str(error)) from error
-    expected_component = {
+    drift_expected_component = {
         channel.channel_id: channel.component_id
         for channel in ASTER_A_SPEC.channels
         if channel.variable is StateVariable.PRIMARY_FLOW
     }.get(channel_id)
-    if channel_id not in _drift_channels() or injection.component_id != expected_component:
+    if channel_id not in _drift_channels() or injection.component_id != drift_expected_component:
         raise UnsupportedScenarioError("sensor drift must use an Aster-A primary-flow mapping")
     if injection.duration_ticks is not None:
         raise UnsupportedScenarioError("finite-duration sensor drift is not supported")
