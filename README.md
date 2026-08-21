@@ -56,13 +56,15 @@ cycle produces a behaviorally acceptable checkpoint.
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
 inference service or web interface, and the current checkpoint must not be presented as
-deployment-ready.
+deployment-ready. A planning-only three-iteration remediation program is now frozen;
+no v0.2 implementation or training has started.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
 [the baseline/pilot report](docs/model/PHASE5_PILOT.md) and
 [the Phase 6 pre-test freeze](docs/model/PHASE6_PRETEST.md) and
 [the Phase 6 main result](docs/model/PHASE6_MAIN.md) and
+[the Phase 6 remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -171,6 +173,7 @@ The preserved Phase 6 correction graph is independently verifiable with:
 - [Phase 4 tokenizer and smoke evidence](docs/model/PHASE4_SMOKE.md)
 - [Phase 5 baseline and pilot evidence](docs/model/PHASE5_PILOT.md)
 - [Phase 6 main evaluation and negative result](docs/model/PHASE6_MAIN.md)
+- [Phase 6 three-iteration remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)

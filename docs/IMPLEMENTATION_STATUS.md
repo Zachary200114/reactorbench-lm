@@ -1,13 +1,12 @@
 # ReactorBench-LM implementation status
 
 Last updated: 2026-08-20 America/New_York
-Current phase: **Phase 6 complete as a verified negative experiment; Phase 7 model gate blocked**
-Current objective: preserve the frozen result, prevent unsupported deployment claims,
-and prepare a separately preregistered v0.2 remediation plan if the owner authorizes it.
-Checkpoint reason: all Phase 6 training, held-out, ablation, baseline, robustness,
-behavioral, abstention, calibration, and golden evaluation work is complete. The
-checkpoint failed behavioral acceptance and therefore cannot advance directly to a
-public inference service.
+Current phase: **Phase 6 remediation planning complete; implementation not started; Phase 7 blocked**
+Current objective: after the user's usage reset, implement only the v0.2 compact target
+and constrained-decoding correctness milestone described in the remediation plan.
+Checkpoint reason: the user requested planning only at a self-reported 27% remaining
+usage. The three-iteration remediation program is now preregistered without changing
+model code, generating data, training, or accessing any held-out record.
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Completed work
@@ -38,6 +37,10 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   tokens, preserves the one-access ledger, and passed independent reconstruction.
 - Phase 6 is closed honestly as a negative experiment. No acceptance threshold was
   changed, no test result selected a checkpoint, and no post-test retraining occurred.
+- The planning-only remediation program is documented as three gated iterations:
+  v0.2 output reliability, v0.3 semantic learning/abstention, and v0.4 strict
+  generalization/final evaluation. Each iteration is capped at one control plus two
+  preregistered variants, and v0.1 held-outs are report-only.
 - No GitHub push, remote publication, Vercel deployment, or external service was used.
 
 ## Measured Phase 6 results
@@ -77,6 +80,8 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 - Phase 6 evidence documentation:
   `docs/model/PHASE6_MAIN.md`, `docs/model/PHASE6_PRETEST.md`, this status file,
   README, acceptance plan, checklist, decision log, and reproducibility plan.
+- Remediation planning evidence:
+  `docs/model/PHASE6_REMEDIATION_PLAN.md` and decision D-071.
 - Original ignored evidence:
   `runs/phase6-main-v0.1.0-selection/`, `runs/phase6-main-v0.1.0/`, and
   `runs/phase6-main-v0.1.0-heldout-access.json`.
@@ -103,6 +108,9 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   isolated no-network artifact verifier after documentation closeout. The Make target
   could not locate `uv` on the shell PATH, so the exact underlying locked-venv Python
   commands were run and passed.
+- Planning-only checkpoint: `git diff --check`, trailing-whitespace scan, documentation
+  link/path inspection, and docs-only diff review passed. No model/code test was rerun
+  because this checkpoint changes documentation only.
 
 ## Decisions made
 
@@ -119,6 +127,10 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 - Any improvement cycle must be preregistered as v0.2 and use training/validation
   evidence for design choices. These held-out results may be reported and analyzed but
   not repeatedly optimized against.
+- Separate remediation into structural output reliability, semantic behavior, and
+  strict generalization so a later improvement can be attributed to a bounded change.
+- Require a fresh, checksum-frozen final holdout and versioned golden extension for
+  v0.4. The already accessed v0.1 tests cannot become a clean selection gate again.
 
 ## Assumptions
 
@@ -148,10 +160,8 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
 ## Open blockers
 
 - Phase 7 inference/UI is blocked by the failed Phase 6 model gate.
-- A material owner decision is required before beginning a v0.2 remediation cycle.
-  Reasonable research candidates are grammar-constrained decoding, shorter
-  task-specific target encodings, sequence-level training, and a less destructive
-  context strategy; none is silently authorized as a replacement experiment.
+- The user authorized remediation planning only. Implementation/training remains
+  intentionally unstarted until a later resume after usage reset.
 - Before any distribution: choose code/data licenses and complete release, SBOM,
   security, accessibility, clean-environment, and deployment gates.
 - GitHub push and Vercel deployment remain owner-managed and unauthorized here.
@@ -172,24 +182,23 @@ Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transforme
   `d8dc2936b1f9355d4246a7be2a297ad210f1cbfe`.
 - Phase 6 parser correction/rescore commit:
   `e6504695583403f7e31b118f99ce67c6873bd8e8`.
-- Last known Git commit before documentation closeout:
-  `e6504695583403f7e31b118f99ce67c6873bd8e8`.
-- Phase 6 documentation closeout is committed locally; use `git rev-parse HEAD` for
-  the final non-self-referential commit identifier.
+- Phase 6 documentation closeout commit:
+  `c67bc20db4bba46970366e71dfd567d714826fb1`.
+- The planning-only checkpoint is committed locally at turn completion; use
+  `git rev-parse HEAD` for its non-self-referential identifier.
 - No Git remote, push, publication, or deployment exists.
 
 ## Immediate next step
 
-Keep Phase 7 blocked. Ask the project owner whether to stop with the honest negative
-result or preregister a bounded Phase 6 v0.2 remediation cycle. Do not repeat the
-completed v0.1 held-out experiment.
+After usage reset, implement only the v0.2 compact target contract, strict compiler,
+truth-independent constrained decoder, and their correctness tests. Do not generate
+new data, train a model, or access held-outs in that first atomic milestone.
 
 ## Exact recommended next command
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-.venv/bin/python scripts/phase6_rescore_v0_1_1.py verify \
-  --config configs/experiments/phase6-main-v0.1.0.toml
+sed -n '1,320p' docs/model/PHASE6_REMEDIATION_PLAN.md
 ```
 
 ## Relevant artifacts and configuration
@@ -221,6 +230,9 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
   `92bbb2efbb681462808902c5b0e33e2227fccfd922c164fcb3b3ce2ed1e646ab`.
 - Held-out access record raw SHA-256:
   `410ab34416d860b5cc3b6067cfc599f691ad199a986d56f019e81b75246ae74f`.
+- Planning contract:
+  `docs/model/PHASE6_REMEDIATION_PLAN.md` and D-071 in
+  `research/DECISION_LOG.md`.
 
 ## Exact resume prompt
 
