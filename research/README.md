@@ -1,7 +1,7 @@
 # ReactorBench-LM research dossier
 
-Status: **research complete; Phases 0–5 implemented and verified locally; Phase 6
-experiment/golden freeze is next**
+Status: **research complete; Phases 0–6 implemented and verified locally; Phase 6
+closed as a negative experiment and Phase 7 blocked**
 Prepared: 2026-08-18; implementation status reconciled 2026-08-20.
 
 ## Recommended project

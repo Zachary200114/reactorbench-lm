@@ -1,6 +1,6 @@
 # Golden scenario suite
 
-Status: exact `0.1.0` packet prepared; project-owner approval and final evaluation pending
+Status: exact `0.1.0` packet approved by the project owner and evaluated once in Phase 6
 Scope: Aster Station, a wholly fictional normalized state machine
 
 ## Purpose

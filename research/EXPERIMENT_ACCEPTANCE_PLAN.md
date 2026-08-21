@@ -1,6 +1,6 @@
 # Experiment acceptance and error-analysis plan
 
-Status: Phase 5 pilot measured; Phase 6 numerical thresholds frozen before test access
+Status: Phase 6 executed once; corrected mechanical rescore verified; behavioral acceptance failed
 Rule: changing a frozen threshold requires a versioned amendment and cannot use test results
 
 ## 1. Purpose
@@ -153,8 +153,9 @@ Robustness test inputs remain fictional and are separate from security attack sc
 The prepared local `0.1.0` packet contains exact G01-G15 scenarios and structured
 targets bound to generator commit `4473718`. Its semantic SHA-256 is
 `c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c`.
-It remains unapproved until the project owner reviews it; the automated zero-finding
-scan is explicitly not approval.
+The project owner approved the packet and all seven confirmations on 2026-08-20 before
+held-out access. The checksum-bound record has semantic SHA-256
+`1f5307889d259cfb0fa39e86e33ed9c2ce0922742e59af1d5ff5e0c904337288`.
 
 Each golden scenario requires:
 
@@ -168,6 +169,20 @@ Each golden scenario requires:
 - final status: approved, revise, or retired.
 
 Golden cases cannot be used as training examples. Revisions after test evaluation require a version bump and explanation.
+
+## 9.1 Measured Phase 6 verdict
+
+Validation-only selection passed, choosing E3 step 1,400 at validation NLL 0.073041.
+The one held-out access evaluated 894 frozen examples plus 60 golden task examples.
+After mechanically stripping the exact supervised `\n<|sep|>` transport suffix before
+strict JSON parsing, IID parse/schema/exact rates were 21.03% / 5.16% / 5.16%; all
+strict holdout exact-match rates except narrative noise were 0%; noise exact match was
+4.17%; and golden exact match was 3.33%. Ten checks pass numerically and 23 fail.
+
+The original predictions and report remain immutable. The correction generated no new
+tokens and passed independent reconstruction. These results close v0.1 as a negative
+experiment and block Phase 7. Any remediation must be preregistered as a separate
+version and may not repeatedly tune against the frozen v0.1 held-outs.
 
 ## 10. Error taxonomy
 

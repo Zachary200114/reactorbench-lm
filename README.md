@@ -12,7 +12,9 @@ Aster Station: a wholly fictional causal environment.
 
 ## Current status
 
-Phases 0–5 are complete locally. Phase 6 is at its checksum-bound owner-review gate.
+Phases 0–6 are complete locally. Phase 6 is a verified negative experiment, and the
+Phase 7 inference/UI gate is blocked until a separately preregistered remediation
+cycle produces a behaviorally acceptable checkpoint.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -36,27 +38,31 @@ Phases 0–5 are complete locally. Phase 6 is at its checksum-bound owner-review
 - All preregistered Phase 5 baselines completed. The 300-step smaller Transformer
   selected validation target NLL 0.5343; the 500-step pilot selected 0.1593. Both used
   MPS and passed independent safetensors/report verification. No test split was opened.
-- Pilot-informed Phase 6 model, training, comparison, bootstrap, and numerical
-  acceptance gates are frozen in `configs/experiments/phase6-main-v0.1.0.toml` before
-  main or test evaluation.
-- The exact 15-case golden review packet is generated, prohibited-content-clean under
-  the bounded automated scanner, and bound to generator commit `4473718`. Human owner
-  approval is still required before held-out access; automation is not approval.
-- The last completed Phase 5 intended-repository gate passed 687 tests with 85.07%
-  branch coverage, Ruff formatting/lint, strict mypy for 107 source files, package
-  build, and isolated artifact verification. The Phase 6 pre-test gate now passes 698
-  tests with 85.06% branch coverage, Ruff across 141 files, strict mypy across 111
-  source files, build, and isolated artifact verification.
+- The owner approved the checksum-bound 15-case G01–G15 golden packet and all seven
+  confirmations before the single held-out access.
+- Validation-only selection chose the 15,179,520-parameter E3 checkpoint at step 1,400
+  with validation NLL 0.073041. Exactly one held-out access then evaluated 894 frozen
+  task examples plus 60 golden task examples.
+- The corrected main result is poor: IID parse/schema/exact rates are 21.03% / 5.16% /
+  5.16%; template, component, severity, composition, and counterfactual exact match are
+  all 0%; golden exact match is 3.33%; and 23 acceptance checks fail.
+- A parser defect initially treated the exact supervised `\n<|sep|>` transport suffix
+  as JSON. Original artifacts remain preserved; a versioned mechanical rescore reused
+  every generated string without new model generation and passed independent
+  reconstruction.
+- The final repository suite passes 713 tests with 85.10% branch coverage, Ruff, strict
+  mypy for 113 source files, and independent result verification.
 
-This is a validation-only pilot milestone, not a test-generalization result. No IID-test,
-compositional, robustness, behavioral, abstention, or golden-suite model claim exists
-yet. The golden suite packet is prepared but remains unapproved. There is no inference
-service or web interface.
+This is a real test-generalization result, but it is a negative one. Low teacher-forced
+NLL did not translate into reliable free-running structured output. There is no
+inference service or web interface, and the current checkpoint must not be presented as
+deployment-ready.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
 [the baseline/pilot report](docs/model/PHASE5_PILOT.md) and
 [the Phase 6 pre-test freeze](docs/model/PHASE6_PRETEST.md) and
+[the Phase 6 main result](docs/model/PHASE6_MAIN.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -152,11 +158,19 @@ The existing Phase 5 artifact is independently verifiable with:
 make phase5-verify
 ```
 
+The preserved Phase 6 correction graph is independently verifiable with:
+
+```bash
+.venv/bin/python scripts/phase6_rescore_v0_1_1.py verify \
+  --config configs/experiments/phase6-main-v0.1.0.toml
+```
+
 ## Documentation map
 
 - [Implementation status and resumable handoff](docs/IMPLEMENTATION_STATUS.md)
 - [Phase 4 tokenizer and smoke evidence](docs/model/PHASE4_SMOKE.md)
 - [Phase 5 baseline and pilot evidence](docs/model/PHASE5_PILOT.md)
+- [Phase 6 main evaluation and negative result](docs/model/PHASE6_MAIN.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)

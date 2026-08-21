@@ -1,6 +1,6 @@
 # Phase 6 pre-test freeze and golden review
 
-Status: implementation gate passed locally; project-owner review pending
+Status: historical pre-test gate completed; owner approval and one held-out access recorded
 
 Phase 6 may not read model predictions on any held-out split until the exact G01-G15
 packet in `golden/golden-suite-v0.1.0.json` has an approved, checksum-bound
@@ -51,3 +51,15 @@ facility topology, service-derived non-public information, or operational guidan
 
 An approval authorizes local Phase 6 training and held-out evaluation only. It does not
 authorize publication, GitHub push, Vercel deployment, or a claim of real-world use.
+
+## Recorded approval and outcome
+
+On 2026-08-20, the project owner approved the exact G01–G15 packet and all seven
+confirmations. The strict review record has semantic SHA-256
+`1f5307889d259cfb0fa39e86e33ed9c2ce0922742e59af1d5ff5e0c904337288` and raw-file
+SHA-256 `9105c6e7e76979fdbc8b4a73d42f323acb636d36affbee13f8147dc23e3f06be`.
+
+Phase 6 then completed one held-out access. The selected checkpoint passed validation
+selection but failed 23 behavioral acceptance checks; Phase 7 is therefore blocked.
+The original evaluator output, versioned delimiter correction, corrected metrics, and
+artifact checksums are reported in [the Phase 6 main report](PHASE6_MAIN.md).

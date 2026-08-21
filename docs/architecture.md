@@ -1,7 +1,7 @@
 # ReactorBench-LM architecture
 
-Status: Phases 0–5 implemented and verified locally on 2026-08-20. Phase 6 main
-evaluation has not started.
+Status: Phases 0–6 implemented and verified locally on 2026-08-20. Phase 6 closed as a
+negative experiment; Phase 7 is blocked by the failed behavioral model gate.
 
 ## Design objective
 
@@ -14,7 +14,7 @@ scenario definition -> latent Aster state -> observations -> canonical events
                     -> audit trajectory -> split-first task projection -> renderer
                     -> approved candidate -> IID-train tokenizer corpus
                     -> project tokenizer -> random-init causal Transformer
-                    -> baselines/pilot -> future main evaluation -> future narrow service/UI
+                    -> baselines/pilot -> main evaluation -> blocked future narrow service/UI
 ```
 
 ## Contracts and boundaries
@@ -133,15 +133,18 @@ Git commit
   -> safetensors checkpoint manifest and weight hash
   -> smoke inputs, logits, report, dependency lock, and source commit
   -> Phase 5 baseline metrics, validation curves, MPS measurements, and checkpoints
-  -> frozen Phase 6 configuration -> future test evaluation artifacts
+  -> frozen Phase 6 configuration -> original and corrected test evaluation artifacts
 ```
 
-The Phase 4/5 reports and hashes are in `docs/model/PHASE4_SMOKE.md`,
-`docs/model/PHASE5_PILOT.md`, and `docs/IMPLEMENTATION_STATUS.md`.
+The Phase 4–6 reports and hashes are in `docs/model/PHASE4_SMOKE.md`,
+`docs/model/PHASE5_PILOT.md`, `docs/model/PHASE6_MAIN.md`, and
+`docs/IMPLEMENTATION_STATUS.md`.
 
 ## Future service boundary
 
-After model/evaluation gates pass, the browser will call a server-side gateway with
+After a future model/evaluation cycle passes, the browser may call a server-side gateway with
 bounded schemas; the gateway will call a narrow inference service; and that service
 will load only fixed, checksummed, data-only artifacts. Model text remains untrusted
 display data. These are planned Phase 7 boundaries, not implemented deployment claims.
+The current checkpoint failed the Phase 6 behavioral gates and cannot cross this
+boundary.

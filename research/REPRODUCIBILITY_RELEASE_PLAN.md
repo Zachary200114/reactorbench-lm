@@ -1,7 +1,7 @@
 # Reproducibility, artifacts, and release plan
 
-Status: Phase 4 smoke and Phase 5 pilot verification implemented locally; main-experiment and release
-levels remain planned.
+Status: Phase 4 smoke, Phase 5 pilot, and Phase 6 main-experiment verification are
+implemented locally; release and deployment levels remain blocked.
 
 ## 1. Reproduction levels
 
@@ -45,6 +45,13 @@ limitations, and hashes are in `docs/model/PHASE5_PILOT.md`.
 
 Document exact data generation, tokenizer training, model training, checkpoint selection, and evaluation commands. The full run may require substantial time, but every input configuration and artifact relationship must be available.
 
+Implemented in Phase 6. Validation-only selection chose the 15,179,520-parameter E3
+checkpoint at step 1,400. One held-out access evaluated 894 frozen examples and 60
+golden task examples. A versioned parser correction preserved the original report,
+reused all generated strings without new decoding, and passed independent
+reconstruction. Exact commands, hashes, timings, results, and limitations are in
+`docs/model/PHASE6_MAIN.md`.
+
 ## 2. Artifact chain
 
 ```text
@@ -63,13 +70,14 @@ Git commit
 
 Every arrow must be machine-verifiable through identifiers or checksums.
 
-The implemented chain currently reaches the Phase 5 checkpoints: source commit,
+The implemented chain currently reaches the corrected Phase 6 evaluation: source commit,
 generator/candidate/reviews, `iid_train` corpus inventory, tokenizer, reviewed model
 config, dependency lock, smoke inputs, safetensors checkpoint, evaluation logits, and
 smoke report, baseline inventory, validation curves, MPS measurements, pilot
-checkpoints/report, and frozen Phase 6 config are checksum-bound. Test evaluation,
-figures, deployment, and release identifiers remain absent rather than represented by
-placeholders.
+checkpoints/report, frozen Phase 6 config, selected main checkpoint, one-access ledger,
+original predictions/report, correction record, corrected predictions/report, and
+independent verifier are checksum-bound. Figures, deployment, and release identifiers
+remain absent rather than represented by placeholders.
 
 ## 3. Required metadata
 

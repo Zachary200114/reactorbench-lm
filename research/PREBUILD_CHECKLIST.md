@@ -84,26 +84,27 @@ not public releases or the later pilot tier.
 - [x] Lock primary metrics for every task in the Phase 6 experiment contract.
 - [x] Lock E0–E7 experiment comparisons.
 - [x] Define the seeded 2,000-resample, 95% bootstrap confidence-interval procedure.
-- [ ] Freeze test splits before the main training run.
-- [ ] Commit to reporting negative results and IID-to-composition gaps.
+- [x] Freeze test splits before the main training run.
+- [x] Commit to reporting negative results and IID-to-composition gaps.
 - [x] Freeze pilot-informed numerical acceptance thresholds before main test evaluation.
 - [x] Freeze majority, rule, n-gram, bag-of-words, recurrent, and smaller-Transformer baseline definitions.
-- [ ] Freeze the robustness/OOD suite and error taxonomy.
-- [ ] Complete and record human review for every golden scenario.
-- [ ] Define the public failure-gallery selection procedure.
+- [x] Freeze the robustness/OOD suite and error taxonomy.
+- [x] Complete and record human review for every golden scenario.
+- [x] Define and execute the deterministic failure-gallery selection procedure.
 
 ## Release documentation
 
 - [x] Dataset card. It accurately records the approved local Phase 3 development candidate and its non-release status.
 - [ ] Model card template.
-- [ ] Experiment/results report template.
+- [x] Phase 6 experiment/results report with preserved negative results.
 - [x] Source and attribution manifest.
 - [x] Known limitations and prohibited-use section.
 - [x] Record Phase 4 reproduction instructions and tokenizer/checkpoint/report checksums.
 - [x] Implement `make reproduce-smoke` and the independent `make phase4-verify` command.
   A fully separate clean-machine reproduction remains a later release gate.
 - [ ] Link commit, generator, dataset, tokenizer, checkpoint, evaluation, report, and deployment identifiers.
-- [ ] Record training/inference time, throughput, memory, artifact sizes, and cost.
+- [x] Record Phase 4–6 training/evaluation time, throughput, memory, and artifact sizes;
+  public inference/hosting measurements remain a later gate.
 - [ ] Prepare the paper-style experiment report after results stabilize.
 
 ## Live demonstration
