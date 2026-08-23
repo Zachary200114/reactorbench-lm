@@ -12,9 +12,10 @@ Aster Station: a wholly fictional causal environment.
 
 ## Current status
 
-Phases 0–6 are complete locally. Phase 6 is a verified negative experiment, and the
-Phase 7 inference/UI gate is blocked until a separately preregistered remediation
-cycle produces a behaviorally acceptable checkpoint.
+Phases 0–6 are complete locally. Phase 6 is a verified negative experiment. The first
+source-correctness slice of the preregistered v0.2 remediation is implemented, while
+the Phase 7 inference/UI gate remains blocked until a behaviorally acceptable model
+checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -50,14 +51,20 @@ cycle produces a behaviorally acceptable checkpoint.
   as JSON. Original artifacts remain preserved; a versioned mechanical rescore reused
   every generated string without new model generation and passed independent
   reconstruction.
-- The final repository suite passes 713 tests with 85.10% branch coverage, Ruff, strict
-  mypy for 113 source files, and independent result verification.
+- The developmental v0.2 `RB2` compact-output contract, strict bidirectional compiler,
+  and truth-independent constrained token selector now pass unit, property, contract,
+  packaging, and real-tokenizer reachability gates. No v0.2 data was generated and no
+  model was trained.
+- The current isolated repository suite passes 739 tests with one expected skip and
+  85.20% branch coverage, plus Ruff, strict mypy for 117 source files, distribution
+  builds, and isolated wheel verification.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
 inference service or web interface, and the current checkpoint must not be presented as
 deployment-ready. A planning-only three-iteration remediation program is now frozen;
-no v0.2 implementation or training has started.
+its first source-correctness milestone is implemented, but the development inventory,
+generation-cap freeze, v0.2 training, and all later gates remain unstarted.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and

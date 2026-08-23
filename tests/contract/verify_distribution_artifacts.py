@@ -43,7 +43,7 @@ def _expected_resource_files() -> dict[str, bytes]:
             ROOT / "golden" / "golden-suite-v0.1.0.json"
         ).read_bytes(),
     }
-    for snapshot_family in ("aster", "dataset"):
+    for snapshot_family in ("aster", "compact-output", "dataset"):
         snapshot_root = ROOT / "schemas" / snapshot_family / "v0"
         for path in snapshot_root.rglob("*"):
             if path.is_file():
@@ -131,6 +131,7 @@ from reactorbench.config import load_project_config
 from reactorbench.resources import (
     canonical_dataset_schema_snapshot_resource,
     canonical_schema_snapshot_resource,
+    compact_output_contract_resource,
     default_config_resource,
     golden_suite_resource,
     phase4_smoke_config_resource,
@@ -157,6 +158,8 @@ with as_file(canonical_schema_snapshot_resource()) as snapshot_path:
 with as_file(canonical_dataset_schema_snapshot_resource()) as snapshot_path:
     documents, _manifest, _contract = load_dataset_snapshot(snapshot_path)
     assert documents == dataset_schema_documents()
+with as_file(compact_output_contract_resource()) as contract_path:
+    assert b'"contract_version":"0.2.0"' in contract_path.joinpath("contract.json").read_bytes()
 guard = guard_manifest()
 assert len(str(guard["denylist_sha256"])) == 64
 assert len(str(guard["fingerprints_sha256"])) == 64

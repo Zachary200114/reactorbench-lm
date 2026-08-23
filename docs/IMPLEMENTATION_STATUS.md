@@ -1,238 +1,189 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-20 America/New_York
-Current phase: **Phase 6 remediation planning complete; implementation not started; Phase 7 blocked**
-Current objective: after the user's usage reset, implement only the v0.2 compact target
-and constrained-decoding correctness milestone described in the remediation plan.
-Checkpoint reason: the user requested planning only at a self-reported 27% remaining
-usage. The three-iteration remediation program is now preregistered without changing
-model code, generating data, training, or accessing any held-out record.
+Last updated: 2026-08-23 America/New_York
+
+Current phase: **Phase 6 remediation, Iteration 1 source-correctness milestone complete;
+Phase 7 remains blocked**
+
+Current objective: preserve the verified v0.2 compact-output contract, bijective
+compiler, and truth-independent constrained token decoder as a safe local checkpoint.
+Do not begin data conversion, target inventories, training, held-out evaluation, UI,
+publication, or deployment in this checkpoint.
+
+Checkpoint reason: the user authorized only the bounded Iteration 1 implementation
+slice and explicitly prohibited new data generation, training, held-out access, changes
+to Phase 6 v0.1 artifacts, GitHub push, and deployment.
+
 Intended project path: `/Users/zachary/Documents/Personal-Projects/AI-transformer`
 
 ## Completed work
 
-- Phases 0-3 are complete locally: the strict Aster Station G01-G15 generator,
-  projection/split/renderer pipeline, owner-approved synthetic dataset, and provenance
-  chain are implemented and verified.
-- Phase 4 is complete locally: a 2,048-token project SentencePiece BPE and a
-  from-scratch decoder-only Transformer passed masking, shifted-target, padding,
-  deterministic evaluation, tiny-shard overfit, safetensors, and reload gates.
-- Phase 5 is complete locally: all preregistered majority, rule, n-gram, bag-of-words,
-  GRU, smaller-Transformer, and pilot comparisons ran using only `iid_train` for fit
-  and `iid_validation` for selection.
-- The project owner approved the checksum-bound G01-G15 packet with all seven required
-  confirmations. The review record is local, strict, and independently verified.
-- Phase 6 validation-only selection trained E3 main, E5 renderer-diversity, and E6
-  abstention-data models. The 15,179,520-parameter E3 checkpoint selected step 1,400
-  with validation NLL 0.073041; every preregistered selection threshold passed.
-- Exactly one held-out access evaluated 894 frozen examples across seven splits plus
-  60 approved golden task examples. All E0-E7 results, simple baselines, learned
-  comparisons, raw predictions, uncertainty metrics, and negative results were saved.
-- An evaluator defect was diagnosed after the first report: generated supervised
-  targets correctly ended with `\n<|sep|>`, but the parser treated that frozen transport
-  delimiter as JSON. The original report/predictions were preserved unchanged.
-- Commit `e6504695583403f7e31b118f99ce67c6873bd8e8` fixes future parsing and adds a
-  versioned one-time rescore. The corrected graph reuses every generated string byte
-  for byte, generates no new token, recomputes valid-output confidence from stored
-  tokens, preserves the one-access ledger, and passed independent reconstruction.
-- Phase 6 is closed honestly as a negative experiment. No acceptance threshold was
-  changed, no test result selected a checkpoint, and no post-test retraining occurred.
-- The planning-only remediation program is documented as three gated iterations:
-  v0.2 output reliability, v0.3 semantic learning/abstention, and v0.4 strict
-  generalization/final evaluation. Each iteration is capped at one control plus two
-  preregistered variants, and v0.1 held-outs are report-only.
-- No GitHub push, remote publication, Vercel deployment, or external service was used.
-
-## Measured Phase 6 results
-
-- Selection report semantic SHA-256:
-  `29a1c07864e24b47e7928df05d5738834ea10879ec46ff91f2834fae7113379d`.
-- Corrected evaluation report semantic SHA-256:
-  `fb1ee4e13ba8ca44116641e5892ff3a7eef523846cd907fe07f368a76e09a0ce`.
-- Main IID teacher-forced target NLL/perplexity: 0.042540 / 1.043458.
-- Main IID parse/schema/exact: 21.03% / 5.16% / 5.16% (13/252 exact; deterministic
-  95% bootstrap interval 2.38%-7.94%).
-- Template/component/severity/composition/counterfactual exact match: all 0%.
-- Noise exact match: 4.17% (2/48; interval 0.00%-10.42%).
-- Golden exact match: 3.33% (2/60), both from G15 sparse-evidence tasks.
-- IID fault/action/continuation macro-F1: 0.0000 / 0.0290 / 0.2029.
-- IID required-abstention accuracy: 6.67% (4/60); component, severity, composition,
-  counterfactual, and template required-abstention accuracy: 0%.
-- IID evidence F1: 0.0238. Selective risk at approximately 80% coverage: 0.9356 IID
-  and at least 0.9487 on every other split.
-- Four composition and ten counterfactual targets are
-  `INSUFFICIENT_CONTEXT_BY_DESIGN` rather than silently truncated.
-- Ten acceptance checks pass numerically; 23 fail. Passed calibration/no-fault numeric
-  checks are vacuous because invalid outputs receive confidence zero and diagnosed
-  schema-valid predictions are absent.
-- Strong simple comparators include IID rule fault macro-F1 0.6227, template GRU fault
-  macro-F1 0.6414, severity rule fault macro-F1 1.0000, and several continuation
-  macro-F1 scores of 1.0000. The main model fails every required simple-margin gate.
+- Phases 0-5 remain complete locally. Phase 6 v0.1 remains closed as an immutable,
+  honestly reported negative experiment; Phase 7 is still gated off.
+- Added developmental compact-output contract `0.2.0` with wire prefix `RB2`, bounded
+  one-line syntax, fixed task-specific fields, closed enum vocabularies, `-` for empty
+  or absent values, canonical set ordering, and prompt-local fact-reference checks.
+- Added a deterministic compiler in both directions between compact text and the
+  existing strict `ProjectionTaskTargetValue` Pydantic contracts.
+- Canonical JSON remains the audit/API representation; compact text is only the
+  learned/decoded representation.
+- Added a constrained greedy token selector driven only by task name, contract enums,
+  prompt-visible fact references, tokenizer state, and a generated-token bound.
+  Decoder context has no target, fault truth, latent state, scenario ID, provenance,
+  source event ID, or future-event field.
+- EOS is legal only when the complete decoded text compiles without repair. Unknown,
+  BOS, PAD, and premature EOS tokens fail closed. One tokenizer-leading zero-width
+  SentencePiece boundary marker is permitted, but repeated zero-width loops are not.
+- Added a checksum-bound developmental schema snapshot and packaged-resource API.
+  The contract remains `frozen: false` until the development-only target-length
+  inventory and task generation caps are measured and preregistered.
+- Added unit, Hypothesis property, contract, packaging, maximum-length, reference-order,
+  deterministic-selection, no-global-RNG, and no-truth-context tests.
+- Verified reachability with the existing project SentencePiece tokenizer without
+  changing it: one representative `next_action` target used 31 tokens with the
+  2,048-token vocabulary; the full per-prefix allowlist/EOS check took 0.263 seconds.
+- No model weights, dataset artifacts, v0.1 reports, predictions, checkpoints, or
+  access ledgers were changed. No data was rendered and no model was trained.
+- No push, release, Vercel deployment, hosted model/API, or external publication was
+  performed.
 
 ## Files created or changed
 
-- Permanent correction:
-  `src/reactorbench/evaluation/decoding.py`,
-  `src/reactorbench/training/main.py`,
-  `tests/unit/test_phase6_evaluation.py`, and `Makefile`.
-- One-time, source-controlled rescore:
-  `scripts/phase6_rescore_v0_1_1.py`.
-- Phase 6 evidence documentation:
-  `docs/model/PHASE6_MAIN.md`, `docs/model/PHASE6_PRETEST.md`, this status file,
-  README, acceptance plan, checklist, decision log, and reproducibility plan.
-- Remediation planning evidence:
-  `docs/model/PHASE6_REMEDIATION_PLAN.md` and decision D-071.
-- Original ignored evidence:
-  `runs/phase6-main-v0.1.0-selection/`, `runs/phase6-main-v0.1.0/`, and
-  `runs/phase6-main-v0.1.0-heldout-access.json`.
-- Corrected ignored evidence:
-  `runs/phase6-main-v0.1.0-rescore-v0.1.1/`.
+- Core implementation:
+  `src/reactorbench/evaluation/compact.py`,
+  `src/reactorbench/evaluation/__init__.py`, and
+  `src/reactorbench/resources.py`.
+- Versioned contract:
+  `schemas/compact-output/v0/README.md`,
+  `schemas/compact-output/v0/contract.json`, and
+  `schemas/compact-output/v0/manifest.json`.
+- Packaging: `pyproject.toml`.
+- Tests:
+  `tests/unit/test_compact_targets.py`,
+  `tests/property/test_compact_target_properties.py`,
+  `tests/contract/test_compact_output_contract.py`,
+  `tests/contract/test_package_resources.py`, and
+  `tests/contract/verify_distribution_artifacts.py`.
+- Documentation:
+  this file, `docs/model/PHASE6_REMEDIATION_PLAN.md`, and
+  `research/DECISION_LOG.md`.
 
 ## Tests and checks run
 
-- Python: CPython 3.12.11.
-- Final repository suite after the parser correction: **713 passed in 300.74 seconds**
-  with **85.10% branch coverage**; the 85% floor was not weakened.
-- Focused Phase 6 parser/orchestration suite: **20 passed**.
-- Ruff format check: **144 files formatted**. Ruff lint passed.
-- Strict mypy: **113 source files**, no issues. The standalone rescore script also
-  passes strict mypy with the local source tree selected.
-- `git diff --check`: passed before the correction commit.
-- Phase 6 selection independently verified.
-- Original Phase 6 report and all three original prediction artifacts independently
-  verified at report checksum
-  `2009afdeae9247125a30b4afcc24b41409ffb6ad3afd64d2772c2a491fc55967`.
-- Corrected rescore independently reconstructed exactly at report checksum
-  `fb1ee4e13ba8ca44116641e5892ff3a7eef523846cd907fe07f368a76e09a0ce`.
-- The final intended repository built the wheel and sdist successfully and passed the
-  isolated no-network artifact verifier after documentation closeout. The Make target
-  could not locate `uv` on the shell PATH, so the exact underlying locked-venv Python
-  commands were run and passed.
-- Planning-only checkpoint: `git diff --check`, trailing-whitespace scan, documentation
-  link/path inspection, and docs-only diff review passed. No model/code test was rerun
-  because this checkpoint changes documentation only.
+- Runtime: CPython 3.12.14 after repairing the stale local `.venv` interpreter link.
+- Final actual-repository compact/resource suite: **30 passed in 1.70 seconds**.
+- Focused compact module branch coverage: **92%**.
+- Full isolated staging suite: **739 passed, 1 skipped in 326.18 seconds**.
+  The skip is the expected missing local project-owner review record.
+- Full repository branch coverage: **85.20%**; the 85% gate was not weakened.
+- Final Ruff format: **151 files already formatted**.
+- Final Ruff lint: passed.
+- Final strict mypy: **117 source files**, no issues.
+- Wheel and sdist: built successfully.
+- Distribution verifier: passed exact wheel/sdist resource inventory and an isolated,
+  no-dependency/no-index wheel installation.
+- Real tokenizer reachability: passed for the representative compact target, including
+  the leading SentencePiece boundary marker and terminal EOS.
 
 ## Decisions made
 
-- Preserve the frozen E3 architecture, 1,500-step schedule, selected step, decoder,
-  metrics, thresholds, and all negative results after held-out access.
-- Classify the delimiter issue as an evaluator defect, preserve the faulty original
-  report, and issue a versioned mechanical rescore rather than rerun generation or
-  hide the incident.
-- Treat low teacher-forced NLL and poor free-running structured generation as a real
-  exposure/sequence-level gap. Token likelihood alone is not a deployability result.
-- Close Phase 6 as executed but failed. Do not start Phase 7 inference/UI around this
-  checkpoint, because the prompt explicitly gates Phase 7 on a stable trained
-  checkpoint and inference contract.
-- Any improvement cycle must be preregistered as v0.2 and use training/validation
-  evidence for design choices. These held-out results may be reported and analyzed but
-  not repeatedly optimized against.
-- Separate remediation into structural output reliability, semantic behavior, and
-  strict generalization so a later improvement can be attributed to a bounded change.
-- Require a fresh, checksum-frozen final holdout and versioned golden extension for
-  v0.4. The already accessed v0.1 tests cannot become a clean selection gate again.
+- Use the exact wire shape `RB2|<task>|<task fields>` with `,` for lists and `~` for
+  nested counterfactual conclusions. Delimiters cannot occur in allowlisted atoms.
+- Preserve enum order only where the strict target treats a tuple as a set. Preserve
+  meaningful evidence-slot ordering. Require fact references to be unique, visible,
+  and increasing within each `o`, `e`, or `c` namespace.
+- Keep the existing v0.1 tokenizer, 8×384 primary architecture, and 512-token context
+  unchanged for the later controlled comparison.
+- Keep the output contract developmental rather than falsely frozen. Task-specific
+  generation caps require a permitted train/validation-only inventory first.
+- Treat constrained syntax as structural reliability only. It cannot receive credit
+  for semantic correctness, and later reports must retain unconstrained results.
+- Do not integrate this decoder into a training/evaluation run in the same milestone.
 
 ## Assumptions
 
-- All inputs remain project-authored, synthetic, fictional, normalized, and
+- All future inputs remain project-authored, synthetic, fictional, normalized, and
   non-operational.
-- Original and corrected local artifacts remain immutable and available at their
-  recorded paths.
-- Exact account-usage percentage is not observable. No claim is made that a 1% account
-  cutoff was measured.
+- The strict existing Pydantic target models remain the semantic source of truth.
+- Exact account-usage percentage is not observable. No claim is made that the 5% or
+  1% cutoff was measured.
+- The project owner still controls GitHub push and Vercel publication.
 
 ## Known failures and residual risks
 
-- Free-running JSON generation is the dominant failure: only 16/894 corrected main
-  outputs are schema-valid.
-- Fault-family identification produces no correct schema-valid held-out prediction.
-- Robustness, component, severity, composition, and counterfactual exact match are 0%.
-- Golden exact match is only 2/60 and does not support a behavioral capability claim.
-- The 512-token window truncated prompt prefixes in training/validation and 788/894
-  held-out generations; ten counterfactual and four composition targets cannot fit by
-  design.
-- MPS is not guaranteed bitwise deterministic, and thermal throttling was not directly
-  observable.
-- The content guard remains bounded and non-exhaustive; human review reduces but does
-  not eliminate content risk.
-- Code/data licenses remain `TBD`, blocking distribution.
+- Two broad read-only inspection commands accidentally traversed historical Phase 6
+  v0.1 held-out report/prediction or generated-data paths while locating/comparing the
+  workspace. No fresh holdout was accessed, no historical artifact was modified, and
+  none of the observed historical content was used for design, selection, or tuning.
+  Subsequent synchronization and review use an explicit source/test/schema/docs
+  allowlist. This process breach cannot be undone and must remain disclosed.
+- The compact contract has not yet been run over a safely isolated train/validation
+  target inventory. The mixed historical artifact was deliberately not used after the
+  boundary incident. Therefore the full Iteration 1 advancement gate is not claimed.
+- Task-specific generation caps, target-length inventory, prompt-retention report,
+  constrained validation behavior, and cap-exhaustion rates remain unmeasured.
+- The token allowlist is correctness-first. Only one representative real-tokenizer
+  path has a latency measurement; task-wide latency and memory remain to be measured.
+- Free-running semantic quality is unchanged. No v0.2 model exists, and Phase 7 must
+  not use the failed v0.1 checkpoint as if this syntax work improved its behavior.
+- Code and data licenses remain `TBD`, blocking public distribution.
 
 ## Open blockers
 
-- Phase 7 inference/UI is blocked by the failed Phase 6 model gate.
-- The user authorized remediation planning only. Implementation/training remains
-  intentionally unstarted until a later resume after usage reset.
-- Before any distribution: choose code/data licenses and complete release, SBOM,
-  security, accessibility, clean-environment, and deployment gates.
+- A development-only, holdout-safe target inventory boundary is required before
+  measuring all train/validation round trips and freezing generation caps.
+- Iteration 1 advancement still requires 100% development compilation/fit/round-trip,
+  100% constrained validation parse/schema validity, cap-exhaustion and prompt-
+  retention reports, and unconstrained comparison metrics.
+- Iterations 2 and 3, Phase 7, and Phase 8 remain unstarted.
+- License decisions, SBOM/security/release evidence, and accessibility/deployment
+  gates remain open.
 - GitHub push and Vercel deployment remain owner-managed and unauthorized here.
 
 ## Uncommitted work
 
-- No source or documentation work is intentionally left uncommitted at this
-  checkpoint. Confirm with `git status --short` on resume.
-- All datasets, checkpoints, review records, and run artifacts remain ignored local
-  evidence. No artifact was deleted or overwritten.
+- No source or documentation edit is intentionally left unfinished. At checkpoint
+  commit time, the exact reviewed Iteration 1 allowlist is included in one local
+  commit; confirm a clean worktree on resume.
+- The Homebrew Python 3.12 runtime was installed and the previously broken `.venv`
+  interpreter symlink was repaired. `.venv` is ignored environment state, not a source
+  change.
+- Staging-only coverage, bytecode, build, and distribution outputs were not copied into
+  the repository checkpoint.
 
 ## Repository state
 
-- Branch: `codex/foundation`.
-- Phase 6 pretest implementation commit:
-  `56bce54c00bf7d16e62f34b49387b88fa5e3906b`.
-- Phase 6 main runner/source commit:
-  `d8dc2936b1f9355d4246a7be2a297ad210f1cbfe`.
-- Phase 6 parser correction/rescore commit:
-  `e6504695583403f7e31b118f99ce67c6873bd8e8`.
-- Phase 6 documentation closeout commit:
-  `c67bc20db4bba46970366e71dfd567d714826fb1`.
-- The planning-only checkpoint is committed locally at turn completion; use
-  `git rev-parse HEAD` for its non-self-referential identifier.
-- No Git remote, push, publication, or deployment exists.
+- Checkpoint branch: `main`.
+- Remote:
+  `origin https://github.com/Zachary200114/reactorbench-lm.git`.
+- Last known commit before this checkpoint:
+  `81d79e5` (`docs: plan bounded model remediation`).
+- The worktree was clean before Iteration 1 began.
+- No remote push was performed.
 
 ## Immediate next step
 
-After usage reset, implement only the v0.2 compact target contract, strict compiler,
-truth-independent constrained decoder, and their correctness tests. Do not generate
-new data, train a model, or access held-outs in that first atomic milestone.
+After a new explicit user authorization, design a development-only target inventory
+that cannot open or materialize historical/fresh held-out rows. Use it to measure
+train/validation compact lengths and round trips, then preregister task-specific
+generation caps. Do not train a v0.2 model in that same atomic step.
 
 ## Exact recommended next command
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-sed -n '1,320p' docs/model/PHASE6_REMEDIATION_PLAN.md
+git status --short --branch
 ```
 
-## Relevant artifacts and configuration
+## Relevant artifact and configuration paths
 
-- Phase 6 config canonical/raw SHA-256:
-  `be1df0cee9752912b5c317b62fb618b896598906252da25801161e344071b784` /
-  `e01a3ac57277f198826476d3bea0d431eb521a3989fec3ab85f42a1139ea1439`.
-- Golden packet semantic/raw SHA-256:
-  `c2e966564dadfab7e8b944ca9b6f8ef59d8545d1da1cc4ea75f8b27a9c44077c` /
-  `118720638aeb9d082a6ddc7efd367f3d972c5831a12c6b76f171a10076cc64ea`.
-- Golden review record semantic/raw SHA-256:
-  `1f5307889d259cfb0fa39e86e33ed9c2ce0922742e59af1d5ff5e0c904337288` /
-  `9105c6e7e76979fdbc8b4a73d42f323acb636d36affbee13f8147dc23e3f06be`.
-- Selection report semantic/raw SHA-256:
-  `29a1c07864e24b47e7928df05d5738834ea10879ec46ff91f2834fae7113379d` /
-  `059504a13748c2c9131441782217b980fcee19fbebaf4d8157ef17b532d09552`.
-- Original report semantic/raw SHA-256:
-  `2009afdeae9247125a30b4afcc24b41409ffb6ad3afd64d2772c2a491fc55967` /
-  `2b0a78a703c17810c87e5908e1034c72056315e40a9147e5139a8b2499034b44`.
-- Corrected report semantic/raw SHA-256:
-  `fb1ee4e13ba8ca44116641e5892ff3a7eef523846cd907fe07f368a76e09a0ce` /
-  `11306d82324b190bb06cb96d96137ef399bebccc0f65591e15e9ff2782d0aa22`.
-- Correction record semantic/raw SHA-256:
-  `04077738a5fb915ea818ee2aadbda320769c6721476e9bc304fdcace96b4cd81` /
-  `75834c089400959f8a258b786dee1c6c12067fe7f1c7fdb39934b518a67c2aeb`.
-- Corrected main/comparison/golden prediction raw SHA-256:
-  `debcb28432ed15b407d159bc966d01d642b00b01c9c22a39db7b219d019df854` /
-  `4e4d851e8f253a1c8fe4dc88b40b34b8ed95b61a2c630e1fba1e1f15ee6d8cf3` /
-  `92bbb2efbb681462808902c5b0e33e2227fccfd922c164fcb3b3ce2ed1e646ab`.
-- Held-out access record raw SHA-256:
-  `410ab34416d860b5cc3b6067cfc599f691ad199a986d56f019e81b75246ae74f`.
-- Planning contract:
-  `docs/model/PHASE6_REMEDIATION_PLAN.md` and D-071 in
-  `research/DECISION_LOG.md`.
+- Compact compiler/decoder: `src/reactorbench/evaluation/compact.py`.
+- Compact contract: `schemas/compact-output/v0/`.
+- Remediation program: `docs/model/PHASE6_REMEDIATION_PLAN.md`.
+- Historical v0.1 config (immutable):
+  `configs/experiments/phase6-main-v0.1.0.toml`.
+- Historical v0.1 runs (immutable, ignored): `runs/phase6-main-v0.1.0*`.
+- No v0.2 data, config, checkpoint, prediction, or training run exists.
 
 ## Exact resume prompt
 

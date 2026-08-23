@@ -8,6 +8,7 @@ from pathlib import Path
 from reactorbench.resources import (
     canonical_dataset_schema_snapshot_resource,
     canonical_schema_snapshot_resource,
+    compact_output_contract_resource,
     default_config_resource,
     golden_suite_resource,
     phase4_smoke_config_resource,
@@ -23,6 +24,7 @@ PHASE6_CONFIG_PATH = ROOT / "configs" / "experiments" / "phase6-main-v0.1.0.toml
 GOLDEN_SUITE_PATH = ROOT / "golden" / "golden-suite-v0.1.0.json"
 SNAPSHOT_DIRECTORY = ROOT / "schemas" / "aster" / "v0"
 DATASET_SNAPSHOT_DIRECTORY = ROOT / "schemas" / "dataset" / "v0"
+COMPACT_OUTPUT_DIRECTORY = ROOT / "schemas" / "compact-output" / "v0"
 DATASET_GUARD_DIRECTORY = ROOT / "src" / "reactorbench" / "dataset" / "resources"
 
 
@@ -60,6 +62,9 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
     assert _resource_file_tree(canonical_dataset_schema_snapshot_resource()) == _source_file_tree(
         DATASET_SNAPSHOT_DIRECTORY
     )
+    assert _resource_file_tree(compact_output_contract_resource()) == _source_file_tree(
+        COMPACT_OUTPUT_DIRECTORY
+    )
 
 
 def test_dataset_guard_resources_are_importlib_readable_without_drift() -> None:
@@ -88,5 +93,6 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         ),
         "golden/golden-suite-v0.1.0.json": ("reactorbench/_data/golden/golden-suite-v0.1.0.json"),
         "schemas/aster/v0": "reactorbench/_data/schemas/aster/v0",
+        "schemas/compact-output/v0": "reactorbench/_data/schemas/compact-output/v0",
         "schemas/dataset/v0": "reactorbench/_data/schemas/dataset/v0",
     }

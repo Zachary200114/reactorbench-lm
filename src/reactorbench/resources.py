@@ -66,9 +66,16 @@ def canonical_dataset_schema_snapshot_resource() -> Traversable:
     return _reviewed_resource("schemas", "dataset", "v0", directory=True)
 
 
+def compact_output_contract_resource() -> Traversable:
+    """Return the developmental v0.2 compact-output contract directory."""
+
+    return _reviewed_resource("schemas", "compact-output", "v0", directory=True)
+
+
 __all__ = [
     "canonical_dataset_schema_snapshot_resource",
     "canonical_schema_snapshot_resource",
+    "compact_output_contract_resource",
     "default_config_resource",
     "golden_suite_resource",
     "phase4_smoke_config_resource",

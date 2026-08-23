@@ -1,5 +1,17 @@
 """Phase 5 baseline, serialization, and metric interfaces."""
 
+from .compact import (
+    COMPACT_TARGET_VERSION,
+    COMPACT_WIRE_PREFIX,
+    CompactDecodingError,
+    CompactTargetConstraint,
+    CompactTargetContext,
+    CompactTargetError,
+    compact_output_contract,
+    compact_target_json,
+    parse_compact_target,
+    serialize_compact_target,
+)
 from .config import Phase5Config, Phase6Config, load_phase5_config, load_phase6_config
 from .data import (
     ExperimentData,
@@ -37,7 +49,13 @@ from .serialization import (
 )
 
 __all__ = [
+    "COMPACT_TARGET_VERSION",
+    "COMPACT_WIRE_PREFIX",
     "ClassificationMetrics",
+    "CompactDecodingError",
+    "CompactTargetConstraint",
+    "CompactTargetContext",
+    "CompactTargetError",
     "ExperimentData",
     "ExperimentExample",
     "GoldenCaseReview",
@@ -52,6 +70,8 @@ __all__ = [
     "TokenizedExample",
     "batch_tensors",
     "classification_metrics",
+    "compact_output_contract",
+    "compact_target_json",
     "create_golden_review_record",
     "examples_for_task",
     "language_model_metrics",
@@ -61,7 +81,9 @@ __all__ = [
     "load_phase6_config",
     "materialize_experiment_data",
     "materialize_phase6_data",
+    "parse_compact_target",
     "prepare_golden_review_packet",
+    "serialize_compact_target",
     "serialized_parts",
     "supervised_causal_loss",
     "tokenize_example",

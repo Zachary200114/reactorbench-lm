@@ -45,6 +45,7 @@ packages = ["src/reactorbench"]
 "configs/experiments/phase6-main-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase6-main-v0.1.0.toml"
 "golden/golden-suite-v0.1.0.json" = "reactorbench/_data/golden/golden-suite-v0.1.0.json"
 "schemas/aster/v0" = "reactorbench/_data/schemas/aster/v0"
+"schemas/compact-output/v0" = "reactorbench/_data/schemas/compact-output/v0"
 "schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
 
 [tool.pytest.ini_options]

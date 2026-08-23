@@ -275,6 +275,30 @@ same atomic milestone. The milestone passes when every existing train/validation
 target round-trips and the decoder can emit only schema-compilable task outputs without
 using hidden truth.
 
+### Source-correctness checkpoint — 2026-08-23
+
+The bounded implementation slice is complete and recorded by D-072:
+
+- `src/reactorbench/evaluation/compact.py` implements developmental contract `0.2.0`,
+  the strict bidirectional compiler, canonical JSON audit output, prefix/complete
+  grammar checks, and deterministic constrained token selection;
+- `schemas/compact-output/v0/` records the checksum-bound developmental contract and
+  is included in source and wheel distributions;
+- decoder construction accepts only task name and prompt-visible fact-reference
+  inventories, with no target, latent state, scenario ID, provenance, source event ID,
+  or future-event input;
+- focused unit/property/contract/resource tests pass, compact-module branch coverage
+  is 92%, and every tested accepted output compiles without repair; and
+- one canonical target is reachable through the unchanged 2,048-token project
+  SentencePiece tokenizer, including its single leading zero-width boundary marker.
+
+This is not the complete Iteration 1 advancement gate. No v0.2 data was generated and
+no model was trained. A safely isolated development-only target inventory is still
+required to prove 100% train/validation round trips, measure target lengths and prompt
+retention, freeze task generation caps, and evaluate constrained versus unconstrained
+validation behavior. Historical v0.1 artifacts remain immutable and cannot be used as
+an optimization set.
+
 ## Explicitly deferred
 
 - Exact compact token grammar and task generation caps, pending a train/validation
