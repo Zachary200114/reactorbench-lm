@@ -14,13 +14,18 @@ Aster Station: a wholly fictional causal environment.
 
 Phases 0–5 and the original Phase 6 experiment are complete locally. Phase 6 produced
 a verified negative result. The checksum-bound, development-only v0.2–v0.4 remediation
-runner has passed its engineering gates. Its first owner-operated run completed v0.2
-training, then failed before the first behavioral decode because a reloaded MPS model
-reported `mps:0` while the strict caller retained the equivalent generic name `mps`.
-That run remains preserved as failed engineering evidence. The device normalization is
-fixed and a new non-overwriting rerun is ready; no remediation acceptance result
-exists. The Phase 7 inference/UI gate remains blocked until a behaviorally acceptable
-checkpoint exists.
+runner has passed its engineering gates. Its first owner-operated attempt completed
+v0.2 training, then failed before the first behavioral decode because a reloaded MPS
+model reported `mps:0` while the strict caller retained the equivalent generic name
+`mps`. After that device-boundary fix, rerun 01 completed the first seven pipeline
+stages and reached v0.3 candidate training. It failed safely at step 200 because the
+truth-independent decoder allowed two identical counterfactual conclusions, leaving
+no valid changed-fields suffix. The exact development-only failure was reproduced and
+the relation-aware constraint passed the formerly failing example on Apple MPS. Both
+attempts remain preserved as engineering evidence. The corrected, non-overwriting
+`phase6-remediation-v0.4.0-local-rerun-02` attempt is ready but not started; no
+remediation acceptance result exists. The Phase 7 inference/UI gate remains blocked
+until a behaviorally acceptable checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -63,11 +68,12 @@ checkpoint exists.
   cap-measurement inventory, then removes 24 same-task exact-prompt duplicates with
   identical targets; only the resulting 5,835 examples are written, audited, or
   trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
-  verification passed 1,072 tests with 86.06% branch coverage;
-  two historical-golden reads were deliberately excluded from this
-  remediation-only verification boundary. A read-only diagnostic then decoded one
-  preserved validation example from the failed run's unchanged checkpoint using its
-  actual `mps:0` parameter device. The versioned rerun remains pending.
+  verification passed 1,095 tests with 85.73% branch coverage; two protected
+  historical final/golden readers were deliberately excluded from this
+  remediation-only verification boundary. An exact replay from rerun 01's preserved
+  step-100 state reached step 200, decoded the formerly failing example with valid
+  constrained output and EOS, and used native MPS without fallback. Rerun 02 remains
+  pending.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
@@ -75,8 +81,8 @@ inference service or web interface, and the current checkpoint must not be prese
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
 progress, safe stop/resume, and review evidence. The versioned local rerun remains
-pending, and the separate fresh final-evaluation executor is intentionally locked and
-unimplemented in this release.
+pending under the `rerun-02` identity, and the separate fresh final-evaluation executor
+is intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
@@ -207,7 +213,9 @@ window:
 
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
-remain confirmation-gated and preserve existing run evidence.
+remain confirmation-gated and preserve existing run evidence. The current default is
+`phase6-remediation-v0.4.0-local-rerun-02`; do not resume or modify either preserved
+failed attempt.
 
 Infrastructure availability is not a positive model result. The routine pipeline
 cannot open the frozen final evaluation, and the historical G01–G15 packet is

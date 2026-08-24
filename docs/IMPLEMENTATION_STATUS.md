@@ -120,6 +120,9 @@ account-level percentage was measured.
 - Added `phase6-remediation-v0.4.0-local-rerun-02` as the new default run identity in
   the CLI, GUI monitor, packaged resources, tests, and runbook. Both earlier attempts
   remain immutable. Rerun 02 has not been created or started.
+- Refreshed the public README to describe both preserved engineering failures, the
+  verified counterfactual-decoder correction, rerun 02's exact pending identity, and
+  the latest permitted test and coverage totals without implying model acceptance.
 
 ## Frozen development evidence
 
@@ -332,8 +335,8 @@ successfully.
   034b41cca07b999f701850986a67a692b40d8c30
 - Counterfactual decoder fix, safe diagnostic, and rerun-02 implementation commit:
   3e70032d1767b4bee1a0e357cbbaca3b07b96eb3
-- This status update is intended as the next local handoff commit. After it is created,
-  main is twelve commits ahead of origin/main.
+- The README/status update is intended as the next local handoff commit. After it is
+  created, main is thirteen commits ahead of origin/main.
 - Uncommitted work after the status handoff commit: none; verify the clean tree on
   resume.
 - Both failed run directories are preserved; the rerun-02 directory does not exist.
