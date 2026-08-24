@@ -2,20 +2,18 @@
 
 Last updated: 2026-08-24 America/New_York
 
-Current phase: **the first Phase 6 remediation run failed at an implementation
-boundary; the device fix is verified and a non-overwriting rerun is ready**
+Current phase: **Phase 6 remediation rerun ready; local macOS progress monitor
+implemented and verified; rerun not started**
 
-Current objective: preserve the failed run unchanged, checkpoint the verified
-checkpoint-device correction and new rerun identity locally, and hand the fresh
-checksum-bound rerun to the project owner. After that rerun completes, blocks, stops,
+Current objective: hand the project owner a simple local window for readiness, Start,
+verified progress, cooperative safe stop, and stopped-run Resume while preserving the
+failed run and every scientific boundary. After the rerun completes, blocks, stops,
 or fails, Codex should review its immutable evidence without retraining or opening
 final data.
 
-Checkpoint reason: the first run completed v0.2 training but failed at `0/252` before
-its first behavioral gate decode because PyTorch represented the same MPS device as
-generic `mps` at request time and concrete `mps:0` after model placement. The actual
-device is now returned after strict type/index verification, the preserved checkpoint
-decodes successfully read-only, and a new run name prevents overwrite.
+Checkpoint reason: the optional local Phase 6 monitor is complete and verified at a
+safe pre-run boundary. Opening and visually checking the exact launcher did not create
+the rerun, start training, evaluate data, or change the preserved failed-run evidence.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -77,6 +75,22 @@ account-level percentage was measured.
   device while rejecting a different device type or explicitly requested index.
 - Added `phase6-remediation-v0.4.0-local-rerun-01` as the new default run identity.
   The failed run is neither deleted nor reused.
+- Added a local-only native macOS Phase 6 monitor with overall and current-work
+  progress bars, stage position, verified status details, a bounded activity log, and
+  fixed confirmation-gated owner controls. It is explicitly not the Phase 7 UI.
+- Added a standard-library controller that parses only the existing strictly
+  validated status command, rejects unknown fields and mismatched run evidence, and
+  routes only the frozen readiness, Start, status, safe-stop, Resume, and Finder
+  wrappers. It accepts no arbitrary path, run name, configuration, or command.
+- Start and Resume detach under `caffeinate`; closing the window does not kill an
+  active run. Safe stop remains cooperative. There is deliberately no delete,
+  overwrite, force-kill, or automatic start-over control.
+- Added `Latest verified update UTC` to the validated status display and packaged the
+  launcher, controller bridge, AppKit source/metadata, runbook, and rerun configuration
+  in the source and wheel distributions.
+- Visually verified the exact launcher in the pre-run state: `Not started`, stage 0 of
+  16, correct source commit/run identity, Start enabled, and Stop/Resume/Finder
+  disabled. Only Close was pressed; no lifecycle action was exercised.
 
 ## Frozen development evidence
 
@@ -115,42 +129,41 @@ result and no v0.3/v0.4 training result exists.
 
 ## Tests and checks run
 
-- Ruff format check: 188 files passed.
-- Ruff lint: passed.
-- Strict mypy: 153 source files passed.
-- Complete non-golden remediation unit plus separate-process owner lifecycle and safe
-  distribution-configuration suite: 332 passed in 116.26 seconds.
-- Final permitted repository suite:
-  1,072 passed, 2 deliberately deselected, in 543.67 seconds.
-- Branch coverage: 86.06%, above the required 85%.
+- Final permitted repository gate after the GUI implementation:
+  - Ruff format: 190 files passed.
+  - Ruff lint: passed.
+  - Strict mypy: 155 source files passed.
+  - Pytest: 1,094 passed and 2 deliberately deselected in 548.54 seconds.
+  - Branch coverage: 85.72%, above the required 85%.
 - The two deselections are the documented historical final/golden asset readers:
   test_resource_api_reads_the_root_reviewed_assets_without_drift and
   test_approved_golden_packet_projects_sixty_examples. No held-out or final evaluation
   was run.
-- Five wrappers are executable and pass Bash syntax:
-  run_phase6_pipeline.sh, check_phase6_status.sh, stop_phase6_pipeline.sh,
-  resume_phase6_pipeline.sh, and the locked-only run_phase6_evaluation.sh.
+- Final GUI-focused check after the runbook correction: 44 passed and 1 protected
+  resource-reader test was deselected in 1.37 seconds.
+- Native Swift/AppKit type checking: passed. Property-list lint: passed. The GUI
+  launcher and closed controller bridge both pass Bash syntax.
+- Real non-window launcher smoke check: passed and reported `Not started`; its strict
+  JSON snapshot reported the fixed rerun, stage total 16, and the expected conservative
+  button policy. The rerun directory remained absent.
+- Exact native launcher visual check: passed. The temporary app closed cleanly, and
+  its temporary bundle was removed. Start, readiness, stop, resume, and Finder were not
+  invoked.
+- Source and wheel distributions rebuilt successfully. Archive listings confirm the
+  AppKit source/metadata, local controller, both launcher scripts, corrected runbook,
+  and `phase6-remediation-pipeline-v0.4.0-rerun-01.toml` are present.
+- Preserved failed-run checksums remain unchanged:
+  - run manifest:
+    `ac1e0b5d1b5731d08c061fbceffd0fca115ee2e45003f986ee1d5c90091cd6c2`
+  - pipeline state:
+    `b2f5e2c8896bed6efef53c622c9bbf0234e84d295b5e8ab0c2d5f78892955eae`
+  - status:
+    `9292ac5256c0a633877f80a27db0e0a89dfe3cebd7efb24797a6dedf7789d786`
+  - progress:
+    `a7ae3b74c5ba66f864cd3cb69bae331ba6d2089bf61265975971f4495e9ccec0`
+  - terminal review bundle:
+    `aced75cf17027e5a8bdb4ee2a31b21996cd278fa06ccf2c59600afc4b92718ee`
 - Git diff whitespace check: passed.
-- Fresh read-only integration review: no actionable material findings remained after
-  the final provenance and crash-boundary regressions.
-- Clean-tree dry-run at implementation commit
-  bebb03cf239c966b2a4228b429fc9a98a1b6fd32: exit 0; exact configuration checksum;
-  source commit matched; 16 frozen stages; no training, data generation, or evaluation;
-  no run directory created.
-- Read-only exact-failure diagnostic after the patch: requested device `mps`, actual
-  parameter device `mps:0`, one preserved validation example decoded, and checkpoint
-  manifest checksum remained
-  b27547e10fc0dfd08ea08337368dd3011c1c3bcb4e98747259ff49486ef9a44e.
-- New-rerun clean-tree dry-run at device-fix commit
-  f6f2369a050c9bf50d6c04351da603969a1f1273: exit 0; configuration checksum
-  96850668232781faa9d14319ce40e136aa1ada0c85317ed88b08ef795fcd6a13;
-  16 frozen stages; preserved failed run present; rerun state not created; no training,
-  data generation, or evaluation executed.
-- Local source and wheel distributions built successfully; both the preserved and
-  rerun pipeline configurations are present in the wheel.
-- The preserved run's live status command refuses from the corrected source commit as
-  designed. Its immutable terminal review remains at state checksum
-  b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a.
 
 The module-name form of pytest-cov previously triggered a PyTorch import segmentation
 fault in this local Python environment. The path-based coverage target above completed
@@ -170,6 +183,9 @@ successfully.
 - D-084 makes stop archival crash-durable and conflict-intolerant.
 - D-085 preserves the failed run, normalizes actual checkpoint device identity without
   weakening real mismatch rejection, and creates a new non-overwriting rerun name.
+- D-086 defines the local-only native macOS monitor, strict status-only parser,
+  closed wrapper allowlist, detached Start/Resume ownership, cooperative stop, and
+  prohibition on delete, overwrite, or automatic restart.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -179,6 +195,12 @@ successfully.
   development gate. It is terminal and must not be resumed or edited.
 - The replacement development rerun is pending. Approximately 6–24 hours on Apple MPS
   remains only a planning estimate.
+- The monitor is a macOS owner utility, not a cross-platform product surface. It
+  compiles a temporary AppKit bundle on each open, so the window can take roughly 20
+  to 30 seconds to appear on this Mac.
+- The final GUI check intentionally did not press readiness, Start, stop, Resume, or
+  Finder. Lifecycle correctness is covered by unit/contract tests and the existing
+  wrapper integration suite; the first real Start remains an owner action.
 - CPU fallback is permitted for earlier stages but cannot satisfy an activated v0.4
   pilot. There is no successful activated-CPU estimate. An inactive control-only path
   may complete but provides no 1,024-token evidence.
@@ -210,6 +232,16 @@ successfully.
   docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json
 - Owner instructions:
   docs/model/PHASE6_REMEDIATION_RUNBOOK.md
+- Local GUI launcher:
+  scripts/open_phase6_progress_gui.sh
+- Closed native-controller bridge:
+  scripts/phase6_monitor_controller.sh
+- Monitor implementation:
+  src/reactorbench/remediation/Phase6RunMonitor.swift,
+  src/reactorbench/remediation/Phase6RunMonitor-Info.plist,
+  src/reactorbench/remediation/local_monitor.py
+- Monitor tests:
+  tests/unit/test_phase6_local_monitor.py
 - Preserved failed run:
   runs/phase6-remediation-v0.4.0-local/
 - New rerun root:
@@ -226,38 +258,32 @@ successfully.
   2aafcd1661ec7c3640a385621db171041532e547
 - Complete device-fix/rerun implementation commit:
   f6f2369a050c9bf50d6c04351da603969a1f1273
-- This status update is the final local handoff commit after that implementation
-  checkpoint. After it is created, main is eight commits ahead of origin/main.
-- Uncommitted work after the handoff commit: none; verify the clean tree on resume.
+- Local monitor implementation commit:
+  295f8e894f16e9d49f84e8dbe29e36697824a340
+- This status update is intended as the next local handoff commit. After it is created,
+  main is ten commits ahead of origin/main.
+- Uncommitted work after the status handoff commit: none; verify the clean tree on
+  resume.
 - The failed run directory is preserved; the rerun directory does not exist yet.
 - No fresh-final ledger/result was created or accessed.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-From the final clean local commit, rerun the non-mutating dry-run if desired. Then
-start the new non-overwriting rerun under caffeinate and keep a second Terminal
-available for verified status or cooperative stop commands. Do not resume or modify
-the preserved failed run.
+Open the local monitor from the final clean local commit. Wait for the native window
+to appear, confirm it reports `Not started` and the fixed rerun name, optionally run
+the non-mutating readiness check, and press `Start new rerun` only when ready for the
+long owner-operated run. Do not resume or modify the preserved failed run.
 
-## Exact recommended next commands after final handoff
+## Exact recommended next command after final handoff
 
     cd /Users/zachary/Documents/Personal-Projects/AI-transformer
     git status --short --branch
-    ./scripts/run_phase6_pipeline.sh --dry-run
-    caffeinate -i ./scripts/run_phase6_pipeline.sh
+    ./scripts/open_phase6_progress_gui.sh
 
-In a second Terminal:
-
-    cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-    ./scripts/check_phase6_status.sh
-
-For a cooperative safe stop and later resume:
-
-    ./scripts/stop_phase6_pipeline.sh
-    caffeinate -i ./scripts/resume_phase6_pipeline.sh
-
-The locked evaluation wrapper is not a research command in this release.
+Opening the monitor does not start training. The readiness, Start, cooperative stop,
+and stopped-run Resume controls are inside the window. The locked evaluation wrapper
+is not a research command in this release.
 
 ## Resume prompt
 
