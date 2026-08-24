@@ -1,0 +1,64 @@
+iteration_version = "0.3.0"
+requires_v02_gate = true
+baseline_config_path = "configs/experiments/phase5-pilot-v0.1.0.toml"
+baseline_config_sha256 = "e97d2c9c8fa41a77fa66f73defeeb3acad033f7ca01098e56aa57503c28e797e"
+counterfactual_cap_report_path = "docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json"
+counterfactual_cap_report_checksum_sha256 = "4c2fd4cdf84a2d2f3c0b6d7d32a7a02662d2ca1a8b5c06ef7ebc5b937f10cd25"
+semantic_selection_example_limit = 48
+
+[paths]
+dataset_config_path = "configs/dataset/remediation-development-v0.3.0.toml"
+tokenizer_path = "runs/phase4-smoke-v0.1.0/tokenizer"
+compact_contract_path = "schemas/compact-output/v0/contract.json"
+run_root = "runs"
+
+[augmentation]
+policy_version = "0.3.0"
+train_template_families = ["compact-log-v1", "observer-note-v1", "shift-ledger-v1"]
+train_alias_families = ["canonical-v1", "short-v1", "neutral-role-v1"]
+renderer_variants_per_projection = 3
+preserve_group_atomicity = true
+include_insufficient_evidence_views = true
+include_counterfactual_pairs = true
+prohibit_target_text_in_prompt = true
+
+[[candidates]]
+candidate_id = "v02-uniform-control"
+seed = 6301
+sampling = "uniform_control"
+exposure = "teacher_forced_only"
+enabled = true
+
+[[candidates]]
+candidate_id = "v03-task-balanced"
+seed = 6302
+sampling = "task_balanced"
+exposure = "teacher_forced_only"
+enabled = true
+
+[training]
+seed = 6300
+device = "mps"
+allow_cpu_fallback = true
+steps = 2000
+batch_size = 6
+learning_rate = 0.00025
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+evaluation_interval = 100
+durable_checkpoint_interval = 100
+
+[selection]
+metric = "frozen_semantic_composite"
+tie_break = "lower_validation_nll_then_earlier_step"
+checkpoint_selection_uses_test = false
+constrained_schema_validity = 1.0
+minimum_fault_margin = 0.02
+minimum_action_margin = 0.02
+minimum_continuation_macro_f1 = 0.9
+minimum_evidence_f1 = 0.7
+minimum_required_abstention_accuracy = 0.8
+maximum_no_fault_false_positive_rate = 0.1
+maximum_expected_calibration_error = 0.15
+selective_risk_coverage = 0.8
+maximum_selective_risk = 0.2

@@ -9,6 +9,15 @@ from typing import Final
 
 _PACKAGE_DATA_DIRECTORY: Final = "_data"
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
+_PHASE6_REMEDIATION_SCRIPTS: Final = frozenset(
+    {
+        "check_phase6_status.sh",
+        "resume_phase6_pipeline.sh",
+        "run_phase6_evaluation.sh",
+        "run_phase6_pipeline.sh",
+        "stop_phase6_pipeline.sh",
+    }
+)
 
 
 def _reviewed_resource(*relative_parts: str, directory: bool) -> Traversable:
@@ -48,6 +57,91 @@ def phase6_main_config_resource() -> Traversable:
     return _reviewed_resource("configs", "experiments", "phase6-main-v0.1.0.toml", directory=False)
 
 
+def phase6_remediation_v02_config_resource() -> Traversable:
+    """Return the reviewed Phase 6 v0.2 output-reliability configuration."""
+
+    return _reviewed_resource(
+        "configs", "experiments", "phase6-remediation-v0.2.0.toml", directory=False
+    )
+
+
+def phase6_remediation_v03_config_resource() -> Traversable:
+    """Return the reviewed Phase 6 v0.3 semantic-learning configuration."""
+
+    return _reviewed_resource(
+        "configs", "experiments", "phase6-remediation-v0.3.0.toml", directory=False
+    )
+
+
+def phase6_remediation_v04_config_resource() -> Traversable:
+    """Return the reviewed Phase 6 v0.4 generalization configuration."""
+
+    return _reviewed_resource(
+        "configs", "experiments", "phase6-remediation-v0.4.0.toml", directory=False
+    )
+
+
+def phase6_remediation_pipeline_config_resource() -> Traversable:
+    """Return the reviewed local Phase 6 remediation pipeline configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-pipeline-v0.4.0.toml",
+        directory=False,
+    )
+
+
+def development_dataset_config_resource() -> Traversable:
+    """Return the reviewed v0.1 development-dataset configuration."""
+
+    return _reviewed_resource("configs", "dataset", "development-v0.1.0.toml", directory=False)
+
+
+def phase6_remediation_development_dataset_config_resource() -> Traversable:
+    """Return the reviewed v0.3 remediation development-dataset configuration."""
+
+    return _reviewed_resource(
+        "configs", "dataset", "remediation-development-v0.3.0.toml", directory=False
+    )
+
+
+def phase6_remediation_final_dataset_config_resource() -> Traversable:
+    """Return the reviewed v0.4 fresh-final dataset configuration."""
+
+    return _reviewed_resource(
+        "configs", "dataset", "remediation-final-v0.4.0.toml", directory=False
+    )
+
+
+def phase6_v02_inventory_report_resource() -> Traversable:
+    """Return the reviewed v0.2 development-only target inventory report."""
+
+    return _reviewed_resource("docs", "model", "PHASE6_V02_INVENTORY.json", directory=False)
+
+
+def phase6_v03_counterfactual_cap_report_resource() -> Traversable:
+    """Return the reviewed v0.3 counterfactual generation-cap report."""
+
+    return _reviewed_resource(
+        "docs", "model", "PHASE6_V03_COUNTERFACTUAL_CAP.json", directory=False
+    )
+
+
+def phase6_remediation_runbook_resource() -> Traversable:
+    """Return the operator-facing local Phase 6 remediation runbook."""
+
+    return _reviewed_resource("docs", "model", "PHASE6_REMEDIATION_RUNBOOK.md", directory=False)
+
+
+def phase6_remediation_script_resource(script_name: str) -> Traversable:
+    """Return one allowlisted user-operated Phase 6 shell wrapper."""
+
+    if script_name not in _PHASE6_REMEDIATION_SCRIPTS:
+        raise ValueError("script name is not an allowlisted Phase 6 remediation wrapper")
+    return _reviewed_resource("scripts", script_name, directory=False)
+
+
 def golden_suite_resource() -> Traversable:
     """Return the checksum-bound developmental G01-G15 owner-review packet."""
 
@@ -77,8 +171,19 @@ __all__ = [
     "canonical_schema_snapshot_resource",
     "compact_output_contract_resource",
     "default_config_resource",
+    "development_dataset_config_resource",
     "golden_suite_resource",
     "phase4_smoke_config_resource",
     "phase5_pilot_config_resource",
     "phase6_main_config_resource",
+    "phase6_remediation_development_dataset_config_resource",
+    "phase6_remediation_final_dataset_config_resource",
+    "phase6_remediation_pipeline_config_resource",
+    "phase6_remediation_runbook_resource",
+    "phase6_remediation_script_resource",
+    "phase6_remediation_v02_config_resource",
+    "phase6_remediation_v03_config_resource",
+    "phase6_remediation_v04_config_resource",
+    "phase6_v02_inventory_report_resource",
+    "phase6_v03_counterfactual_cap_report_resource",
 ]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -35,7 +36,11 @@ from reactorbench.dataset.projection import (
     project_counterfactual_pair,
     project_trajectory,
 )
-from reactorbench.dataset.scenarios import PlannedScenario, build_development_scenario_plan
+from reactorbench.dataset.scenarios import (
+    PlannedScenario,
+    build_development_scenario_plan,
+    build_scenario_plan_for_splits,
+)
 from reactorbench.dataset.splits import (
     SplitManifest,
     build_split_manifest,
@@ -214,6 +219,71 @@ class DevelopmentProjectionBundle(ContractModel):
         if self.checksum_sha256 != expected:
             raise ValueError("development projection bundle checksum mismatch")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedProjectionInventory:
+    """In-memory projections built from only an explicit split allowlist.
+
+    Unlike :class:`DevelopmentProjectionBundle`, this development boundary is not a
+    release artifact and deliberately has no global split manifest.  Its purpose is
+    to let remediation code construct a physically isolated train/validation or
+    shadow-development view without first opening any final-test payload.
+    """
+
+    requested_splits: tuple[SplitName, ...]
+    trajectories: tuple[DevelopmentTrajectoryRecord, ...]
+    groups: tuple[CounterfactualGroup, ...]
+    projections: tuple[ProjectionRecord, ...]
+    counterfactual_projections: tuple[CounterfactualProjectionRecord, ...]
+
+
+def build_scoped_projection_inventory(
+    config: DevelopmentDatasetConfig,
+    *,
+    generator_commit: str,
+    splits: tuple[SplitName, ...],
+) -> ScopedProjectionInventory:
+    """Generate and project only explicitly requested splits.
+
+    This function never calls the full-plan builder and is therefore suitable for
+    holdout-safe development inventory work.  Callers must still keep final-test and
+    golden split names out of their allowlist.
+    """
+
+    plans = build_scenario_plan_for_splits(config, splits=splits)
+    records = tuple(
+        sorted(
+            (
+                _trajectory_record(
+                    plan,
+                    config=config,
+                    generator_commit=generator_commit,
+                )
+                for plan in plans
+            ),
+            key=lambda item: item.trajectory.trajectory_id,
+        )
+    )
+    if any(record.split_name not in splits for record in records):
+        raise RuntimeError("scoped projection inventory crossed its split allowlist")
+    groups = group_scenarios(plan.scenario for plan in _group_source_plans(plans))
+    projections = tuple(
+        sorted(
+            (projection for record in records for projection in _projections(record)),
+            key=lambda projection: projection.projection_id,
+        )
+    )
+    pairs = _counterfactual_pairs(records, groups, projections)
+    if len(projections) + len(pairs) > config.dataset.maximum_task_records:
+        raise ValueError("scoped development task count exceeds the configured bound")
+    return ScopedProjectionInventory(
+        requested_splits=splits,
+        trajectories=records,
+        groups=groups,
+        projections=projections,
+        counterfactual_projections=pairs,
+    )
 
 
 def _validate_structured_relationships(bundle: DevelopmentProjectionBundle) -> None:
@@ -768,5 +838,7 @@ __all__ = [
     "DevelopmentProjectionBundle",
     "DevelopmentProjectionSummary",
     "DevelopmentTrajectoryRecord",
+    "ScopedProjectionInventory",
     "build_development_projection_bundle",
+    "build_scoped_projection_inventory",
 ]

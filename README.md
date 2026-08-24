@@ -12,10 +12,11 @@ Aster Station: a wholly fictional causal environment.
 
 ## Current status
 
-Phases 0–6 are complete locally. Phase 6 is a verified negative experiment. The first
-source-correctness slice of the preregistered v0.2 remediation is implemented, while
-the Phase 7 inference/UI gate remains blocked until a behaviorally acceptable model
-checkpoint exists.
+Phases 0–5 and the original Phase 6 experiment are complete locally. Phase 6 produced
+a verified negative result. A checksum-bound, development-only v0.2–v0.4 remediation
+runner is now being finalized for an owner-operated local run; its long run has not
+started, so it has no remediation model results. The Phase 7 inference/UI gate remains
+blocked until a behaviorally acceptable model checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -52,19 +53,19 @@ checkpoint exists.
   every generated string without new model generation and passed independent
   reconstruction.
 - The developmental v0.2 `RB2` compact-output contract, strict bidirectional compiler,
-  and truth-independent constrained token selector now pass unit, property, contract,
-  packaging, and real-tokenizer reachability gates. No v0.2 data was generated and no
-  model was trained.
-- The current isolated repository suite passes 739 tests with one expected skip and
-  85.20% branch coverage, plus Ruff, strict mypy for 117 source files, distribution
-  builds, and isolated wheel verification.
+  truth-independent constrained token selector, versioned v0.3 data extension, and
+  resumable v0.2–v0.4 development pipeline are implemented. Final integrated source
+  verification and the owner-operated long run remain pending; no remediation model
+  has been trained and no remediation acceptance result exists yet.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
 inference service or web interface, and the current checkpoint must not be presented as
-deployment-ready. A planning-only three-iteration remediation program is now frozen;
-its first source-correctness milestone is implemented, but the development inventory,
-generation-cap freeze, v0.2 training, and all later gates remain unstarted.
+deployment-ready. A three-iteration remediation program is now frozen; its three
+versioned iterations are encoded as a development-only, non-overwriting pipeline with
+progress, safe stop/resume, and review evidence. Engineering verification and the
+local long run remain pending, and the separate fresh final-evaluation executor is
+intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
@@ -174,6 +175,26 @@ The preserved Phase 6 correction graph is independently verifiable with:
   --config configs/experiments/phase6-main-v0.1.0.toml
 ```
 
+The checksum-bound v0.2–v0.4 remediation engineering has a separate user-operated
+development runner. Dry-run it before starting any long work, and use the status,
+stop, and resume wrappers rather than editing run evidence:
+
+```bash
+./scripts/run_phase6_pipeline.sh --dry-run
+./scripts/run_phase6_pipeline.sh
+./scripts/check_phase6_status.sh
+./scripts/stop_phase6_pipeline.sh
+./scripts/resume_phase6_pipeline.sh
+```
+
+Infrastructure availability is not a positive model result. The routine pipeline
+cannot open the frozen final evaluation, and the historical G01–G15 packet is
+prohibited as the fresh v0.4 golden gate. The separate fresh final-evaluation executor
+is intentionally unimplemented and locked in this release; readiness-looking files
+cannot authorize access. Exact self-run, status, stop/resume, review, and safety
+instructions are in
+[the Phase 6 remediation local runbook](docs/model/PHASE6_REMEDIATION_RUNBOOK.md).
+
 ## Documentation map
 
 - [Implementation status and resumable handoff](docs/IMPLEMENTATION_STATUS.md)
@@ -181,6 +202,7 @@ The preserved Phase 6 correction graph is independently verifiable with:
 - [Phase 5 baseline and pilot evidence](docs/model/PHASE5_PILOT.md)
 - [Phase 6 main evaluation and negative result](docs/model/PHASE6_MAIN.md)
 - [Phase 6 three-iteration remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md)
+- [Phase 6 remediation local runbook](docs/model/PHASE6_REMEDIATION_RUNBOOK.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)

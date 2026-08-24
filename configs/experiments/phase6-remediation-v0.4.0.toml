@@ -1,0 +1,70 @@
+iteration_version = "0.4.0"
+requires_v03_gate = true
+development_dataset_config_path = "configs/dataset/remediation-development-v0.3.0.toml"
+final_dataset_config_path = "configs/dataset/remediation-final-v0.4.0.toml"
+compact_contract_path = "schemas/compact-output/v0/contract.json"
+run_root = "runs"
+
+[shadow]
+policy_version = "0.4.0"
+required_views = [
+  "shadow_renderer",
+  "shadow_component",
+  "shadow_severity",
+  "shadow_composition",
+  "shadow_counterfactual",
+  "shadow_noise",
+]
+worst_split_rule = "all_required_views_must_pass"
+source_groups_must_be_disjoint = true
+content_checksums_must_be_disjoint = true
+
+[variants]
+longer_context_enabled_only_if = "v03_prompt_truncation_is_material"
+capacity_variant_enabled_only_if = "v03_learning_curves_show_underfitting"
+default_context_length = 512
+optional_context_length = 1024
+maximum_capacity_variants = 1
+require_new_mps_pilot_before_activation = true
+material_prompt_truncation_rate = 0.10
+capacity_variant_status = "not_activated_without_measured_underfitting"
+context_candidate_selection_rule = "all_gates_then_highest_min_view_composite_then_iid_composite_then_shorter_context"
+
+[longer_context_model]
+model_version = "0.4.0"
+layers = 8
+width = 384
+heads = 8
+context_length = 1024
+feed_forward_multiplier = 4
+dropout = 0.1
+tie_embeddings = true
+bias = true
+
+[training]
+seed = 6401
+device = "mps"
+allow_cpu_fallback = true
+steps = 2000
+batch_size = 4
+learning_rate = 0.00025
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+evaluation_interval = 100
+durable_checkpoint_interval = 100
+
+[pilot]
+pilot_version = "0.4.0"
+candidate_id = "v04-context-1024"
+steps = 10
+batch_sizes = [1, 2, 4]
+require_finite_loss = true
+require_checkpoint_reload = true
+
+[final_access]
+automatically_run_final_evaluation = false
+require_ready_marker = true
+require_owner_review = true
+require_explicit_confirm_flag = true
+one_access_only = true
+historical_golden_packet_permitted = false

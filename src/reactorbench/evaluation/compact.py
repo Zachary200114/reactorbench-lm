@@ -55,6 +55,7 @@ FIELD_SEPARATOR = "|"
 LIST_SEPARATOR = ","
 CONCLUSION_SEPARATOR = "~"
 EMPTY_VALUE = "-"
+_CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 MAX_COMPACT_TARGET_BYTES = 16 * 1024
 MAX_VISIBLE_FACT_REFS = 4096 + 1024 + 128
 MAX_CONSTRAINED_GENERATED_TOKENS = 4096
@@ -69,9 +70,6 @@ _TARGET_TYPES = (
     NextActionTarget,
     IncidentSummaryTarget,
     PromptCounterfactualComparisonTarget,
-)
-_CONTINUATION_EVENTS = tuple(
-    event.value for event in EventType if event is not EventType.ACTION_APPLIED
 )
 
 
@@ -148,16 +146,56 @@ class CompactTargetContext(ContractModel):
         return self
 
 
-def _enum_values(enum_type: type[StrEnum]) -> tuple[str, ...]:
-    return tuple(member.value for member in enum_type)
+def _enum_codes(enum_type: type[StrEnum]) -> tuple[str, ...]:
+    members = tuple(enum_type)
+    if len(members) > len(_CODE_ALPHABET):  # pragma: no cover - closed-enum defense
+        raise CompactTargetError("compact enum exceeds the single-atom code table")
+    return tuple(_CODE_ALPHABET[index] for index in range(len(members)))
 
 
-def _encode_enum_list(values: tuple[StrEnum, ...]) -> str:
-    return LIST_SEPARATOR.join(value.value for value in values) if values else EMPTY_VALUE
+def _encode_enum_code(value: StrEnum, enum_type: type[StrEnum]) -> str:
+    members = tuple(enum_type)
+    try:
+        return _CODE_ALPHABET[members.index(value)]
+    except ValueError as error:  # pragma: no cover - exact schema values prevent this
+        raise CompactTargetError("value is outside its compact enum code table") from error
 
 
-def _encode_optional(value: StrEnum | None) -> str:
-    return EMPTY_VALUE if value is None else value.value
+def _decode_enum_code(value: str, enum_type: type[StrEnum], *, field_name: str) -> StrEnum:
+    codes = _enum_codes(enum_type)
+    if value not in codes:
+        raise CompactTargetError(f"{field_name} contains an invalid compact enum code")
+    return tuple(enum_type)[codes.index(value)]
+
+
+def _encode_enum_code_list(values: tuple[StrEnum, ...], enum_type: type[StrEnum]) -> str:
+    if not values:
+        return EMPTY_VALUE
+    return LIST_SEPARATOR.join(_encode_enum_code(value, enum_type) for value in values)
+
+
+def _parse_enum_code_list(
+    value: str,
+    enum_type: type[StrEnum],
+    *,
+    field_name: str,
+    canonical: bool,
+) -> tuple[StrEnum, ...]:
+    if value == EMPTY_VALUE:
+        return ()
+    if not value or EMPTY_VALUE in value.split(LIST_SEPARATOR):
+        raise CompactTargetError(f"{field_name} has an invalid empty-list encoding")
+    parsed = tuple(
+        _decode_enum_code(item, enum_type, field_name=field_name)
+        for item in value.split(LIST_SEPARATOR)
+    )
+    if len(parsed) != len(set(parsed)):
+        raise CompactTargetError(f"{field_name} must not contain duplicates")
+    if canonical:
+        order = {member: index for index, member in enumerate(enum_type)}
+        if parsed != tuple(sorted(parsed, key=order.__getitem__)):
+            raise CompactTargetError(f"{field_name} is not in canonical enum order")
+    return parsed
 
 
 def _validate_refs(
@@ -189,11 +227,15 @@ def _encode_refs(
 def _encode_conclusion(value: CounterfactualConclusion) -> str:
     return CONCLUSION_SEPARATOR.join(
         (
-            value.diagnosis_status.value,
-            _encode_enum_list(cast(tuple[StrEnum, ...], value.fault_labels)),
-            _encode_enum_list(cast(tuple[StrEnum, ...], value.evidence_slots)),
-            value.immediate_action.value,
-            _encode_optional(value.abstention_reason),
+            _encode_enum_code(value.diagnosis_status, DiagnosisStatus),
+            _encode_enum_code_list(cast(tuple[StrEnum, ...], value.fault_labels), FaultFamily),
+            _encode_enum_code_list(cast(tuple[StrEnum, ...], value.evidence_slots), EvidenceSlot),
+            _encode_enum_code(value.immediate_action, ActionLabel),
+            (
+                EMPTY_VALUE
+                if value.abstention_reason is None
+                else _encode_enum_code(value.abstention_reason, AbstentionReason)
+            ),
         )
     )
 
@@ -214,12 +256,16 @@ def serialize_compact_target(
 
     fields: tuple[str, ...]
     if type(target) is PromptContinuationTarget:
-        fields = (target.next_event_type.value,)
+        fields = (_encode_enum_code(target.next_event_type, EventType),)
     elif type(target) is FaultDiagnosisTarget:
         fields = (
-            target.diagnosis_status.value,
-            _encode_enum_list(cast(tuple[StrEnum, ...], target.fault_labels)),
-            _encode_optional(target.abstention_reason),
+            _encode_enum_code(target.diagnosis_status, DiagnosisStatus),
+            _encode_enum_code_list(cast(tuple[StrEnum, ...], target.fault_labels), FaultFamily),
+            (
+                EMPTY_VALUE
+                if target.abstention_reason is None
+                else _encode_enum_code(target.abstention_reason, AbstentionReason)
+            ),
         )
     elif type(target) is PromptEvidenceTarget:
         fields = (
@@ -228,26 +274,34 @@ def serialize_compact_target(
                 visible=context.visible_fact_refs,
                 field_name="evidence fact references",
             ),
-            _encode_enum_list(cast(tuple[StrEnum, ...], target.evidence_slots)),
+            _encode_enum_code_list(cast(tuple[StrEnum, ...], target.evidence_slots), EvidenceSlot),
         )
     elif type(target) is NextActionTarget:
-        fields = (target.immediate_action.value,)
+        fields = (_encode_enum_code(target.immediate_action, ActionLabel),)
     elif type(target) is IncidentSummaryTarget:
         fields = (
-            _encode_enum_list(cast(tuple[StrEnum, ...], target.affected_subsystems)),
-            target.observed_trend.value,
-            target.diagnosis_status.value,
-            _encode_enum_list(cast(tuple[StrEnum, ...], target.fault_labels)),
-            target.operating_mode.value,
-            target.immediate_action.value,
-            _encode_optional(target.abstention_reason),
+            _encode_enum_code_list(
+                cast(tuple[StrEnum, ...], target.affected_subsystems), AsterSubsystem
+            ),
+            _encode_enum_code(target.observed_trend, ObservedTrend),
+            _encode_enum_code(target.diagnosis_status, DiagnosisStatus),
+            _encode_enum_code_list(cast(tuple[StrEnum, ...], target.fault_labels), FaultFamily),
+            _encode_enum_code(target.operating_mode, OperatingMode),
+            _encode_enum_code(target.immediate_action, ActionLabel),
+            (
+                EMPTY_VALUE
+                if target.abstention_reason is None
+                else _encode_enum_code(target.abstention_reason, AbstentionReason)
+            ),
         )
     else:
         counterfactual = cast(PromptCounterfactualComparisonTarget, target)
         fields = (
             _encode_conclusion(counterfactual.baseline),
             _encode_conclusion(counterfactual.counterfactual),
-            _encode_enum_list(cast(tuple[StrEnum, ...], counterfactual.changed_fields)),
+            _encode_enum_code_list(
+                cast(tuple[StrEnum, ...], counterfactual.changed_fields), CounterfactualChange
+            ),
             _encode_refs(
                 counterfactual.baseline_decisive_fact_refs,
                 visible=context.visible_fact_refs,
@@ -258,49 +312,14 @@ def serialize_compact_target(
                 visible=context.counterfactual_visible_fact_refs,
                 field_name="counterfactual decisive fact references",
             ),
-            _encode_enum_list(cast(tuple[StrEnum, ...], counterfactual.decisive_evidence_slots)),
+            _encode_enum_code_list(
+                cast(tuple[StrEnum, ...], counterfactual.decisive_evidence_slots), EvidenceSlot
+            ),
         )
     text = FIELD_SEPARATOR.join((COMPACT_WIRE_PREFIX, target.task_name.value, *fields))
     if len(text.encode("utf-8")) > MAX_COMPACT_TARGET_BYTES:
         raise CompactTargetError("compact target exceeds its UTF-8 byte limit")
     return text
-
-
-def _parse_scalar(value: str, enum_type: type[StrEnum], *, field_name: str) -> StrEnum:
-    try:
-        return enum_type(value)
-    except ValueError as error:
-        raise CompactTargetError(f"{field_name} contains an invalid enum value") from error
-
-
-def _parse_optional(value: str, enum_type: type[StrEnum], *, field_name: str) -> StrEnum | None:
-    if value == EMPTY_VALUE:
-        return None
-    return _parse_scalar(value, enum_type, field_name=field_name)
-
-
-def _parse_enum_list(
-    value: str,
-    enum_type: type[StrEnum],
-    *,
-    field_name: str,
-    canonical: bool,
-) -> tuple[StrEnum, ...]:
-    if value == EMPTY_VALUE:
-        return ()
-    if not value or EMPTY_VALUE in value.split(LIST_SEPARATOR):
-        raise CompactTargetError(f"{field_name} has an invalid empty-list encoding")
-    parsed = tuple(
-        _parse_scalar(item, enum_type, field_name=field_name)
-        for item in value.split(LIST_SEPARATOR)
-    )
-    if len(parsed) != len(set(parsed)):
-        raise CompactTargetError(f"{field_name} must not contain duplicates")
-    if canonical:
-        order = {member: index for index, member in enumerate(enum_type)}
-        if parsed != tuple(sorted(parsed, key=order.__getitem__)):
-            raise CompactTargetError(f"{field_name} is not in canonical enum order")
-    return parsed
 
 
 def _parse_refs(
@@ -325,23 +344,29 @@ def _parse_conclusion(value: str) -> CounterfactualConclusion:
         raise CompactTargetError("counterfactual conclusion must contain exactly five fields")
     status = cast(
         DiagnosisStatus,
-        _parse_scalar(fields[0], DiagnosisStatus, field_name="diagnosis status"),
+        _decode_enum_code(fields[0], DiagnosisStatus, field_name="diagnosis status"),
     )
     faults = cast(
         tuple[FaultFamily, ...],
-        _parse_enum_list(fields[1], FaultFamily, field_name="fault labels", canonical=True),
+        _parse_enum_code_list(fields[1], FaultFamily, field_name="fault labels", canonical=True),
     )
     slots = cast(
         tuple[EvidenceSlot, ...],
-        _parse_enum_list(fields[2], EvidenceSlot, field_name="evidence slots", canonical=False),
+        _parse_enum_code_list(
+            fields[2], EvidenceSlot, field_name="evidence slots", canonical=False
+        ),
     )
     action = cast(
         ActionLabel,
-        _parse_scalar(fields[3], ActionLabel, field_name="immediate action"),
+        _decode_enum_code(fields[3], ActionLabel, field_name="immediate action"),
     )
-    abstention = cast(
-        AbstentionReason | None,
-        _parse_optional(fields[4], AbstentionReason, field_name="abstention reason"),
+    abstention = (
+        None
+        if fields[4] == EMPTY_VALUE
+        else cast(
+            AbstentionReason,
+            _decode_enum_code(fields[4], AbstentionReason, field_name="abstention reason"),
+        )
     )
     return CounterfactualConclusion(
         diagnosis_status=status,
@@ -386,7 +411,7 @@ def parse_compact_target(
             target = PromptContinuationTarget(
                 next_event_type=cast(
                     EventType,
-                    _parse_scalar(fields[0], EventType, field_name="next event type"),
+                    _decode_enum_code(fields[0], EventType, field_name="next event type"),
                 )
             )
         elif task_name is TaskName.FAULT_FAMILY:
@@ -395,17 +420,25 @@ def parse_compact_target(
             target = FaultDiagnosisTarget(
                 diagnosis_status=cast(
                     DiagnosisStatus,
-                    _parse_scalar(fields[0], DiagnosisStatus, field_name="diagnosis status"),
+                    _decode_enum_code(fields[0], DiagnosisStatus, field_name="diagnosis status"),
                 ),
                 fault_labels=cast(
                     tuple[FaultFamily, ...],
-                    _parse_enum_list(
+                    _parse_enum_code_list(
                         fields[1], FaultFamily, field_name="fault labels", canonical=True
                     ),
                 ),
-                abstention_reason=cast(
-                    AbstentionReason | None,
-                    _parse_optional(fields[2], AbstentionReason, field_name="abstention reason"),
+                abstention_reason=(
+                    None
+                    if fields[2] == EMPTY_VALUE
+                    else cast(
+                        AbstentionReason,
+                        _decode_enum_code(
+                            fields[2],
+                            AbstentionReason,
+                            field_name="abstention reason",
+                        ),
+                    )
                 ),
             )
         elif task_name is TaskName.EXTRACT_EVIDENCE:
@@ -419,7 +452,7 @@ def parse_compact_target(
                 ),
                 evidence_slots=cast(
                     tuple[EvidenceSlot, ...],
-                    _parse_enum_list(
+                    _parse_enum_code_list(
                         fields[1], EvidenceSlot, field_name="evidence slots", canonical=False
                     ),
                 ),
@@ -430,7 +463,7 @@ def parse_compact_target(
             target = NextActionTarget(
                 immediate_action=cast(
                     ActionLabel,
-                    _parse_scalar(fields[0], ActionLabel, field_name="immediate action"),
+                    _decode_enum_code(fields[0], ActionLabel, field_name="immediate action"),
                 )
             )
         elif task_name is TaskName.INCIDENT_SUMMARY:
@@ -439,7 +472,7 @@ def parse_compact_target(
             target = IncidentSummaryTarget(
                 affected_subsystems=cast(
                     tuple[AsterSubsystem, ...],
-                    _parse_enum_list(
+                    _parse_enum_code_list(
                         fields[0],
                         AsterSubsystem,
                         field_name="affected subsystems",
@@ -448,29 +481,37 @@ def parse_compact_target(
                 ),
                 observed_trend=cast(
                     ObservedTrend,
-                    _parse_scalar(fields[1], ObservedTrend, field_name="observed trend"),
+                    _decode_enum_code(fields[1], ObservedTrend, field_name="observed trend"),
                 ),
                 diagnosis_status=cast(
                     DiagnosisStatus,
-                    _parse_scalar(fields[2], DiagnosisStatus, field_name="diagnosis status"),
+                    _decode_enum_code(fields[2], DiagnosisStatus, field_name="diagnosis status"),
                 ),
                 fault_labels=cast(
                     tuple[FaultFamily, ...],
-                    _parse_enum_list(
+                    _parse_enum_code_list(
                         fields[3], FaultFamily, field_name="fault labels", canonical=True
                     ),
                 ),
                 operating_mode=cast(
                     OperatingMode,
-                    _parse_scalar(fields[4], OperatingMode, field_name="operating mode"),
+                    _decode_enum_code(fields[4], OperatingMode, field_name="operating mode"),
                 ),
                 immediate_action=cast(
                     ActionLabel,
-                    _parse_scalar(fields[5], ActionLabel, field_name="immediate action"),
+                    _decode_enum_code(fields[5], ActionLabel, field_name="immediate action"),
                 ),
-                abstention_reason=cast(
-                    AbstentionReason | None,
-                    _parse_optional(fields[6], AbstentionReason, field_name="abstention reason"),
+                abstention_reason=(
+                    None
+                    if fields[6] == EMPTY_VALUE
+                    else cast(
+                        AbstentionReason,
+                        _decode_enum_code(
+                            fields[6],
+                            AbstentionReason,
+                            field_name="abstention reason",
+                        ),
+                    )
                 ),
             )
         else:
@@ -481,7 +522,7 @@ def parse_compact_target(
                 counterfactual=_parse_conclusion(fields[1]),
                 changed_fields=cast(
                     tuple[CounterfactualChange, ...],
-                    _parse_enum_list(
+                    _parse_enum_code_list(
                         fields[2],
                         CounterfactualChange,
                         field_name="changed fields",
@@ -500,7 +541,7 @@ def parse_compact_target(
                 ),
                 decisive_evidence_slots=cast(
                     tuple[EvidenceSlot, ...],
-                    _parse_enum_list(
+                    _parse_enum_code_list(
                         fields[5],
                         EvidenceSlot,
                         field_name="decisive evidence slots",
@@ -623,7 +664,7 @@ type _FieldSpec = _ScalarSpec | _ListSpec | _ConclusionSpec
 
 
 def _diagnosis_fault_spec(status: DiagnosisStatus) -> _ListSpec:
-    atoms = _enum_values(FaultFamily) if status is DiagnosisStatus.DIAGNOSED else ()
+    atoms = _enum_codes(FaultFamily) if status is DiagnosisStatus.DIAGNOSED else ()
     return _ListSpec(
         atoms,
         allow_empty=status is not DiagnosisStatus.DIAGNOSED,
@@ -633,10 +674,10 @@ def _diagnosis_fault_spec(status: DiagnosisStatus) -> _ListSpec:
 
 def _diagnosis_action_spec(status: DiagnosisStatus) -> _ScalarSpec:
     if status is DiagnosisStatus.UNRESOLVED:
-        return _ScalarSpec((ActionLabel.INSUFFICIENT_EVIDENCE.value,))
+        return _ScalarSpec((_encode_enum_code(ActionLabel.INSUFFICIENT_EVIDENCE, ActionLabel),))
     return _ScalarSpec(
         tuple(
-            action.value
+            _encode_enum_code(action, ActionLabel)
             for action in ActionLabel
             if action is not ActionLabel.INSUFFICIENT_EVIDENCE
         )
@@ -645,22 +686,42 @@ def _diagnosis_action_spec(status: DiagnosisStatus) -> _ScalarSpec:
 
 def _diagnosis_abstention_spec(status: DiagnosisStatus) -> _ScalarSpec:
     if status is DiagnosisStatus.UNRESOLVED:
-        return _ScalarSpec((AbstentionReason.INSUFFICIENT_EVIDENCE.value,))
+        return _ScalarSpec(
+            (_encode_enum_code(AbstentionReason.INSUFFICIENT_EVIDENCE, AbstentionReason),)
+        )
     return _ScalarSpec((EMPTY_VALUE,))
 
 
 def _conclusion_field_spec(index: int, completed: tuple[str, ...]) -> _FieldSpec:
     if index == 0:
-        return _ScalarSpec(_enum_values(DiagnosisStatus))
-    status = DiagnosisStatus(completed[0])
+        return _ScalarSpec(_enum_codes(DiagnosisStatus))
+    status = cast(
+        DiagnosisStatus,
+        _decode_enum_code(completed[0], DiagnosisStatus, field_name="diagnosis status"),
+    )
     if index == 1:
-        return _diagnosis_fault_spec(status)
+        return _ListSpec(
+            _enum_codes(FaultFamily) if status is DiagnosisStatus.DIAGNOSED else (),
+            allow_empty=status is not DiagnosisStatus.DIAGNOSED,
+            require_canonical_enum_order=True,
+        )
     if index == 2:
-        return _ListSpec(_enum_values(EvidenceSlot))
+        return _ListSpec(_enum_codes(EvidenceSlot))
     if index == 3:
-        return _diagnosis_action_spec(status)
+        actions = (
+            (ActionLabel.INSUFFICIENT_EVIDENCE,)
+            if status is DiagnosisStatus.UNRESOLVED
+            else tuple(
+                action for action in ActionLabel if action is not ActionLabel.INSUFFICIENT_EVIDENCE
+            )
+        )
+        return _ScalarSpec(tuple(_encode_enum_code(action, ActionLabel) for action in actions))
     if index == 4:
-        return _diagnosis_abstention_spec(status)
+        return _ScalarSpec(
+            (_encode_enum_code(AbstentionReason.INSUFFICIENT_EVIDENCE, AbstentionReason),)
+            if status is DiagnosisStatus.UNRESOLVED
+            else (EMPTY_VALUE,)
+        )
     raise CompactTargetError("counterfactual conclusion has too many fields")
 
 
@@ -699,11 +760,20 @@ def _task_field_spec(
 ) -> _FieldSpec:
     if task_name is TaskName.CONTINUE_LOG:
         if index == 0:
-            return _ScalarSpec(_CONTINUATION_EVENTS)
+            return _ScalarSpec(
+                tuple(
+                    _encode_enum_code(event, EventType)
+                    for event in EventType
+                    if event is not EventType.ACTION_APPLIED
+                )
+            )
     elif task_name is TaskName.FAULT_FAMILY:
         if index == 0:
-            return _ScalarSpec(_enum_values(DiagnosisStatus))
-        status = DiagnosisStatus(completed[0])
+            return _ScalarSpec(_enum_codes(DiagnosisStatus))
+        status = cast(
+            DiagnosisStatus,
+            _decode_enum_code(completed[0], DiagnosisStatus, field_name="diagnosis status"),
+        )
         if index == 1:
             return _diagnosis_fault_spec(status)
         if index == 2:
@@ -715,19 +785,19 @@ def _task_field_spec(
                 fact_references=True,
             )
         if index == 1:
-            return _ListSpec(_enum_values(EvidenceSlot))
+            return _ListSpec(_enum_codes(EvidenceSlot))
     elif task_name is TaskName.NEXT_ACTION:
         if index == 0:
-            return _ScalarSpec(_enum_values(ActionLabel))
+            return _ScalarSpec(_enum_codes(ActionLabel))
     elif task_name is TaskName.INCIDENT_SUMMARY:
         if index == 0:
-            return _ListSpec(_enum_values(AsterSubsystem), require_canonical_enum_order=True)
+            return _ListSpec(_enum_codes(AsterSubsystem), require_canonical_enum_order=True)
         if index == 1:
-            return _ScalarSpec(_enum_values(ObservedTrend))
+            return _ScalarSpec(_enum_codes(ObservedTrend))
         if index == 2:
             subsystems_present = completed[0] != EMPTY_VALUE
             statuses = tuple(
-                status.value
+                _encode_enum_code(status, DiagnosisStatus)
                 for status in DiagnosisStatus
                 if not (
                     (status is DiagnosisStatus.DIAGNOSED and not subsystems_present)
@@ -735,11 +805,14 @@ def _task_field_spec(
                 )
             )
             return _ScalarSpec(statuses)
-        status = DiagnosisStatus(completed[2])
+        status = cast(
+            DiagnosisStatus,
+            _decode_enum_code(completed[2], DiagnosisStatus, field_name="diagnosis status"),
+        )
         if index == 3:
             return _diagnosis_fault_spec(status)
         if index == 4:
-            return _ScalarSpec(_enum_values(OperatingMode))
+            return _ScalarSpec(_enum_codes(OperatingMode))
         if index == 5:
             return _diagnosis_action_spec(status)
         if index == 6:
@@ -753,7 +826,9 @@ def _task_field_spec(
             changes = _changed_fields(baseline, counterfactual)
             if not changes:
                 return _ScalarSpec(())
-            return _ScalarSpec((_encode_enum_list(cast(tuple[StrEnum, ...], changes)),))
+            return _ScalarSpec(
+                (_encode_enum_code_list(cast(tuple[StrEnum, ...], changes), CounterfactualChange),)
+            )
         if index == 3:
             return _ListSpec(context.visible_fact_refs, fact_references=True)
         if index == 4:
@@ -764,7 +839,7 @@ def _task_field_spec(
                 fact_references=True,
             )
         if index == 5:
-            return _ListSpec(_enum_values(EvidenceSlot))
+            return _ListSpec(_enum_codes(EvidenceSlot))
     raise CompactTargetError("compact target contains too many task fields")
 
 
@@ -816,7 +891,7 @@ def compact_output_contract() -> dict[str, object]:
     return {
         "contract_version": COMPACT_TARGET_VERSION,
         "status": "developmental",
-        "frozen": False,
+        "frozen": True,
         "wire_prefix": COMPACT_WIRE_PREFIX,
         "source_target_contract": "ProjectionTaskTargetValue@0.1.0",
         "max_utf8_bytes": MAX_COMPACT_TARGET_BYTES,
@@ -825,6 +900,24 @@ def compact_output_contract() -> dict[str, object]:
             "list": LIST_SEPARATOR,
             "conclusion": CONCLUSION_SEPARATOR,
             "empty_or_absent": EMPTY_VALUE,
+        },
+        "enum_code_tables": {
+            enum_type.__name__: {
+                code: member.value
+                for code, member in zip(_enum_codes(enum_type), enum_type, strict=True)
+            }
+            for enum_type in (
+                DiagnosisStatus,
+                FaultFamily,
+                EvidenceSlot,
+                ActionLabel,
+                AbstentionReason,
+                CounterfactualChange,
+                EventType,
+                AsterSubsystem,
+                ObservedTrend,
+                OperatingMode,
+            )
         },
         "task_fields": task_fields,
     }

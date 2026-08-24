@@ -343,7 +343,7 @@ def test_misordered_prompt_local_references_always_fail_closed(first: int, secon
         task_name=TaskName.EXTRACT_EVIDENCE,
         visible_fact_refs=tuple(f"e-{index:04d}" for index in range(first + 1)),
     )
-    text = f"RB2|extract_evidence|e-{first:04d},e-{second:04d}|CHANNEL_DISAGREEMENT"
+    text = f"RB2|extract_evidence|e-{first:04d},e-{second:04d}|2"
     try:
         parse_compact_target(text, context=context)
     except CompactTargetError:

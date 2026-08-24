@@ -33,11 +33,41 @@ def _expected_resource_files() -> dict[str, bytes]:
         f"{PACKAGE_DATA_PREFIX}/configs/model/phase4-smoke-v0.1.0.toml": (
             ROOT / "configs" / "model" / "phase4-smoke-v0.1.0.toml"
         ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/dataset/development-v0.1.0.toml": (
+            ROOT / "configs" / "dataset" / "development-v0.1.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/dataset/remediation-development-v0.3.0.toml": (
+            ROOT / "configs" / "dataset" / "remediation-development-v0.3.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/dataset/remediation-final-v0.4.0.toml": (
+            ROOT / "configs" / "dataset" / "remediation-final-v0.4.0.toml"
+        ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase5-pilot-v0.1.0.toml": (
             ROOT / "configs" / "experiments" / "phase5-pilot-v0.1.0.toml"
         ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-main-v0.1.0.toml": (
             ROOT / "configs" / "experiments" / "phase6-main-v0.1.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-v0.2.0.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-v0.2.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-v0.3.0.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-v0.3.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-v0.4.0.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-v0.4.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-pipeline-v0.4.0.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-pipeline-v0.4.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
+            ROOT / "docs" / "model" / "PHASE6_REMEDIATION_RUNBOOK.md"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/docs/model/PHASE6_V02_INVENTORY.json": (
+            ROOT / "docs" / "model" / "PHASE6_V02_INVENTORY.json"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json": (
+            ROOT / "docs" / "model" / "PHASE6_V03_COUNTERFACTUAL_CAP.json"
         ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/golden/golden-suite-v0.1.0.json": (
             ROOT / "golden" / "golden-suite-v0.1.0.json"
@@ -52,6 +82,16 @@ def _expected_resource_files() -> dict[str, bytes]:
                     f"{PACKAGE_DATA_PREFIX}/schemas/{snapshot_family}/v0/{relative_path}"
                 )
                 expected[packaged_path] = path.read_bytes()
+    for script_name in (
+        "check_phase6_status.sh",
+        "resume_phase6_pipeline.sh",
+        "run_phase6_evaluation.sh",
+        "run_phase6_pipeline.sh",
+        "stop_phase6_pipeline.sh",
+    ):
+        expected[f"{PACKAGE_DATA_PREFIX}/scripts/{script_name}"] = (
+            ROOT / "scripts" / script_name
+        ).read_bytes()
     guard_root = ROOT / "src" / "reactorbench" / "dataset" / "resources"
     for path in guard_root.rglob("*"):
         if path.is_file():
@@ -133,10 +173,21 @@ from reactorbench.resources import (
     canonical_schema_snapshot_resource,
     compact_output_contract_resource,
     default_config_resource,
+    development_dataset_config_resource,
     golden_suite_resource,
     phase4_smoke_config_resource,
     phase5_pilot_config_resource,
     phase6_main_config_resource,
+    phase6_remediation_development_dataset_config_resource,
+    phase6_remediation_final_dataset_config_resource,
+    phase6_remediation_pipeline_config_resource,
+    phase6_remediation_runbook_resource,
+    phase6_remediation_script_resource,
+    phase6_remediation_v02_config_resource,
+    phase6_remediation_v03_config_resource,
+    phase6_remediation_v04_config_resource,
+    phase6_v02_inventory_report_resource,
+    phase6_v03_counterfactual_cap_report_resource,
 )
 from reactorbench.schemas import load_snapshot, schema_documents
 
@@ -150,6 +201,35 @@ with as_file(phase5_pilot_config_resource()) as config_path:
     assert config_path.read_bytes().startswith(b'[phase5]')
 with as_file(phase6_main_config_resource()) as config_path:
     assert config_path.read_bytes().startswith(b'[phase6]')
+with as_file(development_dataset_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'[dataset]')
+with as_file(phase6_remediation_development_dataset_config_resource()) as config_path:
+    assert b'dataset_version = "0.3.0"' in config_path.read_bytes()
+with as_file(phase6_remediation_final_dataset_config_resource()) as config_path:
+    assert b'dataset_version = "0.4.0"' in config_path.read_bytes()
+with as_file(phase6_remediation_v02_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'iteration_version = "0.2.0"')
+with as_file(phase6_remediation_v03_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'iteration_version = "0.3.0"')
+with as_file(phase6_remediation_v04_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'iteration_version = "0.4.0"')
+with as_file(phase6_remediation_pipeline_config_resource()) as config_path:
+    assert config_path.read_bytes().startswith(b'pipeline_version = "0.4.0"')
+with as_file(phase6_v02_inventory_report_resource()) as report_path:
+    assert b'"report_version": "0.2.0"' in report_path.read_bytes()
+with as_file(phase6_v03_counterfactual_cap_report_resource()) as report_path:
+    assert b'"report_version": "0.3.0"' in report_path.read_bytes()
+with as_file(phase6_remediation_runbook_resource()) as runbook_path:
+    assert runbook_path.read_bytes().startswith(b'# Phase 6 remediation local runbook')
+for script_name in (
+    'check_phase6_status.sh',
+    'resume_phase6_pipeline.sh',
+    'run_phase6_evaluation.sh',
+    'run_phase6_pipeline.sh',
+    'stop_phase6_pipeline.sh',
+):
+    with as_file(phase6_remediation_script_resource(script_name)) as script_path:
+        assert script_path.read_bytes().startswith(b'#!/')
 with as_file(golden_suite_resource()) as golden_path:
     assert b'"packet_sha256"' in golden_path.read_bytes()
 with as_file(canonical_schema_snapshot_resource()) as snapshot_path:

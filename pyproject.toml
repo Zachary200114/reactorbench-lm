@@ -28,8 +28,16 @@ dev = [
 [tool.hatch.build.targets.sdist]
 include = [
   "/configs",
+  "/docs/model/PHASE6_REMEDIATION_RUNBOOK.md",
+  "/docs/model/PHASE6_V02_INVENTORY.json",
+  "/docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json",
   "/golden",
   "/schemas",
+  "/scripts/check_phase6_status.sh",
+  "/scripts/resume_phase6_pipeline.sh",
+  "/scripts/run_phase6_evaluation.sh",
+  "/scripts/run_phase6_pipeline.sh",
+  "/scripts/stop_phase6_pipeline.sh",
   "/src",
   "/README.md",
   "/SECURITY.md",
@@ -41,12 +49,27 @@ packages = ["src/reactorbench"]
 [tool.hatch.build.targets.wheel.force-include]
 "configs/default.toml" = "reactorbench/_data/configs/default.toml"
 "configs/model/phase4-smoke-v0.1.0.toml" = "reactorbench/_data/configs/model/phase4-smoke-v0.1.0.toml"
+"configs/dataset/development-v0.1.0.toml" = "reactorbench/_data/configs/dataset/development-v0.1.0.toml"
+"configs/dataset/remediation-development-v0.3.0.toml" = "reactorbench/_data/configs/dataset/remediation-development-v0.3.0.toml"
+"configs/dataset/remediation-final-v0.4.0.toml" = "reactorbench/_data/configs/dataset/remediation-final-v0.4.0.toml"
 "configs/experiments/phase5-pilot-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase5-pilot-v0.1.0.toml"
 "configs/experiments/phase6-main-v0.1.0.toml" = "reactorbench/_data/configs/experiments/phase6-main-v0.1.0.toml"
+"configs/experiments/phase6-remediation-v0.2.0.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-v0.2.0.toml"
+"configs/experiments/phase6-remediation-v0.3.0.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.0.toml"
+"configs/experiments/phase6-remediation-v0.4.0.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-v0.4.0.toml"
+"configs/experiments/phase6-remediation-pipeline-v0.4.0.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-pipeline-v0.4.0.toml"
+"docs/model/PHASE6_REMEDIATION_RUNBOOK.md" = "reactorbench/_data/docs/model/PHASE6_REMEDIATION_RUNBOOK.md"
+"docs/model/PHASE6_V02_INVENTORY.json" = "reactorbench/_data/docs/model/PHASE6_V02_INVENTORY.json"
+"docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json" = "reactorbench/_data/docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json"
 "golden/golden-suite-v0.1.0.json" = "reactorbench/_data/golden/golden-suite-v0.1.0.json"
 "schemas/aster/v0" = "reactorbench/_data/schemas/aster/v0"
 "schemas/compact-output/v0" = "reactorbench/_data/schemas/compact-output/v0"
 "schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
+"scripts/check_phase6_status.sh" = "reactorbench/_data/scripts/check_phase6_status.sh"
+"scripts/resume_phase6_pipeline.sh" = "reactorbench/_data/scripts/resume_phase6_pipeline.sh"
+"scripts/run_phase6_evaluation.sh" = "reactorbench/_data/scripts/run_phase6_evaluation.sh"
+"scripts/run_phase6_pipeline.sh" = "reactorbench/_data/scripts/run_phase6_pipeline.sh"
+"scripts/stop_phase6_pipeline.sh" = "reactorbench/_data/scripts/stop_phase6_pipeline.sh"
 
 [tool.pytest.ini_options]
 minversion = "8.3"

@@ -190,7 +190,119 @@ def _iid_scenarios(
             )
             for family, scenario in definitions
         )
+        # Remediation v0.3 adds group-atomic near-neighbor comparisons to the fit and
+        # validation inventories.  Keep this version-gated so the historical Phase 3
+        # and v0.2 inventories remain byte-for-byte reproducible.  G14 stays reserved
+        # for the composition shadow; only the already implemented G07/G08/G09/G12
+        # structural families are admitted here.
+        if config.dataset.dataset_version == "0.3.0" and split_name in {
+            SplitName.IID_TRAIN,
+            SplitName.IID_VALIDATION,
+        }:
+            plans.extend(
+                _counterfactual_family_plans(
+                    config,
+                    split_name=split_name,
+                    seed=seed,
+                )
+            )
     return plans
+
+
+def _counterfactual_family_plans(
+    config: DevelopmentDatasetConfig,
+    *,
+    split_name: SplitName,
+    seed: int,
+) -> tuple[PlannedScenario, ...]:
+    """Build one complete, target-independent G07/G08/G09/G12 family matrix."""
+
+    duration = config.dataset.duration_ticks
+    plans: list[PlannedScenario] = []
+    g07 = (
+        (
+            "g07-standby-available",
+            "standby_available",
+            build_pump_trip_scenario(
+                seed=seed,
+                duration_ticks=duration,
+                standby_state=ComponentState.AVAILABLE,
+            ),
+        ),
+        (
+            "g07-standby-unavailable",
+            "standby_unavailable",
+            build_pump_trip_scenario(
+                seed=seed,
+                duration_ticks=duration,
+                standby_state=ComponentState.UNAVAILABLE,
+            ),
+        ),
+    )
+    plans.extend(
+        _plan(
+            config,
+            split_name=split_name,
+            case_family=case_family,
+            scenario=scenario,
+            style_key="g07-standby",
+            counterfactual_family="g07-standby",
+            counterfactual_variant=variant,
+        )
+        for case_family, variant, scenario in g07
+    )
+
+    g08_g09 = (
+        (
+            "g08-lag-3",
+            "valve_lag_3",
+            build_valve_lag_scenario(seed=seed, duration_ticks=duration, lag_ticks=3),
+        ),
+        (
+            "g08-lag-4",
+            "valve_lag_4",
+            build_valve_lag_scenario(seed=seed, duration_ticks=duration, lag_ticks=4),
+        ),
+        (
+            "g09-stuck",
+            "valve_stuck",
+            build_valve_stuck_scenario(seed=seed, duration_ticks=duration),
+        ),
+    )
+    plans.extend(
+        _plan(
+            config,
+            split_name=split_name,
+            case_family=case_family,
+            scenario=scenario,
+            style_key="g08-g09-valve",
+            counterfactual_family="g08-g09-valve",
+            counterfactual_variant=variant,
+        )
+        for case_family, variant, scenario in g08_g09
+    )
+
+    for plant_variant in (PlantVariant.ASTER_A, PlantVariant.ASTER_B):
+        group_family = f"g12-map-{plant_variant.value.lower()}"
+        for included in (True, False):
+            variant = "map_included" if included else "map_withheld"
+            plans.append(
+                _plan(
+                    config,
+                    split_name=split_name,
+                    case_family=f"{group_family}-{variant}",
+                    scenario=build_support_power_interruption_scenario(
+                        seed=seed,
+                        duration_ticks=duration,
+                        plant_variant=plant_variant,
+                        include_dependency_map=included,
+                    ),
+                    style_key=group_family,
+                    counterfactual_family=group_family,
+                    counterfactual_variant=variant,
+                )
+            )
+    return tuple(plans)
 
 
 def _component_holdout(config: DevelopmentDatasetConfig) -> list[PlannedScenario]:
@@ -309,91 +421,14 @@ def _composition_holdout(config: DevelopmentDatasetConfig) -> list[PlannedScenar
 
 def _counterfactual_holdout(config: DevelopmentDatasetConfig) -> list[PlannedScenario]:
     plans: list[PlannedScenario] = []
-    duration = config.dataset.duration_ticks
     for seed in config.splits.counterfactual_test.seeds:
-        g07 = (
-            (
-                "g07-standby-available",
-                "standby_available",
-                build_pump_trip_scenario(
-                    seed=seed,
-                    duration_ticks=duration,
-                    standby_state=ComponentState.AVAILABLE,
-                ),
-            ),
-            (
-                "g07-standby-unavailable",
-                "standby_unavailable",
-                build_pump_trip_scenario(
-                    seed=seed,
-                    duration_ticks=duration,
-                    standby_state=ComponentState.UNAVAILABLE,
-                ),
-            ),
-        )
         plans.extend(
-            _plan(
+            _counterfactual_family_plans(
                 config,
                 split_name=SplitName.COUNTERFACTUAL_TEST,
-                case_family=case_family,
-                scenario=scenario,
-                style_key="g07-standby",
-                counterfactual_family="g07-standby",
-                counterfactual_variant=variant,
+                seed=seed,
             )
-            for case_family, variant, scenario in g07
         )
-
-        g08_g09 = (
-            (
-                "g08-lag-3",
-                "valve_lag_3",
-                build_valve_lag_scenario(seed=seed, duration_ticks=duration, lag_ticks=3),
-            ),
-            (
-                "g08-lag-4",
-                "valve_lag_4",
-                build_valve_lag_scenario(seed=seed, duration_ticks=duration, lag_ticks=4),
-            ),
-            (
-                "g09-stuck",
-                "valve_stuck",
-                build_valve_stuck_scenario(seed=seed, duration_ticks=duration),
-            ),
-        )
-        plans.extend(
-            _plan(
-                config,
-                split_name=SplitName.COUNTERFACTUAL_TEST,
-                case_family=case_family,
-                scenario=scenario,
-                style_key="g08-g09-valve",
-                counterfactual_family="g08-g09-valve",
-                counterfactual_variant=variant,
-            )
-            for case_family, variant, scenario in g08_g09
-        )
-
-        for plant_variant in (PlantVariant.ASTER_A, PlantVariant.ASTER_B):
-            group_family = f"g12-map-{plant_variant.value.lower()}"
-            for included in (True, False):
-                variant = "map_included" if included else "map_withheld"
-                plans.append(
-                    _plan(
-                        config,
-                        split_name=SplitName.COUNTERFACTUAL_TEST,
-                        case_family=f"{group_family}-{variant}",
-                        scenario=build_support_power_interruption_scenario(
-                            seed=seed,
-                            duration_ticks=duration,
-                            plant_variant=plant_variant,
-                            include_dependency_map=included,
-                        ),
-                        style_key=group_family,
-                        counterfactual_family=group_family,
-                        counterfactual_variant=variant,
-                    )
-                )
     return plans
 
 
@@ -429,30 +464,53 @@ def _noise_holdout(config: DevelopmentDatasetConfig) -> list[PlannedScenario]:
     return plans
 
 
-def build_development_scenario_plan(
+def build_scenario_plan_for_splits(
     config: DevelopmentDatasetConfig,
+    *,
+    splits: tuple[SplitName, ...],
 ) -> tuple[PlannedScenario, ...]:
-    """Build the complete deterministic 204-trajectory split-first plan."""
+    """Build only the requested split recipes without touching any other split.
+
+    This is the physical isolation boundary used by model remediation.  In
+    particular, a development inventory can request ``iid_train`` and
+    ``iid_validation`` without constructing held-out scenarios and filtering them
+    afterward.
+    """
+
+    if type(config) is not DevelopmentDatasetConfig:
+        raise TypeError("config must be an exact DevelopmentDatasetConfig")
+    if type(splits) is not tuple or not splits:
+        raise ValueError("splits must be a non-empty exact tuple")
+    if any(type(split) is not SplitName for split in splits):
+        raise TypeError("every requested split must be an exact SplitName")
+    if len(splits) != len(set(splits)):
+        raise ValueError("requested splits must be unique")
 
     plans: list[PlannedScenario] = []
-    for split_name in (
-        SplitName.IID_TRAIN,
-        SplitName.IID_VALIDATION,
-        SplitName.IID_TEST,
-        SplitName.TEMPLATE_TEST,
-    ):
-        plans.extend(_iid_scenarios(config, split_name=split_name))
-    plans.extend(_component_holdout(config))
-    plans.extend(_severity_holdout(config))
-    plans.extend(_composition_holdout(config))
-    plans.extend(_counterfactual_holdout(config))
-    plans.extend(_noise_holdout(config))
+    for split_name in splits:
+        if split_name in {
+            SplitName.IID_TRAIN,
+            SplitName.IID_VALIDATION,
+            SplitName.IID_TEST,
+            SplitName.TEMPLATE_TEST,
+        }:
+            plans.extend(_iid_scenarios(config, split_name=split_name))
+        elif split_name is SplitName.COMPONENT_TEST:
+            plans.extend(_component_holdout(config))
+        elif split_name is SplitName.SEVERITY_TEST:
+            plans.extend(_severity_holdout(config))
+        elif split_name is SplitName.COMPOSITION_TEST:
+            plans.extend(_composition_holdout(config))
+        elif split_name is SplitName.COUNTERFACTUAL_TEST:
+            plans.extend(_counterfactual_holdout(config))
+        elif split_name is SplitName.NOISE_TEST:
+            plans.extend(_noise_holdout(config))
+        else:  # pragma: no cover - closed enum defense
+            raise ValueError(f"unsupported requested split: {split_name.value}")
 
     result = tuple(plans)
-    if not (
-        config.dataset.minimum_trajectories <= len(result) <= config.dataset.maximum_trajectories
-    ):
-        raise ValueError("development scenario count is outside the reviewed configuration bounds")
+    if not result:
+        raise ValueError("requested split plan produced no scenarios")
     scenario_ids = tuple(plan.scenario.scenario_id for plan in result)
     if len(scenario_ids) != len(set(scenario_ids)):
         raise ValueError("development scenario IDs must be globally unique")
@@ -464,4 +522,21 @@ def build_development_scenario_plan(
     return result
 
 
-__all__ = ["PlannedScenario", "build_development_scenario_plan"]
+def build_development_scenario_plan(
+    config: DevelopmentDatasetConfig,
+) -> tuple[PlannedScenario, ...]:
+    """Build the complete deterministic, versioned split-first scenario plan."""
+
+    result = build_scenario_plan_for_splits(config, splits=tuple(SplitName))
+    if not (
+        config.dataset.minimum_trajectories <= len(result) <= config.dataset.maximum_trajectories
+    ):
+        raise ValueError("development scenario count is outside the reviewed configuration bounds")
+    return result
+
+
+__all__ = [
+    "PlannedScenario",
+    "build_development_scenario_plan",
+    "build_scenario_plan_for_splits",
+]

@@ -1,0 +1,54 @@
+iteration_version = "0.2.0"
+status = "developmental"
+inventory_report_path = "docs/model/PHASE6_V02_INVENTORY.json"
+inventory_report_checksum_sha256 = "3d996f18a731cb4ef0ba26edecda97fb093f48241a06b0f5b26989bfbdbf23bd"
+
+[paths]
+dataset_config_path = "configs/dataset/development-v0.1.0.toml"
+tokenizer_path = "runs/phase4-smoke-v0.1.0/tokenizer"
+compact_contract_path = "schemas/compact-output/v0/contract.json"
+run_root = "runs"
+
+[inventory]
+policy_version = "0.2.0"
+permitted_views = ["iid_train", "iid_validation"]
+cap_policy = "observed_max_plus_margin"
+cap_margin_tokens = 8
+minimum_cap_tokens = 16
+maximum_cap_tokens = 256
+context_length = 512
+maximum_prompt_utf8_bytes = 1048576
+require_target_fit_rate = 1.0
+require_round_trip_rate = 1.0
+
+[model]
+model_version = "0.2.0"
+layers = 8
+width = 384
+heads = 8
+context_length = 512
+feed_forward_multiplier = 4
+dropout = 0.1
+tie_embeddings = true
+bias = true
+
+[training]
+seed = 6202
+device = "mps"
+allow_cpu_fallback = true
+steps = 1500
+batch_size = 4
+learning_rate = 0.00025
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+evaluation_interval = 100
+durable_checkpoint_interval = 100
+
+[decoder]
+compact_contract_version = "0.2.0"
+constrained_strategy = "truth_independent_greedy"
+unconstrained_strategy = "greedy"
+report_both_paths = true
+confidence = "geometric_mean_selected_token_probability"
+calibration_bins = 10
+maximum_decoder_cache_entries = 4096

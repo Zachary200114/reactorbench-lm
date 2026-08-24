@@ -117,22 +117,12 @@ def _representative_targets() -> tuple[ProjectionTaskTargetValue, ...]:
 
 def test_representative_compact_targets_have_exact_canonical_round_trips() -> None:
     expected = (
-        "RB2|continue_log|OBSERVATION_CHANGED",
-        "RB2|fault_family|DIAGNOSED|SENSOR_DRIFT,PUMP_TRIP|-",
-        ("RB2|extract_evidence|e-0000,o-0001,e-0001|CHANNEL_DISAGREEMENT,RELATED_STATE_STABLE"),
-        "RB2|next_action|COMPARE_RELATED_TRENDS",
-        (
-            "RB2|incident_summary|PRIMARY_LOOP,INSTRUMENTATION|FALLING|DIAGNOSED|"
-            "PUMP_TRIP|DISTURBED|REQUEST_COMPONENT_INSPECTION|-"
-        ),
-        (
-            "RB2|counterfactual_compare|"
-            "DIAGNOSED~SENSOR_DRIFT~CHANNEL_DISAGREEMENT~"
-            "VERIFY_REDUNDANT_CHANNEL~-|"
-            "NO_FAULT~-~STABLE_OPERATION~CONTINUE_MONITORING~-|"
-            "DIAGNOSIS_STATUS,FAULT_LABELS,EVIDENCE_SLOTS,IMMEDIATE_ACTION|"
-            "e-0000|o-0000|CHANNEL_DISAGREEMENT,STABLE_OPERATION"
-        ),
+        "RB2|continue_log|3",
+        "RB2|fault_family|0|0,4|-",
+        "RB2|extract_evidence|e-0000,o-0001,e-0001|2,3",
+        "RB2|next_action|1",
+        "RB2|incident_summary|1,7|2|0|4|2|3|-",
+        ("RB2|counterfactual_compare|0~0~2~0~-|1~-~0~7~-|0,1,2,3|e-0000|o-0000|2,0"),
     )
     for target, compact in zip(_representative_targets(), expected, strict=True):
         context = _context(target.task_name)
@@ -252,33 +242,38 @@ def test_every_closed_enum_member_is_reachable_through_a_valid_target() -> None:
 @pytest.mark.parametrize(
     ("text", "task_name", "error"),
     [
-        ("RB2|next_action|NOT_AN_ACTION", TaskName.NEXT_ACTION, "invalid enum"),
-        ("RB2|fault_family|NO_FAULT|SENSOR_DRIFT|-", TaskName.FAULT_FAMILY, "strict"),
+        ("RB2|next_action|X", TaskName.NEXT_ACTION, "invalid compact enum code"),
+        ("RB2|fault_family|1|0|-", TaskName.FAULT_FAMILY, "strict"),
         (
-            "RB2|fault_family|DIAGNOSED|PUMP_TRIP,SENSOR_DRIFT|-",
+            "RB2|fault_family|0|4,0|-",
             TaskName.FAULT_FAMILY,
             "canonical enum order",
         ),
         (
-            "RB2|extract_evidence|e-0000,e-0000|CHANNEL_DISAGREEMENT",
+            "RB2|extract_evidence|e-0000,e-0000|2",
             TaskName.EXTRACT_EVIDENCE,
             "duplicates",
         ),
         (
-            "RB2|extract_evidence|e-0001,e-0000|CHANNEL_DISAGREEMENT",
+            "RB2|extract_evidence|e-0001,e-0000|2",
             TaskName.EXTRACT_EVIDENCE,
             "increase",
         ),
         (
-            "RB2|extract_evidence|e-9999|CHANNEL_DISAGREEMENT",
+            "RB2|extract_evidence|e-9999|2",
             TaskName.EXTRACT_EVIDENCE,
             "prompt-visible",
         ),
-        ("RB2|next_action|CONTINUE_MONITORING|", TaskName.NEXT_ACTION, "exactly one"),
-        ("RB2|next_action|CONTINUE_MONITORINGX", TaskName.NEXT_ACTION, "invalid enum"),
+        ("RB2|next_action|7|", TaskName.NEXT_ACTION, "exactly one"),
+        ("RB2|next_action|XX", TaskName.NEXT_ACTION, "invalid compact enum code"),
         ("RB2|next_action|CONTINUE MONITORING", TaskName.NEXT_ACTION, "allowlist"),
-        ("RB9|next_action|CONTINUE_MONITORING", TaskName.NEXT_ACTION, "wire prefix"),
-        ("RB2|unknown|CONTINUE_MONITORING", TaskName.NEXT_ACTION, "task name"),
+        ("RB9|next_action|7", TaskName.NEXT_ACTION, "wire prefix"),
+        ("RB2|unknown|7", TaskName.NEXT_ACTION, "task name"),
+        (
+            "RB2|counterfactual_compare|X~0~2~0~-|1~-~0~7~-|0,1,2,3|e-0000|o-0000|2,0",
+            TaskName.COUNTERFACTUAL_COMPARE,
+            "invalid compact enum code",
+        ),
     ],
 )
 def test_parser_rejects_unknown_duplicate_misordered_and_trailing_text(
@@ -305,7 +300,7 @@ def test_parser_and_serializer_reject_wrong_types_tasks_and_maximum_length() -> 
         )
     with pytest.raises(CompactTargetError, match="does not match"):
         parse_compact_target(
-            "RB2|fault_family|NO_FAULT|-|-",
+            "RB2|fault_family|1|-|-",
             context=context,
         )
     oversized = "A" * (MAX_COMPACT_TARGET_BYTES + 1)
@@ -448,7 +443,7 @@ def test_constraint_allows_one_tokenizer_boundary_marker_without_zero_width_loop
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _context(TaskName.NEXT_ACTION)
-    text = "RB2|next_action|CONTINUE_MONITORING"
+    text = "RB2|next_action|7"
     tokenizer = object.__new__(ProjectTokenizer)
     monkeypatch.setattr(ProjectTokenizer, "vocab_size", property(lambda _self: 6))
     monkeypatch.setattr(
@@ -467,7 +462,7 @@ def test_constraint_allows_one_tokenizer_boundary_marker_without_zero_width_loop
 def test_constraint_rejects_premature_completion_wrong_task_and_trailing_content() -> None:
     context = _context(TaskName.FAULT_FAMILY)
     constraint = CompactTargetConstraint(context, maximum_generated_tokens=128)
-    canonical = "RB2|fault_family|NO_FAULT|-|-"
+    canonical = "RB2|fault_family|1|-|-"
     for prefix in ("", "RB2", "RB2|fault_family|", canonical[:-1]):
         assert constraint.accepts_prefix(prefix)
         assert not constraint.accepts_complete(prefix)

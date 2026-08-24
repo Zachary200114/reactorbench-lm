@@ -29,7 +29,7 @@ def test_committed_compact_contract_is_canonical_and_matches_source() -> None:
     assert expected["wire_prefix"] == COMPACT_WIRE_PREFIX
     assert expected["max_utf8_bytes"] == MAX_COMPACT_TARGET_BYTES
     assert expected["status"] == "developmental"
-    assert expected["frozen"] is False
+    assert expected["frozen"] is True
     task_fields = expected["task_fields"]
     assert isinstance(task_fields, dict)
     assert set(task_fields) == {task.value for task in TaskName}

@@ -1,0 +1,3563 @@
+"""Concrete development-only execution layer for the Phase 6 remediation graph.
+
+The orchestration module owns crash recovery and immutable stage commits.  This
+module supplies the scientific actions for that frozen graph, verifies every
+development input before use, and deliberately provides no final-evaluation action.
+All dataset construction is explicitly scoped to IID development or preregistered
+shadow views; the future fresh extension remains a separate owner-reviewed surface.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import re
+import resource
+import shutil
+import subprocess
+import time
+from collections import Counter
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from types import MappingProxyType
+from typing import Annotated, Literal, Never, cast
+
+import torch
+from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
+
+from reactorbench.dataset.config import (
+    DevelopmentDatasetConfig,
+    load_development_dataset_config,
+)
+from reactorbench.evaluation.compact import compact_output_contract
+from reactorbench.evaluation.config import BaselineConfig, load_phase5_config
+from reactorbench.model import TransformerConfig, TransformerLM
+from reactorbench.model.checkpoint import CheckpointManifest, load_checkpoint
+from reactorbench.schemas.base import ContractModel, canonical_json_bytes, canonical_sha256
+from reactorbench.schemas.enums import TaskName
+from reactorbench.tokenizer import ProjectTokenizer
+
+from .acceptance import (
+    DevelopmentArtifactBinding,
+    V04AcceptanceResult,
+    evaluate_v03_acceptance,
+    evaluate_v04_acceptance,
+)
+from .audit import audit_safe_development_dataset
+from .baselines import RemediationBaselineReport, run_remediation_baselines
+from .config import (
+    PIPELINE_STAGES,
+    SHADOW_VIEWS,
+    PipelineConfig,
+    RemediationTraining,
+    RemediationView,
+    V02Config,
+    V03Config,
+    V04Config,
+    config_sha256,
+    load_v02_config,
+    load_v03_config,
+    load_v04_config,
+)
+from .data import (
+    RemediationExample,
+    SafeDevelopmentDataset,
+    SafeDevelopmentManifest,
+    build_safe_development_dataset,
+    load_safe_development_artifact,
+    write_safe_development_artifact,
+)
+from .decoding import (
+    MAX_DECODE_BATCH_SIZE,
+    DualPathCompactPrediction,
+    decode_compact_examples,
+)
+from .inventory import (
+    CompactInventoryReport,
+    CounterfactualCapExtensionReport,
+    measure_compact_inventory,
+    measure_counterfactual_cap_extension,
+)
+from .metrics import (
+    SemanticEvaluationReport,
+    canonical_prediction_jsonl_bytes,
+    evaluate_semantic_predictions,
+    prediction_artifact_byte_sha256,
+    semantic_composite_score,
+)
+from .orchestration import (
+    ArtifactReference,
+    PipelineEngine,
+    PipelineState,
+    PipelineStore,
+    StageAction,
+    StageContext,
+    StageMetric,
+    StageOutcome,
+    StageStatus,
+)
+from .progress import PROGRESS_EVENT_LOG_FILENAME, ProgressMetric
+from .selection import (
+    SemanticSelectionManifest,
+    build_semantic_selection_manifest,
+    resolve_semantic_selection_examples,
+)
+from .serialization import CompactTokenizedExample, tokenize_compact_example
+from .training import (
+    CompactTrainingOutcome,
+    CompactTrainingResult,
+    CompactTrainingStopped,
+    EvaluationCallback,
+    TrainingProgress,
+    train_compact_model,
+)
+
+PIPELINE_EXECUTION_VERSION: Literal["0.4.0"] = "0.4.0"
+STOP_REQUEST_FILENAME = "STOP_REQUESTED"
+STOP_ARCHIVE_DIRECTORY = "stop-requests"
+FINAL_EVALUATION_READY_FILENAME = "FINAL_EVALUATION_READY.json"
+OWNER_REVIEW_APPROVED_FILENAME = "OWNER_REVIEW_APPROVED.json"
+FRESH_EXTENSION_MANIFEST_FILENAME = "FRESH_EXTENSION_MANIFEST.json"
+MAX_PIPELINE_JSON_BYTES = 64 * 1024 * 1024
+MAX_PREDICTION_ROW_BYTES = 256 * 1024
+MAX_RUN_FILES = 200_000
+SMOKE_STEPS = 2
+SMOKE_EXAMPLES_PER_VIEW = 24
+V02_MAXIMUM_CAP_EXHAUSTION_RATE = 0.01
+V01_PROMPT_TRUNCATION_COUNT: Literal[689] = 689
+V01_PROMPT_TRUNCATION_EXAMPLE_COUNT: Literal[882] = 882
+V02_FROZEN_PROMPT_TRUNCATION_COUNT: Literal[668] = 668
+FINAL_ACCESS_LEDGER_FILENAME = "FINAL_EVALUATION_ACCESS.json"
+FINAL_RESULT_FILENAME = "FINAL_EVALUATION_RESULT.json"
+FINAL_REVIEW_FILENAME = "FINAL_EVALUATION_REVIEW.md"
+TERMINAL_REVIEW_DIRECTORY = "terminal-reviews"
+TERMINAL_REVIEW_MANIFEST_FILENAME = "terminal-review-bundle.json"
+TERMINAL_REVIEW_SUMMARY_FILENAME = "TERMINAL_REVIEW.md"
+TRUSTED_GIT = "/usr/bin/git"
+
+Sha256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
+GitCommit = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{7,64}$")]
+Probability = Annotated[StrictFloat, Field(ge=0.0, le=1.0, allow_inf_nan=False)]
+
+
+class PipelineExecutionError(RuntimeError):
+    """Safe public error for an invalid scientific execution boundary."""
+
+
+class PipelineResourceLimitError(PipelineExecutionError):
+    """Raised before a configured resource boundary can be exceeded further."""
+
+
+class FinalEvaluationBlockedError(PipelineExecutionError):
+    """Raised when the separate future final-access prerequisites are incomplete."""
+
+
+class PipelineStopRequest(ContractModel):
+    request_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    requested_at: str
+    process_id: StrictInt = Field(ge=1)
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def timestamp_and_checksum_match(self) -> PipelineStopRequest:
+        _canonical_utc(self.requested_at)
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("pipeline stop request checksum mismatch")
+        return self
+
+
+class ExecutionPreflightReport(ContractModel):
+    report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    runner_source_commit: GitCommit
+    runner_worktree_clean: Literal[True]
+    pipeline_config_sha256: Sha256
+    v02_config_sha256: Sha256
+    v03_config_sha256: Sha256
+    v04_config_sha256: Sha256
+    frozen_data_source_commit: GitCommit
+    tokenizer_manifest_sha256: Sha256
+    compact_contract_sha256: Sha256
+    v02_inventory_report_sha256: Sha256
+    v03_counterfactual_cap_report_sha256: Sha256
+    final_evaluation_automatic: Literal[False] = False
+    development_only: Literal[True] = True
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> ExecutionPreflightReport:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("execution preflight report checksum mismatch")
+        return self
+
+
+class PredictionArtifactManifest(ContractModel):
+    artifact_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    view: RemediationView
+    example_count: StrictInt = Field(ge=1, le=1_000_000)
+    example_inventory_sha256: Sha256
+    prediction_inventory_sha256: Sha256
+    predictions_sha256: Sha256
+    predictions_size_bytes: StrictInt = Field(ge=1, le=4 * 1024**3)
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> PredictionArtifactManifest:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("prediction artifact manifest checksum mismatch")
+        return self
+
+
+class V02DevelopmentGateReport(ContractModel):
+    report_version: Literal["0.2.0"] = "0.2.0"
+    inventory_report_sha256: Sha256
+    prediction_manifest_sha256: Sha256
+    example_count: StrictInt = Field(ge=1)
+    constrained_parse_rate: Probability
+    constrained_schema_validity_rate: Probability
+    unconstrained_parse_rate: Probability
+    unconstrained_schema_validity_rate: Probability
+    generation_cap_exhaustion_rate: Probability
+    inventory_example_count: StrictInt = Field(ge=1)
+    prompt_truncation_count: StrictInt = Field(ge=0)
+    prompt_truncation_rate: Probability
+    target_fit_rate: Probability
+    round_trip_rate: Probability
+    reachability_rate: Probability
+    task_footer_retained_rate: Probability
+    cap_exhaustion_target_rate: Probability
+    v01_prompt_truncation_count: Literal[689] = V01_PROMPT_TRUNCATION_COUNT
+    v01_example_count: Literal[882] = V01_PROMPT_TRUNCATION_EXAMPLE_COUNT
+    frozen_prompt_truncation_count: Literal[668] = V02_FROZEN_PROMPT_TRUNCATION_COUNT
+    prompt_truncation_materially_lower: Literal[False] = False
+    v04_context_pilot_required: Literal[True] = True
+    maximum_generation_cap_exhaustion_rate: StrictFloat = Field(
+        default=V02_MAXIMUM_CAP_EXHAUSTION_RATE,
+        ge=V02_MAXIMUM_CAP_EXHAUSTION_RATE,
+        le=V02_MAXIMUM_CAP_EXHAUSTION_RATE,
+        allow_inf_nan=False,
+    )
+    advancement_allowed: StrictBool
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def gate_and_checksum_match(self) -> V02DevelopmentGateReport:
+        expected_gate = (
+            self.constrained_parse_rate == 1.0
+            and self.constrained_schema_validity_rate == 1.0
+            and self.generation_cap_exhaustion_rate <= self.maximum_generation_cap_exhaustion_rate
+            and self.prompt_truncation_count == self.frozen_prompt_truncation_count
+            and self.prompt_truncation_rate
+            == self.prompt_truncation_count / self.inventory_example_count
+            and self.target_fit_rate == 1.0
+            and self.round_trip_rate == 1.0
+            and self.reachability_rate == 1.0
+            and self.task_footer_retained_rate == 1.0
+            and self.cap_exhaustion_target_rate == 0.0
+        )
+        if self.advancement_allowed is not expected_gate:
+            raise ValueError("v0.2 advancement differs from its structural gate")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("v0.2 development gate checksum mismatch")
+        return self
+
+
+class DevelopmentSeparationReport(ContractModel):
+    report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    iid_dataset_manifest_sha256: Sha256
+    shadow_dataset_manifest_sha256: Sha256
+    iid_example_count: StrictInt = Field(ge=1)
+    shadow_example_count: StrictInt = Field(ge=1)
+    group_overlap_count: StrictInt = Field(ge=0)
+    example_checksum_overlap_count: StrictInt = Field(ge=0)
+    prompt_checksum_overlap_count: StrictInt = Field(ge=0)
+    passed: StrictBool
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def result_and_checksum_match(self) -> DevelopmentSeparationReport:
+        expected_pass = (
+            self.group_overlap_count
+            + self.example_checksum_overlap_count
+            + self.prompt_checksum_overlap_count
+            == 0
+        )
+        if self.passed is not expected_pass:
+            raise ValueError("development separation pass state differs from findings")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("development separation checksum mismatch")
+        return self
+
+
+class CandidateScore(ContractModel):
+    candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+    checkpoint_manifest_sha256: Sha256
+    semantic_composite: Probability
+    selected_validation_nll: StrictFloat = Field(ge=0.0, allow_inf_nan=False)
+    selected_step: StrictInt = Field(ge=0, le=50_000)
+    evaluation_report_sha256: Sha256
+
+
+class CandidateSelectionReport(ContractModel):
+    report_version: Literal["0.3.0"] = "0.3.0"
+    selection_manifest_sha256: Sha256
+    candidates: tuple[CandidateScore, ...] = Field(min_length=1, max_length=3)
+    selected_candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+    selected_checkpoint_manifest_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def selection_and_checksum_match(self) -> CandidateSelectionReport:
+        ids = tuple(item.candidate_id for item in self.candidates)
+        if len(ids) != len(set(ids)) or ids != tuple(sorted(ids)):
+            raise ValueError("candidate selection inventory must be unique and sorted")
+        selected = min(
+            self.candidates,
+            key=lambda item: (
+                -item.semantic_composite,
+                item.selected_validation_nll,
+                item.selected_step,
+                item.candidate_id,
+            ),
+        )
+        if (
+            self.selected_candidate_id != selected.candidate_id
+            or self.selected_checkpoint_manifest_sha256 != selected.checkpoint_manifest_sha256
+        ):
+            raise ValueError("selected candidate differs from the frozen ranking")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("candidate selection report checksum mismatch")
+        return self
+
+
+class V04PilotMeasurement(ContractModel):
+    batch_size: StrictInt = Field(ge=1, le=128)
+    training_result_sha256: Sha256
+    finite_loss: Literal[True]
+    checkpoint_reloaded: Literal[True]
+    elapsed_seconds: StrictFloat = Field(gt=0.0, allow_inf_nan=False)
+    process_peak_rss_bytes: StrictInt = Field(ge=1)
+
+
+class V04PilotReport(ContractModel):
+    report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    candidate_id: str
+    frozen_v02_prompt_truncation_count: Literal[668] = V02_FROZEN_PROMPT_TRUNCATION_COUNT
+    frozen_v02_example_count: Literal[882] = V01_PROMPT_TRUNCATION_EXAMPLE_COUNT
+    prompt_truncation_rate: Probability
+    v03_train_prompt_truncation_rate: Probability
+    material_truncation_threshold: Probability
+    activated: StrictBool
+    measurements: tuple[V04PilotMeasurement, ...] = Field(max_length=3)
+    passed: StrictBool
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def activation_and_checksum_match(self) -> V04PilotReport:
+        frozen_rate = self.frozen_v02_prompt_truncation_count / self.frozen_v02_example_count
+        if self.prompt_truncation_rate != frozen_rate:
+            raise ValueError("v0.4 pilot does not reproduce the D-073 truncation rate")
+        expected_activation = frozen_rate >= self.material_truncation_threshold
+        if self.activated is not expected_activation:
+            raise ValueError("v0.4 pilot activation differs from measured truncation")
+        if self.activated:
+            if tuple(item.batch_size for item in self.measurements) != (1, 2, 4):
+                raise ValueError("activated v0.4 pilot must cover batches 1, 2, and 4")
+            if self.passed is not all(
+                item.finite_loss and item.checkpoint_reloaded for item in self.measurements
+            ):
+                raise ValueError("activated v0.4 pilot lacks passing measurements")
+        elif self.measurements or not self.passed:
+            raise ValueError("non-activated v0.4 pilot must be a passing no-op")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("v0.4 pilot report checksum mismatch")
+        return self
+
+
+class V04CandidateTrainingReport(ContractModel):
+    report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    activated: StrictBool
+    candidate_id: StrictStr = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+    reused_v03_candidate: StrictBool
+    source_stage: Literal["v03_candidate_training", "v04_candidate_training"]
+    training_result_sha256: Sha256
+    checkpoint_manifest_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def source_and_checksum_match(self) -> V04CandidateTrainingReport:
+        expected_reuse = not self.activated
+        if self.reused_v03_candidate is not expected_reuse or self.source_stage != (
+            "v03_candidate_training" if expected_reuse else "v04_candidate_training"
+        ):
+            raise ValueError("v0.4 candidate source differs from pilot activation")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("v0.4 candidate-training report checksum mismatch")
+        return self
+
+
+class V04CandidateEvaluation(ContractModel):
+    candidate_id: StrictStr = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+    context_length: StrictInt = Field(ge=512, le=1024)
+    checkpoint_manifest_sha256: Sha256
+    iid_report_sha256: Sha256
+    iid_acceptance_sha256: Sha256
+    shadow_reports: tuple[tuple[RemediationView, Sha256], ...]
+    v04_acceptance_sha256: Sha256
+    all_required_gates_passed: StrictBool
+    worst_view_semantic_composite: Probability
+    iid_semantic_composite: Probability
+
+    @model_validator(mode="after")
+    def inventory_is_complete(self) -> V04CandidateEvaluation:
+        if tuple(view for view, _ in self.shadow_reports) != SHADOW_VIEWS:
+            raise ValueError("v0.4 candidate evaluation lacks the required shadow order")
+        return self
+
+
+class V04EvaluationIndex(ContractModel):
+    report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    candidates: tuple[V04CandidateEvaluation, ...] = Field(min_length=1, max_length=2)
+    selected_candidate_id: StrictStr = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+    checkpoint_manifest_sha256: Sha256
+    iid_report_sha256: Sha256
+    shadow_reports: tuple[tuple[RemediationView, Sha256], ...]
+    v04_acceptance_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def inventory_and_checksum_match(self) -> V04EvaluationIndex:
+        if tuple(view for view, _ in self.shadow_reports) != SHADOW_VIEWS:
+            raise ValueError("v0.4 evaluation index lacks the required shadow view order")
+        candidate_ids = tuple(item.candidate_id for item in self.candidates)
+        if candidate_ids != tuple(sorted(candidate_ids)) or len(candidate_ids) != len(
+            set(candidate_ids)
+        ):
+            raise ValueError("v0.4 candidate evaluation inventory must be unique and sorted")
+        selected = _select_v04_candidate(self.candidates)
+        if (
+            self.selected_candidate_id != selected.candidate_id
+            or self.checkpoint_manifest_sha256 != selected.checkpoint_manifest_sha256
+            or self.iid_report_sha256 != selected.iid_report_sha256
+            or self.shadow_reports != selected.shadow_reports
+            or self.v04_acceptance_sha256 != selected.v04_acceptance_sha256
+        ):
+            raise ValueError("v0.4 selected evidence differs from the frozen ranking")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("v0.4 evaluation index checksum mismatch")
+        return self
+
+
+def _select_v04_candidate(
+    candidates: tuple[V04CandidateEvaluation, ...],
+) -> V04CandidateEvaluation:
+    if type(candidates) is not tuple or not 1 <= len(candidates) <= 2:
+        raise ValueError("v0.4 selection requires one control and at most one variant")
+    if any(type(candidate) is not V04CandidateEvaluation for candidate in candidates):
+        raise TypeError("v0.4 selection requires exact candidate-evaluation contracts")
+    return min(
+        candidates,
+        key=lambda item: (
+            not item.all_required_gates_passed,
+            -item.worst_view_semantic_composite,
+            -item.iid_semantic_composite,
+            item.context_length,
+            item.candidate_id,
+        ),
+    )
+
+
+class FinalEvaluationPolicyFreeze(ContractModel):
+    policy_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    v04_acceptance_sha256: Sha256
+    development_gate_passed: StrictBool
+    automatic_final_evaluation: Literal[False] = False
+    requires_fresh_extension_manifest: Literal[True] = True
+    requires_owner_review_record: Literal[True] = True
+    requires_explicit_confirmation: Literal[True] = True
+    one_access_only: Literal[True] = True
+    historical_extension_permitted: Literal[False] = False
+    status: Literal[
+        "locked_pending_owner_reviewed_fresh_extension",
+        "locked_development_gate_failed",
+    ]
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def status_and_checksum_match(self) -> FinalEvaluationPolicyFreeze:
+        expected_status = (
+            "locked_pending_owner_reviewed_fresh_extension"
+            if self.development_gate_passed
+            else "locked_development_gate_failed"
+        )
+        if self.status != expected_status:
+            raise ValueError("final evaluation policy status differs from the development gate")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("final evaluation policy checksum mismatch")
+        return self
+
+
+class ReviewStageBinding(ContractModel):
+    stage: str
+    outcome: ArtifactReference
+
+
+class ReviewBundleManifest(ContractModel):
+    bundle_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    run_name: str
+    source_commit: GitCommit
+    pipeline_config_sha256: Sha256
+    stages: tuple[ReviewStageBinding, ...] = Field(min_length=len(PIPELINE_STAGES) - 1)
+    final_policy_sha256: Sha256
+    final_evaluation_status: Literal["locked_pending_owner_reviewed_fresh_extension"] = (
+        "locked_pending_owner_reviewed_fresh_extension"
+    )
+    contains_final_payload: Literal[False] = False
+    contains_historical_extension_payload: Literal[False] = False
+    summary_relative_path: str
+    summary_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def graph_and_checksum_match(self) -> ReviewBundleManifest:
+        if tuple(item.stage for item in self.stages) != PIPELINE_STAGES[:-1]:
+            raise ValueError("review bundle stage inventory differs from the frozen graph")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("review bundle checksum mismatch")
+        return self
+
+
+class TerminalReviewStage(ContractModel):
+    stage: str
+    status: Literal["completed", "blocked", "failed", "stopped"]
+    latest_attempt_path: str
+    outcome: ArtifactReference | None
+
+    @model_validator(mode="after")
+    def terminal_shape_matches(self) -> TerminalReviewStage:
+        path = Path(self.latest_attempt_path)
+        if (
+            not self.latest_attempt_path
+            or "\\" in self.latest_attempt_path
+            or path.is_absolute()
+            or ".." in path.parts
+            or path.as_posix() != self.latest_attempt_path
+        ):
+            raise ValueError("terminal review attempt path is unsafe")
+        if self.status in {"completed", "blocked"} and self.outcome is None:
+            raise ValueError("published terminal stage lacks its immutable outcome")
+        if self.status in {"failed", "stopped"} and self.outcome is not None:
+            raise ValueError("unsuccessful terminal stage cannot publish an outcome")
+        return self
+
+
+class TerminalReviewBundleManifest(ContractModel):
+    bundle_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    bundle_kind: Literal["terminal_prefix"] = "terminal_prefix"
+    run_name: str
+    source_commit: GitCommit
+    pipeline_config_sha256: Sha256
+    pipeline_state_sha256: Sha256
+    pipeline_status: Literal["completed", "blocked", "failed", "stopped"]
+    stages: tuple[TerminalReviewStage, ...] = Field(max_length=len(PIPELINE_STAGES))
+    completed_prefix_length: StrictInt = Field(ge=0, le=len(PIPELINE_STAGES))
+    final_evaluation_accessed: Literal[False] = False
+    summary_relative_path: str
+    summary_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def prefix_and_checksum_match(self) -> TerminalReviewBundleManifest:
+        observed = tuple(item.stage for item in self.stages)
+        if observed != PIPELINE_STAGES[: len(observed)]:
+            raise ValueError("terminal review stages are not a contiguous graph prefix")
+        completed_prefix = tuple(
+            item.status for item in self.stages[: self.completed_prefix_length]
+        )
+        if completed_prefix != ("completed",) * self.completed_prefix_length:
+            raise ValueError("terminal review completed-prefix count mismatch")
+        suffix = self.stages[self.completed_prefix_length :]
+        if self.pipeline_status == "completed":
+            if self.completed_prefix_length != len(PIPELINE_STAGES) or suffix:
+                raise ValueError("completed terminal review does not cover the full graph")
+        elif self.pipeline_status in {"blocked", "failed"}:
+            if len(suffix) != 1 or suffix[0].status != self.pipeline_status:
+                raise ValueError("terminal review status differs from its terminal stage")
+        elif suffix:
+            if len(suffix) != 1 or suffix[0].status != "stopped":
+                raise ValueError("attempted stop has an invalid terminal stage")
+        elif self.completed_prefix_length >= len(PIPELINE_STAGES):
+            raise ValueError("pre-stage stop must leave an incomplete graph")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("terminal review bundle checksum mismatch")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewBundleOutput:
+    manifest_path: Path
+    summary_path: Path
+    manifest: ReviewBundleManifest | TerminalReviewBundleManifest
+
+
+class FreshFinalExtensionManifest(ContractModel):
+    manifest_version: Literal["future-1.0.0"]
+    extension_id: StrictStr = Field(
+        min_length=1,
+        max_length=96,
+        pattern=r"^[A-Za-z][A-Za-z0-9._:-]*$",
+    )
+    created_at: str
+    generated_after_policy_sha256: Sha256
+    final_dataset_config_sha256: Sha256
+    frozen_final_payload_relative_path: str
+    frozen_final_payload_sha256: Sha256
+    fresh_extension_payload_relative_path: str
+    fresh_extension_payload_sha256: Sha256
+    case_ids: tuple[StrictStr, ...] = Field(min_length=1, max_length=256)
+    historical_case_ids: tuple[StrictStr, ...] = ()
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def freshness_and_checksum_match(self) -> FreshFinalExtensionManifest:
+        _canonical_utc(self.created_at)
+        for path_text in (
+            self.frozen_final_payload_relative_path,
+            self.fresh_extension_payload_relative_path,
+        ):
+            path = Path(path_text)
+            if (
+                path.is_absolute()
+                or ".." in path.parts
+                or path.as_posix() != path_text
+                or not path_text
+            ):
+                raise ValueError("fresh-extension payload path escapes its run")
+        if (
+            len(self.case_ids) != len(set(self.case_ids))
+            or tuple(sorted(self.case_ids)) != self.case_ids
+            or self.historical_case_ids
+            or any(
+                re.fullmatch(r"G(?:0[1-9]|1[0-5])", item, re.IGNORECASE) for item in self.case_ids
+            )
+        ):
+            raise ValueError("fresh extension contains historical G01-G15 identity")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("fresh final-extension manifest checksum mismatch")
+        return self
+
+
+class FreshExtensionReview(ContractModel):
+    review_version: Literal["future-1.0.0"]
+    fresh_extension_manifest_sha256: Sha256
+    owner_review_record_sha256: Sha256
+    owner_approved: Literal[True]
+    generated_after_development_freeze: Literal[True]
+    historical_payload_used: Literal[False]
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> FreshExtensionReview:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("fresh-extension review checksum mismatch")
+        return self
+
+
+class FinalAccessLedger(ContractModel):
+    ledger_version: Literal["future-1.0.0"]
+    status: Literal["claimed", "completed", "failed"]
+    source_commit: GitCommit
+    authorization_sha256: Sha256
+    claimed_at: str
+    completed_at: str | None
+    result_sha256: Sha256 | None
+    failure_code: StrictStr | None = Field(default=None, max_length=128)
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def lifecycle_and_checksum_match(self) -> FinalAccessLedger:
+        _canonical_utc(self.claimed_at)
+        if self.completed_at is not None:
+            _canonical_utc(self.completed_at)
+        if self.status == "claimed" and any(
+            value is not None
+            for value in (self.completed_at, self.result_sha256, self.failure_code)
+        ):
+            raise ValueError("claimed final-access ledger contains terminal fields")
+        if self.status == "completed" and (
+            self.completed_at is None or self.result_sha256 is None or self.failure_code is not None
+        ):
+            raise ValueError("completed final-access ledger shape is invalid")
+        if self.status == "failed" and (
+            self.completed_at is None or self.result_sha256 is not None or self.failure_code is None
+        ):
+            raise ValueError("failed final-access ledger shape is invalid")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("final-access ledger checksum mismatch")
+        return self
+
+
+class FinalEvaluationResult(ContractModel):
+    result_version: Literal["future-1.0.0"]
+    authorization_sha256: Sha256
+    source_commit: GitCommit
+    final_dataset_config_sha256: Sha256
+    frozen_final_payload_sha256: Sha256
+    fresh_extension_payload_sha256: Sha256
+    selected_checkpoint_sha256: Sha256
+    final_acceptance_sha256: Sha256
+    final_acceptance_passed: StrictBool
+    completed_at: str
+    review_summary_relative_path: str
+    review_summary_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> FinalEvaluationResult:
+        _canonical_utc(self.completed_at)
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("final-evaluation result checksum mismatch")
+        return self
+
+
+class FinalEvaluationRequest(ContractModel):
+    request_version: Literal["future-1.0.0"]
+    policy_sha256: Sha256
+    review_bundle_sha256: Sha256
+    fresh_extension_review_sha256: Sha256
+    explicit_confirmation: Literal[True]
+    one_access_nonce_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> FinalEvaluationRequest:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("final evaluation request checksum mismatch")
+        return self
+
+
+class FinalEvaluationAuthorization(ContractModel):
+    authorization_version: Literal["future-1.0.0"]
+    policy_sha256: Sha256
+    review_bundle_sha256: Sha256
+    fresh_extension_manifest_sha256: Sha256
+    owner_review_record_sha256: Sha256
+    one_access_nonce_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> FinalEvaluationAuthorization:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("final evaluation authorization checksum mismatch")
+        return self
+
+
+def _canonical_utc(value: str) -> datetime:
+    if type(value) is not str:
+        raise ValueError("pipeline timestamp must be a string")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("pipeline timestamp is invalid") from error
+    offset = parsed.utcoffset()
+    if parsed.tzinfo is None or offset is None or offset.total_seconds() != 0:
+        raise ValueError("pipeline timestamp must use UTC")
+    if value != parsed.astimezone(UTC).isoformat(timespec="seconds"):
+        raise ValueError("pipeline timestamp must use canonical second precision")
+    return parsed
+
+
+def _utc_now() -> str:
+    return datetime.now(tz=UTC).isoformat(timespec="seconds")
+
+
+def _bound_model[ModelT: ContractModel](draft: ModelT, model_type: type[ModelT]) -> ModelT:
+    payload = draft.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+    payload["checksum_sha256"] = canonical_sha256(payload)
+    return model_type.model_validate_json(canonical_json_bytes(payload), strict=True)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _strict_json(payload: bytes) -> object:
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("pipeline execution JSON contains a duplicate key")
+            result[key] = value
+        return result
+
+    return json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=pairs,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"pipeline execution JSON contains non-finite data: {value}")
+        ),
+    )
+
+
+def _write_bytes(path: Path, payload: bytes) -> None:
+    if (
+        not isinstance(path, Path)
+        or path.parent.is_symlink()
+        or not path.parent.is_dir()
+        or path.exists()
+        or path.is_symlink()
+    ):
+        raise FileExistsError("pipeline execution output must be a new regular file")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        parent_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        if path.exists() and not path.is_symlink():
+            path.unlink()
+        raise
+
+
+def _write_contract(path: Path, model: ContractModel) -> None:
+    payload = canonical_json_bytes(model.model_dump(mode="json", round_trip=True)) + b"\n"
+    if len(payload) > MAX_PIPELINE_JSON_BYTES:
+        raise ValueError("pipeline execution contract exceeds its byte bound")
+    _write_bytes(path, payload)
+
+
+def _read_contract[ModelT: ContractModel](
+    path: Path,
+    model_type: type[ModelT],
+    *,
+    maximum_bytes: int = MAX_PIPELINE_JSON_BYTES,
+) -> ModelT:
+    if (
+        not isinstance(path, Path)
+        or path.is_symlink()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= maximum_bytes
+    ):
+        raise ValueError("pipeline execution contract is missing, unsafe, or oversized")
+    payload = path.read_bytes()
+    _strict_json(payload)
+    model = model_type.model_validate_json(payload, strict=True)
+    canonical = canonical_json_bytes(model.model_dump(mode="json", round_trip=True)) + b"\n"
+    if payload != canonical:
+        raise ValueError("pipeline execution contract is not canonical JSON")
+    return model
+
+
+def _artifact_reference(path: Path, *, run_directory: Path) -> ArtifactReference:
+    root = run_directory.resolve(strict=True)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("pipeline execution artifact must be a regular file")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(root):
+        raise ValueError("pipeline execution artifact escapes the run directory")
+    cursor = run_directory
+    for part in path.relative_to(run_directory).parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError("pipeline execution artifact traverses a symlink")
+    return ArtifactReference(
+        relative_path=resolved.relative_to(root).as_posix(),
+        sha256=_sha256(path),
+        size_bytes=path.stat().st_size,
+    )
+
+
+def _safe_input_path(
+    project_root: Path,
+    relative: str,
+    *,
+    kind: Literal["file", "directory"],
+) -> Path:
+    if type(relative) is not str or not relative or "\\" in relative:
+        raise ValueError("pipeline input path must be a non-empty POSIX relative path")
+    candidate_relative = Path(relative)
+    if candidate_relative.is_absolute() or ".." in candidate_relative.parts:
+        raise ValueError("pipeline input path escapes the project")
+    prohibited = ("golden", "heldout", "iid_test", "final")
+    if any(any(token in part.lower() for token in prohibited) for part in candidate_relative.parts):
+        raise ValueError("development pipeline input path crosses a prohibited boundary")
+    candidate = project_root / candidate_relative
+    cursor = project_root
+    for part in candidate_relative.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError("pipeline input path traverses a symlink")
+    if (kind == "file" and not candidate.is_file()) or (
+        kind == "directory" and not candidate.is_dir()
+    ):
+        raise ValueError("required pipeline input is missing")
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_relative_to(project_root.resolve(strict=True)):
+        raise ValueError("pipeline input resolves outside the project")
+    return resolved
+
+
+def _verify_compact_contract(contract_path: Path) -> str:
+    """Verify the committed compiler snapshot and its complete sibling manifest."""
+
+    expected_contract = compact_output_contract()
+    if (
+        expected_contract.get("contract_version") != "0.2.0"
+        or expected_contract.get("frozen") is not True
+    ):
+        raise PipelineExecutionError("runtime compact-output contract is incompatible")
+    expected_bytes = canonical_json_bytes(expected_contract) + b"\n"
+    if contract_path.read_bytes() != expected_bytes:
+        raise PipelineExecutionError("committed compact-output contract differs from runtime")
+    manifest_path = contract_path.parent / "manifest.json"
+    readme_path = contract_path.parent / "README.md"
+    if (
+        manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or not 0 < manifest_path.stat().st_size <= 64 * 1024
+        or readme_path.is_symlink()
+        or not readme_path.is_file()
+        or readme_path.stat().st_size <= 0
+    ):
+        raise PipelineExecutionError("compact-output snapshot manifest is missing or unsafe")
+    manifest_payload = manifest_path.read_bytes()
+    raw = _strict_json(manifest_payload)
+    if type(raw) is not dict or manifest_payload != canonical_json_bytes(raw) + b"\n":
+        raise PipelineExecutionError("compact-output manifest is not canonical JSON")
+    files = raw.get("files")
+    if (
+        set(raw) != {"contract_version", "files", "manifest_version", "snapshot_sha256"}
+        or raw.get("contract_version") != "0.2.0"
+        or raw.get("manifest_version") != "0.1.0"
+        or type(files) is not dict
+        or set(files) != {"README.md", "contract.json"}
+    ):
+        raise PipelineExecutionError("compact-output manifest inventory is incompatible")
+    observed_files = {
+        "README.md": _sha256(readme_path),
+        "contract.json": _sha256(contract_path),
+    }
+    if files != observed_files or raw.get("snapshot_sha256") != canonical_sha256(
+        {"files": observed_files, "contract_version": "0.2.0"}
+    ):
+        raise PipelineExecutionError("compact-output snapshot checksum mismatch")
+    return observed_files["contract.json"]
+
+
+def pipeline_stop_file(*, project_root: Path, config: PipelineConfig) -> Path:
+    if not isinstance(project_root, Path) or type(config) is not PipelineConfig:
+        raise TypeError("pipeline stop path requires exact project/config contracts")
+    root = project_root.resolve(strict=True)
+    path = root / config.run_root / config.run_name / STOP_REQUEST_FILENAME
+    if not path.is_relative_to(root):
+        raise ValueError("pipeline stop path escapes the project")
+    return path
+
+
+def request_pipeline_stop(path: Path) -> PipelineStopRequest:
+    if not isinstance(path, Path) or path.name != STOP_REQUEST_FILENAME:
+        raise TypeError("pipeline stop request requires the canonical marker Path")
+    draft = PipelineStopRequest.model_construct(
+        requested_at=_utc_now(),
+        process_id=os.getpid(),
+        checksum_sha256="0" * 64,
+    )
+    request = _bound_model(draft, PipelineStopRequest)
+    _write_contract(path, request)
+    return request
+
+
+def archive_pipeline_stop(path: Path) -> Path | None:
+    if not isinstance(path, Path) or path.name != STOP_REQUEST_FILENAME:
+        raise TypeError("pipeline stop archive requires the canonical marker Path")
+    if not path.exists() and not path.is_symlink():
+        return None
+    request = _read_contract(path, PipelineStopRequest, maximum_bytes=16 * 1024)
+    archive_root = path.parent / STOP_ARCHIVE_DIRECTORY
+    archive_root.mkdir(mode=0o750, exist_ok=True)
+    if archive_root.is_symlink() or not archive_root.is_dir():
+        raise ValueError("pipeline stop archive directory is unsafe")
+    destination = archive_root / f"stop-{request.checksum_sha256}.json"
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("pipeline stop request was already archived")
+    os.replace(path, destination)
+    directory_descriptor = os.open(archive_root, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+    return destination
+
+
+def build_stop_requested(*, project_root: Path, config: PipelineConfig) -> Callable[[], bool]:
+    path = pipeline_stop_file(project_root=project_root, config=config)
+
+    def requested() -> bool:
+        if not path.exists() and not path.is_symlink():
+            return False
+        _read_contract(path, PipelineStopRequest, maximum_bytes=16 * 1024)
+        return True
+
+    return requested
+
+
+def verify_final_evaluation_prerequisites(
+    *,
+    policy: FinalEvaluationPolicyFreeze,
+    review_bundle: ReviewBundleManifest,
+    fresh_extension_review: FreshExtensionReview,
+    request: FinalEvaluationRequest,
+) -> FinalEvaluationAuthorization:
+    """Validate data-only future prerequisites; this function never runs evaluation."""
+
+    if (
+        type(policy) is not FinalEvaluationPolicyFreeze
+        or type(review_bundle) is not ReviewBundleManifest
+        or type(fresh_extension_review) is not FreshExtensionReview
+        or type(request) is not FinalEvaluationRequest
+    ):
+        raise TypeError("final evaluation prerequisites require exact review contracts")
+    if not policy.development_gate_passed:
+        raise FinalEvaluationBlockedError("development gate did not permit future final access")
+    if (
+        request.policy_sha256 != policy.checksum_sha256
+        or request.review_bundle_sha256 != review_bundle.checksum_sha256
+        or request.fresh_extension_review_sha256 != fresh_extension_review.checksum_sha256
+        or review_bundle.final_policy_sha256 != policy.checksum_sha256
+    ):
+        raise FinalEvaluationBlockedError("future final-access prerequisite checksums differ")
+    draft = FinalEvaluationAuthorization.model_construct(
+        authorization_version="future-1.0.0",
+        policy_sha256=policy.checksum_sha256,
+        review_bundle_sha256=review_bundle.checksum_sha256,
+        fresh_extension_manifest_sha256=(fresh_extension_review.fresh_extension_manifest_sha256),
+        owner_review_record_sha256=fresh_extension_review.owner_review_record_sha256,
+        one_access_nonce_sha256=request.one_access_nonce_sha256,
+        checksum_sha256="0" * 64,
+    )
+    return _bound_model(draft, FinalEvaluationAuthorization)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutionInputs:
+    v02: V02Config
+    v03: V03Config
+    v04: V04Config
+    v02_dataset_config: DevelopmentDatasetConfig
+    v03_dataset_config: DevelopmentDatasetConfig
+    baseline_config: BaselineConfig
+    tokenizer: ProjectTokenizer
+    compact_contract_sha256: str
+    frozen_v02_inventory: CompactInventoryReport
+    frozen_v03_counterfactual_cap: CounterfactualCapExtensionReport
+    frozen_data_source_commit: str
+
+    @property
+    def generation_caps(self) -> dict[TaskName, int]:
+        caps = self.frozen_v02_inventory.generation_caps
+        caps[self.frozen_v03_counterfactual_cap.task_name] = (
+            self.frozen_v03_counterfactual_cap.frozen_generation_cap
+        )
+        return caps
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationCandidate:
+    candidate_id: str
+    result: CompactTrainingResult
+    model: TransformerLM
+    checkpoint: CheckpointManifest
+    device: torch.device
+
+
+def _run_process(arguments: tuple[str, ...], *, project_root: Path) -> str:
+    if (
+        type(arguments) is not tuple
+        or not arguments
+        or arguments[0] != TRUSTED_GIT
+        or any(type(argument) is not str or not argument for argument in arguments)
+    ):
+        raise TypeError("source-control command must use the trusted Git executable")
+    git = Path(TRUSTED_GIT)
+    if git.is_symlink() or not git.is_file():
+        raise PipelineExecutionError("trusted Git executable is unavailable")
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed absolute executable and bounded argv
+            arguments,
+            cwd=project_root,
+            stdin=subprocess.DEVNULL,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LC_ALL": "C",
+                "LANG": "C",
+            },
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise PipelineExecutionError("source-control provenance check failed safely") from None
+    if result.returncode != 0:
+        raise PipelineExecutionError("source-control provenance check failed safely")
+    output = result.stdout.strip()
+    if any(character < " " and character not in "\n\t" for character in output):
+        raise PipelineExecutionError("source-control output crossed its text boundary")
+    return output
+
+
+def _verify_runner_source(
+    project_root: Path,
+    *,
+    source_commit: str,
+    run_root: str,
+) -> str:
+    top = Path(
+        _run_process(
+            (TRUSTED_GIT, "rev-parse", "--show-toplevel"),
+            project_root=project_root,
+        )
+    )
+    if top.resolve(strict=True) != project_root.resolve(strict=True):
+        raise PipelineExecutionError("project root is not the exact Git worktree root")
+    head = _run_process((TRUSTED_GIT, "rev-parse", "HEAD"), project_root=project_root)
+    if not re.fullmatch(r"[0-9a-f]{40,64}", head) or not head.startswith(source_commit):
+        raise PipelineExecutionError("runner Git revision differs from the run binding")
+    status = _run_process(
+        (TRUSTED_GIT, "status", "--porcelain=v1", "--untracked-files=all"),
+        project_root=project_root,
+    )
+    run_prefix = run_root.rstrip("/") + "/"
+    dirty = []
+    for line in status.splitlines():
+        if len(line) < 4:
+            raise PipelineExecutionError("Git worktree status was malformed")
+        path_text = line[3:]
+        if " -> " in path_text:
+            dirty.append(line)
+            continue
+        if path_text == run_root.rstrip("/") or path_text.startswith(run_prefix):
+            continue
+        dirty.append(line)
+    if dirty:
+        raise PipelineExecutionError("runner Git worktree contains uncommitted source changes")
+    return head
+
+
+def _load_execution_inputs(
+    *,
+    project_root: Path,
+    config: PipelineConfig,
+) -> _ExecutionInputs:
+    v02_path = _safe_input_path(project_root, config.v02_config_path, kind="file")
+    v03_path = _safe_input_path(project_root, config.v03_config_path, kind="file")
+    v04_path = _safe_input_path(project_root, config.v04_config_path, kind="file")
+    v02 = load_v02_config(v02_path)
+    v03 = load_v03_config(v03_path)
+    v04 = load_v04_config(v04_path)
+    observed = (config_sha256(v02), config_sha256(v03), config_sha256(v04))
+    expected = (
+        config.v02_config_sha256,
+        config.v03_config_sha256,
+        config.v04_config_sha256,
+    )
+    if observed != expected:
+        raise PipelineExecutionError("referenced remediation config checksum mismatch")
+    if not (
+        v02.paths.tokenizer_path == v03.paths.tokenizer_path
+        and v02.paths.compact_contract_path == v03.paths.compact_contract_path
+        and v04.compact_contract_path == v03.paths.compact_contract_path
+    ):
+        raise PipelineExecutionError("iteration inputs do not share the frozen tokenizer/contract")
+    if (
+        not config.stop_before_final_evaluation
+        or v04.final_access.automatically_run_final_evaluation
+        or not v04.final_access.require_ready_marker
+        or not v04.final_access.require_owner_review
+        or not v04.final_access.require_explicit_confirm_flag
+        or not v04.final_access.one_access_only
+        or v04.final_access.historical_golden_packet_permitted
+    ):
+        raise PipelineExecutionError("final-access boundary differs from the frozen policy")
+
+    tokenizer_path = _safe_input_path(project_root, v02.paths.tokenizer_path, kind="directory")
+    tokenizer = ProjectTokenizer.load(tokenizer_path)
+    compact_contract = _safe_input_path(project_root, v02.paths.compact_contract_path, kind="file")
+    compact_contract_sha256 = _verify_compact_contract(compact_contract)
+    v02_dataset_path = _safe_input_path(project_root, v02.paths.dataset_config_path, kind="file")
+    v03_dataset_path = _safe_input_path(project_root, v03.paths.dataset_config_path, kind="file")
+    v02_dataset_config = load_development_dataset_config(v02_dataset_path)
+    v03_dataset_config = load_development_dataset_config(v03_dataset_path)
+    if v03_dataset_config.dataset.dataset_version != "0.3.0":
+        raise PipelineExecutionError("v0.3 development dataset policy version mismatch")
+
+    baseline_path = _safe_input_path(project_root, v03.baseline_config_path, kind="file")
+    baseline_config = load_phase5_config(baseline_path).baselines
+    if (
+        canonical_sha256(baseline_config.model_dump(mode="json", round_trip=True))
+        != v03.baseline_config_sha256
+    ):
+        raise PipelineExecutionError("baseline config checksum mismatch")
+
+    inventory_path = _safe_input_path(project_root, v02.inventory_report_path, kind="file")
+    inventory = _read_contract(inventory_path, CompactInventoryReport)
+    if inventory.checksum_sha256 != v02.inventory_report_checksum_sha256:
+        raise PipelineExecutionError("frozen v0.2 inventory report checksum mismatch")
+    counterfactual_path = _safe_input_path(
+        project_root, v03.counterfactual_cap_report_path, kind="file"
+    )
+    counterfactual = _read_contract(
+        counterfactual_path,
+        CounterfactualCapExtensionReport,
+    )
+    if (
+        counterfactual.checksum_sha256 != v03.counterfactual_cap_report_checksum_sha256
+        or counterfactual.base_inventory_report_sha256 != inventory.checksum_sha256
+        or counterfactual.source_commit != inventory.source_commit
+        or inventory.tokenizer_manifest_sha256 != tokenizer.manifest.checksum_sha256
+        or counterfactual.tokenizer_manifest_sha256 != tokenizer.manifest.checksum_sha256
+    ):
+        raise PipelineExecutionError("frozen cap reports have incompatible provenance")
+    return _ExecutionInputs(
+        v02=v02,
+        v03=v03,
+        v04=v04,
+        v02_dataset_config=v02_dataset_config,
+        v03_dataset_config=v03_dataset_config,
+        baseline_config=baseline_config,
+        tokenizer=tokenizer,
+        compact_contract_sha256=compact_contract_sha256,
+        frozen_v02_inventory=inventory,
+        frozen_v03_counterfactual_cap=counterfactual,
+        frozen_data_source_commit=inventory.source_commit,
+    )
+
+
+def _process_peak_rss_bytes() -> int:
+    observed = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    if platform.system() != "Darwin":
+        observed *= 1024
+    return observed
+
+
+def _run_size_bytes(run_directory: Path) -> int:
+    if run_directory.is_symlink() or not run_directory.is_dir():
+        raise PipelineResourceLimitError("pipeline run directory is unsafe")
+    total = 0
+    count = 0
+    pending = [run_directory]
+    while pending:
+        directory = pending.pop()
+        for child in directory.iterdir():
+            count += 1
+            if count > MAX_RUN_FILES:
+                raise PipelineResourceLimitError("pipeline run file-count bound was exceeded")
+            if child.is_symlink():
+                raise PipelineResourceLimitError("pipeline run contains a symlink")
+            if child.is_dir():
+                pending.append(child)
+            elif child.is_file():
+                total += child.stat().st_size
+            else:
+                raise PipelineResourceLimitError("pipeline run contains a non-file entry")
+    return total
+
+
+class _ResourceGuard:
+    def __init__(self, config: PipelineConfig) -> None:
+        self.config = config
+        self._last_resource_poll = 0.0
+
+    def _elapsed_seconds(self, context: StageContext) -> float:
+        store = PipelineStore(
+            context.run_directory,
+            maximum_state_bytes=self.config.maximum_status_bytes,
+        )
+        state = store.load_state()
+        created = _canonical_utc(state.created_at)
+        return max(0.0, (datetime.now(tz=UTC) - created).total_seconds())
+
+    def resource_stop_required(self, context: StageContext, *, force: bool) -> bool:
+        now = time.monotonic()
+        if not force and now - self._last_resource_poll < 5.0:
+            return False
+        self._last_resource_poll = now
+        event_log = context.run_directory / PROGRESS_EVENT_LOG_FILENAME
+        event_bytes = event_log.stat().st_size if event_log.is_file() else 0
+        return (
+            self._elapsed_seconds(context) >= self.config.maximum_pipeline_seconds
+            or _process_peak_rss_bytes() >= self.config.maximum_process_rss_bytes
+            or _run_size_bytes(context.run_directory) >= self.config.maximum_run_bytes
+            or event_bytes >= self.config.maximum_event_log_bytes
+        )
+
+    def stop_required(self, context: StageContext, *, force_resources: bool = False) -> bool:
+        external = context.stop_requested()
+        if type(external) is not bool:
+            raise TypeError("stage stop callback must return an exact boolean")
+        return external or self.resource_stop_required(context, force=force_resources)
+
+    def enforce_start(self, context: StageContext) -> None:
+        if self.stop_required(context, force_resources=True):
+            raise KeyboardInterrupt
+
+    def enforce_end(self, context: StageContext) -> None:
+        if self.resource_stop_required(context, force=True):
+            raise PipelineResourceLimitError("pipeline reached a configured resource boundary")
+
+
+def _stage_outcome(
+    summary: str,
+    *,
+    advancement_allowed: bool = True,
+    artifacts: tuple[ArtifactReference, ...] = (),
+    metrics: tuple[StageMetric, ...] = (),
+    warnings: tuple[str, ...] = (),
+) -> StageOutcome:
+    return StageOutcome(
+        summary=summary,
+        advancement_allowed=advancement_allowed,
+        artifacts=tuple(sorted(artifacts, key=lambda item: item.relative_path)),
+        metrics=tuple(sorted(metrics, key=lambda item: item.name)),
+        warnings=warnings,
+    )
+
+
+def _contract_artifact(
+    context: StageContext,
+    filename: str,
+    model: ContractModel,
+) -> ArtifactReference:
+    path = context.attempt_directory / filename
+    _write_contract(path, model)
+    return _artifact_reference(path, run_directory=context.run_directory)
+
+
+def _directory_artifacts(
+    directory: Path,
+    *,
+    run_directory: Path,
+) -> tuple[ArtifactReference, ...]:
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("pipeline artifact directory is unsafe")
+    files: list[Path] = []
+    for path in directory.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("pipeline artifact directory contains a symlink")
+        if path.is_file():
+            files.append(path)
+        elif not path.is_dir():
+            raise ValueError("pipeline artifact directory contains a non-file entry")
+    return tuple(
+        _artifact_reference(path, run_directory=run_directory)
+        for path in sorted(files, key=lambda item: item.relative_to(run_directory).as_posix())
+    )
+
+
+def _upstream_attempt(
+    context: StageContext,
+    config: PipelineConfig,
+    stage_name: str,
+) -> Path:
+    if stage_name not in PIPELINE_STAGES:
+        raise ValueError("upstream stage is outside the frozen graph")
+    store = PipelineStore(
+        context.run_directory,
+        maximum_state_bytes=config.maximum_status_bytes,
+    )
+    state = store.load_state()
+    record = state.stages[PIPELINE_STAGES.index(stage_name)]
+    if record.status is not StageStatus.COMPLETED or record.latest_attempt_path is None:
+        raise PipelineExecutionError("required upstream stage is not durably completed")
+    path = context.run_directory / record.latest_attempt_path
+    if path.is_symlink() or not path.is_dir():
+        raise PipelineExecutionError("upstream attempt directory is unsafe")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(context.run_directory.resolve(strict=True)):
+        raise PipelineExecutionError("upstream attempt escapes the run directory")
+    return resolved
+
+
+def _tokenized_inventory_sha256(
+    examples: tuple[CompactTokenizedExample, ...],
+) -> str:
+    return canonical_sha256(
+        tuple(
+            {
+                "example_id": item.example_id,
+                "task_name": item.task_name.value,
+                "group_id": item.group_id,
+                "token_ids": item.token_ids,
+                "target_mask": item.target_mask,
+                "prompt_token_count": item.prompt_token_count,
+                "target_token_count": item.target_token_count,
+                "prompt_tokens_retained": item.prompt_tokens_retained,
+                "prompt_truncated": item.prompt_truncated,
+            }
+            for item in examples
+        )
+    )
+
+
+def _tokenize_examples(
+    examples: tuple[RemediationExample, ...],
+    tokenizer: ProjectTokenizer,
+    *,
+    context_length: int,
+    generation_caps: Mapping[TaskName, int],
+) -> tuple[CompactTokenizedExample, ...]:
+    return tuple(
+        tokenize_compact_example(
+            example,
+            tokenizer,
+            context_length=context_length,
+            generation_caps=generation_caps,
+        )
+        for example in examples
+    )
+
+
+def _subset_dataset(
+    dataset: SafeDevelopmentDataset,
+    examples: tuple[RemediationExample, ...],
+    *,
+    dataset_version: str,
+) -> SafeDevelopmentDataset:
+    ordered = tuple(sorted(examples, key=lambda item: item.example_id))
+    if not ordered or len({item.example_id for item in ordered}) != len(ordered):
+        raise ValueError("safe dataset subset must be non-empty and unique")
+    payload = b"".join(
+        canonical_json_bytes(item.model_dump(mode="json", round_trip=True)) + b"\n"
+        for item in ordered
+    )
+    views = tuple(view for view in RemediationView if any(item.view is view for item in ordered))
+    view_counts = Counter(item.view for item in ordered)
+    task_counts = Counter(item.task_name for item in ordered)
+    draft = SafeDevelopmentManifest.model_construct(
+        artifact_version="0.3.0",
+        boundary="development_only_no_final_or_golden_payloads",
+        source_commit=dataset.manifest.source_commit,
+        dataset_version=dataset_version,
+        dataset_config_sha256=dataset.manifest.dataset_config_sha256,
+        compact_contract_version="0.2.0",
+        views=views,
+        example_count=len(ordered),
+        counts_by_view=tuple((view, view_counts[view]) for view in views),
+        counts_by_task=tuple((task, task_counts[task]) for task in TaskName if task_counts[task]),
+        examples_sha256=hashlib.sha256(payload).hexdigest(),
+        examples_size_bytes=len(payload),
+        inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in ordered)
+        ),
+        checksum_sha256="0" * 64,
+    )
+    manifest = _bound_model(draft, SafeDevelopmentManifest)
+    return SafeDevelopmentDataset(manifest=manifest, examples=ordered)
+
+
+def _write_predictions(
+    context: StageContext,
+    *,
+    stem: str,
+    view: RemediationView,
+    examples: tuple[RemediationExample, ...],
+    predictions: tuple[DualPathCompactPrediction, ...],
+) -> tuple[PredictionArtifactManifest, tuple[ArtifactReference, ArtifactReference]]:
+    if (
+        not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,95}", stem)
+        or not examples
+        or len(examples) != len(predictions)
+    ):
+        raise ValueError("prediction artifact inputs are invalid")
+    ordered_examples = tuple(sorted(examples, key=lambda item: item.example_id))
+    ordered_predictions = tuple(sorted(predictions, key=lambda item: item.example_id))
+    for example, prediction in zip(ordered_examples, ordered_predictions, strict=True):
+        if (
+            example.view is not view
+            or prediction.example_id != example.example_id
+            or prediction.example_checksum_sha256 != example.checksum_sha256
+        ):
+            raise ValueError("prediction artifact provenance mismatch")
+    predictions_path = context.attempt_directory / f"{stem}.jsonl"
+    if predictions_path.exists() or predictions_path.is_symlink():
+        raise FileExistsError("prediction artifact must not overwrite")
+    prediction_bytes = canonical_prediction_jsonl_bytes(ordered_predictions)
+    rows = prediction_bytes.splitlines(keepends=True)
+    if len(rows) != len(ordered_predictions) or any(
+        len(row) > MAX_PREDICTION_ROW_BYTES for row in rows
+    ):
+        raise ValueError("one prediction row exceeds its byte bound")
+    prediction_sha256 = prediction_artifact_byte_sha256(ordered_predictions)
+    if hashlib.sha256(prediction_bytes).hexdigest() != prediction_sha256:
+        raise PipelineExecutionError("canonical prediction byte contract is inconsistent")
+    _write_bytes(predictions_path, prediction_bytes)
+    draft = PredictionArtifactManifest.model_construct(
+        view=view,
+        example_count=len(ordered_examples),
+        example_inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in ordered_examples)
+        ),
+        prediction_inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in ordered_predictions)
+        ),
+        predictions_sha256=prediction_sha256,
+        predictions_size_bytes=len(prediction_bytes),
+        checksum_sha256="0" * 64,
+    )
+    manifest = _bound_model(draft, PredictionArtifactManifest)
+    manifest_path = context.attempt_directory / f"{stem}-manifest.json"
+    _write_contract(manifest_path, manifest)
+    return manifest, (
+        _artifact_reference(manifest_path, run_directory=context.run_directory),
+        _artifact_reference(predictions_path, run_directory=context.run_directory),
+    )
+
+
+def _decode_examples(
+    model: TransformerLM,
+    tokenizer: ProjectTokenizer,
+    examples: tuple[RemediationExample, ...],
+    *,
+    generation_caps: Mapping[TaskName, int],
+    device: torch.device,
+) -> tuple[DualPathCompactPrediction, ...]:
+    results: list[DualPathCompactPrediction] = []
+    for start in range(0, len(examples), MAX_DECODE_BATCH_SIZE):
+        results.extend(
+            decode_compact_examples(
+                model,
+                tokenizer,
+                examples[start : start + MAX_DECODE_BATCH_SIZE],
+                generation_caps=generation_caps,
+                device=device,
+            )
+        )
+    return tuple(results)
+
+
+def _smoke_examples(
+    dataset: SafeDevelopmentDataset,
+) -> tuple[tuple[RemediationExample, ...], tuple[RemediationExample, ...]]:
+    train = tuple(item for item in dataset.examples if item.view is RemediationView.IID_TRAIN)
+    validation = tuple(
+        item for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
+    )
+    if not train or not validation:
+        raise ValueError("smoke training requires IID train and validation support")
+    return train[:SMOKE_EXAMPLES_PER_VIEW], validation[:SMOKE_EXAMPLES_PER_VIEW]
+
+
+def _smoke_model_config(base: TransformerConfig) -> TransformerConfig:
+    return TransformerConfig(
+        model_version=base.model_version,
+        layers=2,
+        width=64,
+        heads=4,
+        context_length=base.context_length,
+        feed_forward_multiplier=2,
+        dropout=0.0,
+        tie_embeddings=base.tie_embeddings,
+        bias=base.bias,
+    )
+
+
+def _smoke_training_config(base: RemediationTraining) -> RemediationTraining:
+    return RemediationTraining(
+        seed=base.seed,
+        device="cpu",
+        allow_cpu_fallback=True,
+        steps=SMOKE_STEPS,
+        batch_size=min(2, base.batch_size),
+        learning_rate=base.learning_rate,
+        weight_decay=base.weight_decay,
+        gradient_clip_norm=base.gradient_clip_norm,
+        evaluation_interval=1,
+        durable_checkpoint_interval=1,
+    )
+
+
+def _latest_resume_source(
+    context: StageContext,
+    candidate_id: str,
+) -> Path | None:
+    stage_root = context.attempt_directory.parent
+    current_match = re.fullmatch(r"attempt-([0-9]{4})", context.attempt_directory.name)
+    if current_match is None:
+        raise ValueError("current stage attempt name is invalid")
+    current = int(current_match.group(1))
+    candidates: list[tuple[int, int, Path]] = []
+    for attempt in stage_root.iterdir():
+        match = re.fullmatch(r"attempt-([0-9]{4})", attempt.name)
+        if match is None or attempt.is_symlink() or not attempt.is_dir():
+            if attempt.name != "completed.json":
+                raise ValueError("training stage contains an unsafe attempt entry")
+            continue
+        attempt_number = int(match.group(1))
+        if attempt_number >= current:
+            continue
+        state_root = attempt / "training-state" / candidate_id
+        if not state_root.exists():
+            continue
+        if state_root.is_symlink() or not state_root.is_dir():
+            raise ValueError("previous durable training root is unsafe")
+        for state in state_root.iterdir():
+            state_match = re.fullmatch(r"state-step-([0-9]{8})", state.name)
+            if state_match is None or state.is_symlink() or not state.is_dir():
+                raise ValueError("previous durable training root has an unexpected entry")
+            candidates.append((attempt_number, int(state_match.group(1)), state))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[1], item[0]))[2]
+
+
+def _copy_resume_state(source: Path, destination_root: Path) -> Path:
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("resume source must be a regular state directory")
+    for path in source.rglob("*"):
+        if path.is_symlink() or (not path.is_file() and not path.is_dir()):
+            raise ValueError("resume state contains an unsafe entry")
+    destination = destination_root / source.name
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("resume state destination already exists")
+    shutil.copytree(source, destination, copy_function=shutil.copy2)
+    for path in sorted(destination.rglob("*"), reverse=True):
+        if path.is_file():
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    directory_descriptor = os.open(destination, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+    return destination
+
+
+def _training_progress_callback(
+    context: StageContext,
+    candidate_id: str,
+) -> Callable[[TrainingProgress], None]:
+    def report(event: TrainingProgress) -> None:
+        metric: ProgressMetric | None = None
+        if event.validation_nll is not None:
+            metric = ProgressMetric(name="validation_nll", value=event.validation_nll)
+        elif event.event != "evaluation":
+            metric = context.progress.snapshot().latest_metric
+        context.progress.report(
+            message=f"Candidate {candidate_id} {event.event}.",
+            completed_units=event.step,
+            total_units=event.total_steps,
+            latest_metric=metric,
+        )
+        if event.checkpoint_name is None:
+            return
+        if event.event in {"durable_checkpoint", "stopped"}:
+            checkpoint = (
+                context.attempt_directory / "training-state" / candidate_id / event.checkpoint_name
+            )
+        elif event.event == "final_checkpoint":
+            checkpoint = context.attempt_directory / event.checkpoint_name
+        else:
+            raise PipelineExecutionError("training progress checkpoint event is invalid")
+        if checkpoint.is_symlink() or not checkpoint.is_dir():
+            raise PipelineExecutionError("reported training checkpoint is missing or unsafe")
+        checkpoint_relative = checkpoint.relative_to(context.run_directory).as_posix()
+        context.progress.checkpoint(
+            checkpoint=checkpoint_relative,
+            message=f"Candidate {candidate_id} {event.event} committed.",
+        )
+
+    return report
+
+
+def _run_training(
+    context: StageContext,
+    *,
+    guard: _ResourceGuard,
+    inputs: _ExecutionInputs,
+    candidate_id: str,
+    sampling_strategy: Literal["uniform_control", "task_balanced"],
+    model_config: TransformerConfig,
+    training: RemediationTraining,
+    train_examples: tuple[RemediationExample, ...],
+    validation_examples: tuple[RemediationExample, ...],
+    evaluation_callback: EvaluationCallback | None,
+) -> tuple[CompactTrainingResult, tuple[ArtifactReference, ...]]:
+    generation_caps = inputs.generation_caps
+    tokenized_train = _tokenize_examples(
+        train_examples,
+        inputs.tokenizer,
+        context_length=model_config.context_length,
+        generation_caps=generation_caps,
+    )
+    tokenized_validation = _tokenize_examples(
+        validation_examples,
+        inputs.tokenizer,
+        context_length=model_config.context_length,
+        generation_caps=generation_caps,
+    )
+    state_root = context.attempt_directory / "training-state" / candidate_id
+    state_root.mkdir(parents=True, mode=0o750)
+    if state_root.is_symlink() or not state_root.is_dir():
+        raise ValueError("durable training root is unsafe")
+    resume_source = _latest_resume_source(context, candidate_id)
+    resume_state = None if resume_source is None else _copy_resume_state(resume_source, state_root)
+    checkpoint_directory = context.attempt_directory / f"checkpoint-{candidate_id}"
+
+    def stop_requested(_step: int) -> bool:
+        return guard.stop_required(context)
+
+    outcome: CompactTrainingOutcome = train_compact_model(
+        candidate_id=candidate_id,
+        sampling_strategy=sampling_strategy,
+        model_config=model_config,
+        training=training,
+        vocab_size=inputs.tokenizer.vocab_size,
+        tokenizer_manifest=inputs.tokenizer.manifest,
+        train_examples=tokenized_train,
+        validation_examples=tokenized_validation,
+        train_inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in train_examples)
+        ),
+        validation_inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in validation_examples)
+        ),
+        output_directory=checkpoint_directory,
+        durable_state_root=state_root,
+        source_commit=context.source_commit,
+        resume_state_directory=resume_state,
+        evaluation_callback=evaluation_callback,
+        progress_callback=_training_progress_callback(context, candidate_id),
+        stop_requested=stop_requested,
+    )
+    result_path = context.attempt_directory / f"training-{candidate_id}.json"
+    _write_contract(result_path, cast(ContractModel, outcome))
+    if type(outcome) is CompactTrainingStopped:
+        raise KeyboardInterrupt
+    if type(outcome) is not CompactTrainingResult:
+        raise TypeError("training returned an unsupported outcome contract")
+    artifacts = (
+        _artifact_reference(result_path, run_directory=context.run_directory),
+        *_directory_artifacts(
+            checkpoint_directory,
+            run_directory=context.run_directory,
+        ),
+    )
+    return outcome, tuple(artifacts)
+
+
+def _load_training_result(attempt: Path, candidate_id: str) -> CompactTrainingResult:
+    return _read_contract(
+        attempt / f"training-{candidate_id}.json",
+        CompactTrainingResult,
+    )
+
+
+def _load_candidate_checkpoint(
+    attempt: Path,
+    candidate_id: str,
+    result: CompactTrainingResult,
+    tokenizer: ProjectTokenizer,
+) -> tuple[TransformerLM, CheckpointManifest, torch.device]:
+    device = torch.device(result.device.resolved)
+    model, manifest = load_checkpoint(
+        attempt / f"checkpoint-{candidate_id}",
+        expected_manifest_sha256=result.checkpoint_manifest_sha256,
+        expected_tokenizer_sha256=tokenizer.manifest.checksum_sha256,
+        device=device,
+    )
+    return model, manifest, device
+
+
+def _load_stage_dataset(
+    context: StageContext,
+    config: PipelineConfig,
+    stage: str,
+    directory_name: str,
+) -> SafeDevelopmentDataset:
+    return load_safe_development_artifact(
+        _upstream_attempt(context, config, stage) / directory_name
+    )
+
+
+def _with_training_seed(training: RemediationTraining, seed: int) -> RemediationTraining:
+    payload = training.model_dump(mode="python", round_trip=True)
+    payload["seed"] = seed
+    return RemediationTraining.model_validate(payload)
+
+
+def _evaluate_candidate_view(
+    context: StageContext,
+    *,
+    inputs: _ExecutionInputs,
+    config_sha256_value: str,
+    dataset: SafeDevelopmentDataset,
+    train_examples: tuple[RemediationExample, ...],
+    evaluation_examples: tuple[RemediationExample, ...],
+    view: RemediationView,
+    model: TransformerLM,
+    checkpoint_manifest: CheckpointManifest,
+    device: torch.device,
+    stem: str,
+) -> tuple[
+    SemanticEvaluationReport,
+    RemediationBaselineReport,
+    tuple[DualPathCompactPrediction, ...],
+    tuple[ArtifactReference, ...],
+]:
+    scoped = _subset_dataset(
+        dataset,
+        (*train_examples, *evaluation_examples),
+        dataset_version=dataset.manifest.dataset_version,
+    )
+    tokenized_train = _tokenize_examples(
+        train_examples,
+        inputs.tokenizer,
+        context_length=model.config.context_length,
+        generation_caps=inputs.generation_caps,
+    )
+    tokenized_evaluation = _tokenize_examples(
+        evaluation_examples,
+        inputs.tokenizer,
+        context_length=model.config.context_length,
+        generation_caps=inputs.generation_caps,
+    )
+    baseline = run_remediation_baselines(
+        scoped,
+        inputs.tokenizer,
+        inputs.baseline_config,
+        tokenized_train=tokenized_train,
+        tokenized_validation=tokenized_evaluation,
+        evaluation_view=view,
+    )
+    baseline_artifact = _contract_artifact(context, f"{stem}-baselines.json", baseline)
+    predictions = _decode_examples(
+        model,
+        inputs.tokenizer,
+        evaluation_examples,
+        generation_caps=inputs.generation_caps,
+        device=device,
+    )
+    prediction_manifest, prediction_artifacts = _write_predictions(
+        context,
+        stem=f"{stem}-predictions",
+        view=view,
+        examples=evaluation_examples,
+        predictions=predictions,
+    )
+    binding = DevelopmentArtifactBinding(
+        source_commit=context.source_commit,
+        config_sha256=config_sha256_value,
+        dataset_manifest_sha256=scoped.manifest.checksum_sha256,
+        tokenizer_manifest_sha256=inputs.tokenizer.manifest.checksum_sha256,
+        output_contract_sha256=inputs.compact_contract_sha256,
+        checkpoint_sha256=checkpoint_manifest.checksum_sha256,
+        prediction_artifact_sha256=prediction_manifest.predictions_sha256,
+        comparator_artifact_sha256=baseline.checksum_sha256,
+    )
+    evaluation = evaluate_semantic_predictions(
+        view=view,
+        examples=evaluation_examples,
+        predictions=predictions,
+        baseline_report=baseline,
+        artifacts=binding,
+    )
+    evaluation_artifact = _contract_artifact(
+        context,
+        f"{stem}-semantic-evaluation.json",
+        evaluation,
+    )
+    return (
+        evaluation,
+        baseline,
+        predictions,
+        (baseline_artifact, *prediction_artifacts, evaluation_artifact),
+    )
+
+
+def _stage_completion_outcome(
+    run_directory: Path,
+    record_path: str,
+) -> ArtifactReference:
+    attempt = run_directory / record_path
+    marker_path = attempt.parent / "completed.json"
+    if marker_path.is_symlink() or not marker_path.is_file():
+        raise PipelineExecutionError("terminal review cannot resolve stage completion marker")
+    raw = _strict_json(marker_path.read_bytes())
+    if type(raw) is not dict or type(raw.get("outcome")) is not dict:
+        raise PipelineExecutionError("stage completion marker is malformed")
+    return ArtifactReference.model_validate(raw["outcome"], strict=True)
+
+
+class _PipelineRuntime:
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        config: PipelineConfig,
+        source_commit: str,
+        inputs: _ExecutionInputs,
+    ) -> None:
+        self.project_root = project_root
+        self.config = config
+        self.source_commit = source_commit
+        self.inputs = inputs
+        self.guard = _ResourceGuard(config)
+
+    def _start(self, context: StageContext) -> None:
+        if context.project_root.resolve(strict=True) != self.project_root:
+            raise PipelineExecutionError("stage project root differs from its frozen runtime")
+        if context.source_commit != self.source_commit:
+            raise PipelineExecutionError("stage source commit differs from its frozen runtime")
+        self.guard.enforce_start(context)
+
+    def _finish(self, context: StageContext, outcome: StageOutcome) -> StageOutcome:
+        self.guard.enforce_end(context)
+        return outcome
+
+    def preflight(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        runner_commit = _verify_runner_source(
+            self.project_root,
+            source_commit=self.source_commit,
+            run_root=self.config.run_root,
+        )
+        draft = ExecutionPreflightReport.model_construct(
+            runner_source_commit=runner_commit,
+            runner_worktree_clean=True,
+            pipeline_config_sha256=config_sha256(self.config),
+            v02_config_sha256=config_sha256(self.inputs.v02),
+            v03_config_sha256=config_sha256(self.inputs.v03),
+            v04_config_sha256=config_sha256(self.inputs.v04),
+            frozen_data_source_commit=self.inputs.frozen_data_source_commit,
+            tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
+            compact_contract_sha256=self.inputs.compact_contract_sha256,
+            v02_inventory_report_sha256=self.inputs.frozen_v02_inventory.checksum_sha256,
+            v03_counterfactual_cap_report_sha256=(
+                self.inputs.frozen_v03_counterfactual_cap.checksum_sha256
+            ),
+            checksum_sha256="0" * 64,
+        )
+        report = _bound_model(draft, ExecutionPreflightReport)
+        artifact = _contract_artifact(context, "preflight.json", report)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Development-only provenance and frozen-input preflight passed.",
+                artifacts=(artifact,),
+            ),
+        )
+
+    def v02_inventory_and_caps(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        dataset = build_safe_development_dataset(
+            self.inputs.v02_dataset_config,
+            source_commit=self.inputs.frozen_data_source_commit,
+            views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
+        )
+        dataset_directory = context.attempt_directory / "dataset-v02"
+        write_safe_development_artifact(dataset, dataset_directory)
+        measured = measure_compact_inventory(
+            dataset,
+            self.inputs.tokenizer,
+            self.inputs.v02.inventory,
+        )
+        if measured != self.inputs.frozen_v02_inventory:
+            raise PipelineExecutionError("v0.2 inventory did not reproduce its frozen report")
+        report_artifact = _contract_artifact(context, "v02-inventory.json", measured)
+        artifacts = (
+            report_artifact,
+            *_directory_artifacts(dataset_directory, run_directory=context.run_directory),
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Frozen v0.2 IID inventory and compact generation caps reproduced exactly.",
+                artifacts=artifacts,
+                metrics=(
+                    StageMetric(
+                        name="prompt_truncation_rate",
+                        value=float(measured.prompt_truncation_rate),
+                        unit="ratio",
+                    ),
+                ),
+            ),
+        )
+
+    def v02_smoke(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
+        train, validation = _smoke_examples(dataset)
+        result, artifacts = _run_training(
+            context,
+            guard=self.guard,
+            inputs=self.inputs,
+            candidate_id="v02-smoke",
+            sampling_strategy="uniform_control",
+            model_config=_smoke_model_config(self.inputs.v02.model),
+            training=_smoke_training_config(self.inputs.v02.training),
+            train_examples=train,
+            validation_examples=validation,
+            evaluation_callback=None,
+        )
+        _load_candidate_checkpoint(
+            context.attempt_directory,
+            "v02-smoke",
+            result,
+            self.inputs.tokenizer,
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Two-step CPU v0.2 smoke training and safe checkpoint reload completed.",
+                artifacts=artifacts,
+                metrics=(
+                    StageMetric(
+                        name="final_training_nll",
+                        value=float(result.final_training_nll),
+                        unit="nll",
+                    ),
+                ),
+            ),
+        )
+
+    def v02_development_training(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
+        train = tuple(item for item in dataset.examples if item.view is RemediationView.IID_TRAIN)
+        validation = tuple(
+            item for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
+        )
+        result, artifacts = _run_training(
+            context,
+            guard=self.guard,
+            inputs=self.inputs,
+            candidate_id="v02-development",
+            sampling_strategy="uniform_control",
+            model_config=self.inputs.v02.model,
+            training=self.inputs.v02.training,
+            train_examples=train,
+            validation_examples=validation,
+            evaluation_callback=None,
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "v0.2 compact-target development control training completed.",
+                artifacts=artifacts,
+                metrics=(
+                    StageMetric(
+                        name="selected_validation_nll",
+                        value=float(result.selected_validation_nll),
+                        unit="nll",
+                    ),
+                ),
+            ),
+        )
+
+    def v02_development_gate(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
+        training_attempt = _upstream_attempt(context, self.config, "v02_development_training")
+        result = _load_training_result(training_attempt, "v02-development")
+        model, _manifest, device = _load_candidate_checkpoint(
+            training_attempt,
+            "v02-development",
+            result,
+            self.inputs.tokenizer,
+        )
+        examples = tuple(
+            item for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
+        )
+        predictions = _decode_examples(
+            model,
+            self.inputs.tokenizer,
+            examples,
+            generation_caps=self.inputs.generation_caps,
+            device=device,
+        )
+        prediction_manifest, prediction_artifacts = _write_predictions(
+            context,
+            stem="v02-validation-predictions",
+            view=RemediationView.IID_VALIDATION,
+            examples=examples,
+            predictions=predictions,
+        )
+        constrained = tuple(item.constrained for item in predictions)
+        unconstrained = tuple(item.unconstrained for item in predictions)
+        count = len(predictions)
+        inventory = self.inputs.frozen_v02_inventory
+        draft = V02DevelopmentGateReport.model_construct(
+            inventory_report_sha256=inventory.checksum_sha256,
+            prediction_manifest_sha256=prediction_manifest.checksum_sha256,
+            example_count=count,
+            constrained_parse_rate=sum(item.compact_parse_success for item in constrained) / count,
+            constrained_schema_validity_rate=sum(item.schema_valid for item in constrained) / count,
+            unconstrained_parse_rate=sum(item.compact_parse_success for item in unconstrained)
+            / count,
+            unconstrained_schema_validity_rate=sum(item.schema_valid for item in unconstrained)
+            / count,
+            generation_cap_exhaustion_rate=(
+                sum(item.generation_cap_exhausted for item in constrained) / count
+            ),
+            inventory_example_count=inventory.example_count,
+            prompt_truncation_count=inventory.prompt_truncation_count,
+            prompt_truncation_rate=inventory.prompt_truncation_rate,
+            target_fit_rate=inventory.target_fit_rate,
+            round_trip_rate=inventory.round_trip_rate,
+            reachability_rate=inventory.reachability_rate,
+            task_footer_retained_rate=inventory.task_footer_retained_rate,
+            cap_exhaustion_target_rate=inventory.cap_exhaustion_target_rate,
+            advancement_allowed=(
+                all(item.compact_parse_success and item.schema_valid for item in constrained)
+                and sum(item.generation_cap_exhausted for item in constrained) / count
+                <= V02_MAXIMUM_CAP_EXHAUSTION_RATE
+                and inventory.prompt_truncation_count == V02_FROZEN_PROMPT_TRUNCATION_COUNT
+                and inventory.prompt_truncation_rate
+                == V02_FROZEN_PROMPT_TRUNCATION_COUNT / V01_PROMPT_TRUNCATION_EXAMPLE_COUNT
+                and inventory.target_fit_rate == 1.0
+                and inventory.round_trip_rate == 1.0
+                and inventory.reachability_rate == 1.0
+                and inventory.task_footer_retained_rate == 1.0
+                and inventory.cap_exhaustion_target_rate == 0.0
+            ),
+            checksum_sha256="0" * 64,
+        )
+        report = _bound_model(draft, V02DevelopmentGateReport)
+        artifact = _contract_artifact(context, "v02-development-gate.json", report)
+        warning = (
+            "D-073 records the 689/882 to 668/882 truncation change as modest; "
+            "the mandatory v0.4 context pilot remains active."
+            if report.advancement_allowed
+            else "The v0.2 structural or exact D-073 reproduction gate did not pass."
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "v0.2 development gate evaluated against the frozen structural contract.",
+                advancement_allowed=bool(report.advancement_allowed),
+                artifacts=(*prediction_artifacts, artifact),
+                warnings=(warning,),
+            ),
+        )
+
+    def v03_data_audit(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        augmentation = self.inputs.v03.augmentation
+        dataset = build_safe_development_dataset(
+            self.inputs.v03_dataset_config,
+            source_commit=self.inputs.frozen_data_source_commit,
+            views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
+            train_template_families=tuple(augmentation.train_template_families),
+            train_alias_families=tuple(augmentation.train_alias_families),
+            renderer_variants_per_projection=augmentation.renderer_variants_per_projection,
+            include_insufficient_evidence_views=augmentation.include_insufficient_evidence_views,
+        )
+        dataset_directory = context.attempt_directory / "dataset-v03"
+        write_safe_development_artifact(dataset, dataset_directory)
+        audit = audit_safe_development_dataset(dataset)
+        cap = measure_counterfactual_cap_extension(
+            dataset,
+            self.inputs.tokenizer,
+            self.inputs.v02.inventory,
+            self.inputs.frozen_v02_inventory,
+        )
+        if cap != self.inputs.frozen_v03_counterfactual_cap:
+            raise PipelineExecutionError(
+                "v0.3 counterfactual cap did not reproduce its frozen report"
+            )
+        selection = build_semantic_selection_manifest(dataset, self.inputs.v03)
+        artifacts = (
+            *_directory_artifacts(dataset_directory, run_directory=context.run_directory),
+            _contract_artifact(context, "v03-development-audit.json", audit),
+            _contract_artifact(context, "v03-counterfactual-cap.json", cap),
+            _contract_artifact(context, "v03-semantic-selection.json", selection),
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "v0.3 IID data, augmentation audit, cap extension, and fixed "
+                "48-row selection froze.",
+                advancement_allowed=bool(audit.passed),
+                artifacts=artifacts,
+                metrics=(
+                    StageMetric(
+                        name="semantic_selection_examples",
+                        value=float(selection.selected_example_count),
+                        unit="examples",
+                    ),
+                ),
+            ),
+        )
+
+    def v03_smoke(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        dataset = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        train, validation = _smoke_examples(dataset)
+        result, artifacts = _run_training(
+            context,
+            guard=self.guard,
+            inputs=self.inputs,
+            candidate_id="v03-smoke",
+            sampling_strategy="task_balanced",
+            model_config=_smoke_model_config(self.inputs.v02.model),
+            training=_smoke_training_config(self.inputs.v03.training),
+            train_examples=train,
+            validation_examples=validation,
+            evaluation_callback=None,
+        )
+        _load_candidate_checkpoint(
+            context.attempt_directory,
+            "v03-smoke",
+            result,
+            self.inputs.tokenizer,
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Two-step CPU v0.3 task-balanced smoke and checkpoint reload passed.",
+                artifacts=artifacts,
+            ),
+        )
+
+    def v03_candidate_training(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+        dataset = load_safe_development_artifact(audit_attempt / "dataset-v03")
+        selection = _read_contract(
+            audit_attempt / "v03-semantic-selection.json",
+            SemanticSelectionManifest,
+        )
+        selected_examples = resolve_semantic_selection_examples(
+            dataset,
+            selection,
+            self.inputs.v03,
+        )
+        train_examples = tuple(
+            item for item in dataset.examples if item.view is RemediationView.IID_TRAIN
+        )
+        artifacts: list[ArtifactReference] = []
+        for candidate in self.inputs.v03.candidates:
+            training = _with_training_seed(self.inputs.v03.training, candidate.seed)
+
+            def evaluation_callback(
+                model: TransformerLM,
+                _step: int,
+                _nll: float,
+                *,
+                selected: tuple[RemediationExample, ...] = selected_examples,
+            ) -> float:
+                device = next(model.parameters()).device
+                predictions = _decode_examples(
+                    model,
+                    self.inputs.tokenizer,
+                    selected,
+                    generation_caps=self.inputs.generation_caps,
+                    device=device,
+                )
+                return 1.0 - semantic_composite_score(selected, predictions)
+
+            _result, candidate_artifacts = _run_training(
+                context,
+                guard=self.guard,
+                inputs=self.inputs,
+                candidate_id=candidate.candidate_id,
+                sampling_strategy=candidate.sampling,
+                model_config=self.inputs.v02.model,
+                training=training,
+                train_examples=train_examples,
+                validation_examples=selected_examples,
+                evaluation_callback=evaluation_callback,
+            )
+            artifacts.extend(candidate_artifacts)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Both preregistered v0.3 candidates completed development-only training.",
+                artifacts=tuple(artifacts),
+                metrics=(
+                    StageMetric(
+                        name="candidate_count",
+                        value=float(len(self.inputs.v03.candidates)),
+                        unit="candidates",
+                    ),
+                ),
+            ),
+        )
+
+    def v03_development_evaluation(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+        training_attempt = _upstream_attempt(context, self.config, "v03_candidate_training")
+        dataset = load_safe_development_artifact(audit_attempt / "dataset-v03")
+        selection = _read_contract(
+            audit_attempt / "v03-semantic-selection.json",
+            SemanticSelectionManifest,
+        )
+        selected_examples = resolve_semantic_selection_examples(
+            dataset,
+            selection,
+            self.inputs.v03,
+        )
+        train_examples = tuple(
+            item for item in dataset.examples if item.view is RemediationView.IID_TRAIN
+        )
+        scores: list[CandidateScore] = []
+        artifacts: list[ArtifactReference] = []
+        for candidate in self.inputs.v03.candidates:
+            result = _load_training_result(training_attempt, candidate.candidate_id)
+            model, manifest, device = _load_candidate_checkpoint(
+                training_attempt,
+                candidate.candidate_id,
+                result,
+                self.inputs.tokenizer,
+            )
+            evaluation, _baseline, predictions, evaluation_artifacts = _evaluate_candidate_view(
+                context,
+                inputs=self.inputs,
+                config_sha256_value=config_sha256(self.inputs.v03),
+                dataset=dataset,
+                train_examples=train_examples,
+                evaluation_examples=selected_examples,
+                view=RemediationView.IID_VALIDATION,
+                model=model,
+                checkpoint_manifest=manifest,
+                device=device,
+                stem=candidate.candidate_id,
+            )
+            artifacts.extend(evaluation_artifacts)
+            scores.append(
+                CandidateScore(
+                    candidate_id=candidate.candidate_id,
+                    checkpoint_manifest_sha256=manifest.checksum_sha256,
+                    semantic_composite=semantic_composite_score(selected_examples, predictions),
+                    selected_validation_nll=float(result.selected_validation_nll),
+                    selected_step=result.selected_step,
+                    evaluation_report_sha256=evaluation.checksum_sha256,
+                )
+            )
+        ordered_scores = tuple(sorted(scores, key=lambda item: item.candidate_id))
+        selected = min(
+            ordered_scores,
+            key=lambda item: (
+                -item.semantic_composite,
+                item.selected_validation_nll,
+                item.selected_step,
+                item.candidate_id,
+            ),
+        )
+        draft = CandidateSelectionReport.model_construct(
+            selection_manifest_sha256=selection.checksum_sha256,
+            candidates=ordered_scores,
+            selected_candidate_id=selected.candidate_id,
+            selected_checkpoint_manifest_sha256=selected.checkpoint_manifest_sha256,
+            checksum_sha256="0" * 64,
+        )
+        report = _bound_model(draft, CandidateSelectionReport)
+        artifacts.append(_contract_artifact(context, "v03-candidate-selection.json", report))
+        full_iid_validation = tuple(
+            item for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
+        )
+        if not full_iid_validation:
+            raise PipelineExecutionError("v0.3 full IID validation view is empty")
+        selected_result = _load_training_result(
+            training_attempt,
+            report.selected_candidate_id,
+        )
+        selected_model, selected_manifest, selected_device = _load_candidate_checkpoint(
+            training_attempt,
+            report.selected_candidate_id,
+            selected_result,
+            self.inputs.tokenizer,
+        )
+        _full_evaluation, _full_baseline, _full_predictions, full_artifacts = (
+            _evaluate_candidate_view(
+                context,
+                inputs=self.inputs,
+                config_sha256_value=config_sha256(self.inputs.v03),
+                dataset=dataset,
+                train_examples=train_examples,
+                evaluation_examples=full_iid_validation,
+                view=RemediationView.IID_VALIDATION,
+                model=selected_model,
+                checkpoint_manifest=selected_manifest,
+                device=selected_device,
+                stem="v03-selected-full-iid",
+            )
+        )
+        artifacts.extend(full_artifacts)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "v0.3 selected on the fixed subset, then evaluated the winner on full IID.",
+                artifacts=tuple(artifacts),
+                metrics=(
+                    StageMetric(
+                        name="full_iid_validation_examples",
+                        value=float(len(full_iid_validation)),
+                        unit="examples",
+                    ),
+                    StageMetric(
+                        name="selected_semantic_composite",
+                        value=float(selected.semantic_composite),
+                        unit="ratio",
+                    ),
+                ),
+            ),
+        )
+
+    def v03_gate(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        evaluation_attempt = _upstream_attempt(context, self.config, "v03_development_evaluation")
+        evaluation = _read_contract(
+            evaluation_attempt / "v03-selected-full-iid-semantic-evaluation.json",
+            SemanticEvaluationReport,
+        )
+        acceptance = evaluate_v03_acceptance(evaluation.view_metrics)
+        artifact = _contract_artifact(context, "v03-acceptance.json", acceptance)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "v0.3 IID semantic acceptance gate evaluated with named preregistered checks.",
+                advancement_allowed=bool(acceptance.advancement_allowed),
+                artifacts=(artifact,),
+            ),
+        )
+
+    def v04_shadow_freeze(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        shadow = build_safe_development_dataset(
+            self.inputs.v03_dataset_config,
+            source_commit=self.inputs.frozen_data_source_commit,
+            views=SHADOW_VIEWS,
+        )
+        shadow_directory = context.attempt_directory / "dataset-v04-shadow"
+        write_safe_development_artifact(shadow, shadow_directory)
+        shadow_audit = audit_safe_development_dataset(shadow)
+        iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        iid_groups = {item.group_id for item in iid.examples}
+        shadow_groups = {item.group_id for item in shadow.examples}
+        iid_checksums = {item.checksum_sha256 for item in iid.examples}
+        shadow_checksums = {item.checksum_sha256 for item in shadow.examples}
+        iid_prompts = {item.prompt_sha256 for item in iid.examples}
+        shadow_prompts = {item.prompt_sha256 for item in shadow.examples}
+        draft = DevelopmentSeparationReport.model_construct(
+            iid_dataset_manifest_sha256=iid.manifest.checksum_sha256,
+            shadow_dataset_manifest_sha256=shadow.manifest.checksum_sha256,
+            iid_example_count=len(iid.examples),
+            shadow_example_count=len(shadow.examples),
+            group_overlap_count=len(iid_groups & shadow_groups),
+            example_checksum_overlap_count=len(iid_checksums & shadow_checksums),
+            prompt_checksum_overlap_count=len(iid_prompts & shadow_prompts),
+            passed=not (
+                iid_groups & shadow_groups
+                or iid_checksums & shadow_checksums
+                or iid_prompts & shadow_prompts
+            ),
+            checksum_sha256="0" * 64,
+        )
+        separation = _bound_model(draft, DevelopmentSeparationReport)
+        artifacts = (
+            *_directory_artifacts(shadow_directory, run_directory=context.run_directory),
+            _contract_artifact(context, "v04-shadow-audit.json", shadow_audit),
+            _contract_artifact(context, "v04-development-separation.json", separation),
+        )
+        passed = bool(shadow_audit.passed and separation.passed)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Six preregistered shadow views froze with IID separation evidence.",
+                advancement_allowed=passed,
+                artifacts=artifacts,
+                metrics=(
+                    StageMetric(
+                        name="shadow_examples",
+                        value=float(len(shadow.examples)),
+                        unit="examples",
+                    ),
+                ),
+            ),
+        )
+
+    def v04_pilot(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        train_examples = tuple(
+            item for item in iid.examples if item.view is RemediationView.IID_TRAIN
+        )
+        tokenized = _tokenize_examples(
+            train_examples,
+            self.inputs.tokenizer,
+            context_length=self.inputs.v02.model.context_length,
+            generation_caps=self.inputs.generation_caps,
+        )
+        v03_train_truncation_rate = sum(item.prompt_truncated for item in tokenized) / len(
+            tokenized
+        )
+        frozen_inventory = self.inputs.frozen_v02_inventory
+        frozen_truncation_rate = (
+            V02_FROZEN_PROMPT_TRUNCATION_COUNT / V01_PROMPT_TRUNCATION_EXAMPLE_COUNT
+        )
+        if (
+            frozen_inventory.example_count != V01_PROMPT_TRUNCATION_EXAMPLE_COUNT
+            or frozen_inventory.prompt_truncation_count != V02_FROZEN_PROMPT_TRUNCATION_COUNT
+            or frozen_inventory.prompt_truncation_rate != frozen_truncation_rate
+        ):
+            raise PipelineExecutionError("v0.4 pilot cannot reproduce the D-073 activation")
+        threshold = self.inputs.v04.variants.material_prompt_truncation_rate
+        activated = frozen_truncation_rate >= threshold
+        if not activated:
+            raise PipelineExecutionError("D-073 mandatory context pilot was deactivated")
+        measurements: list[V04PilotMeasurement] = []
+        artifacts: list[ArtifactReference] = []
+        if activated:
+            smoke_train, smoke_validation = _smoke_examples(iid)
+            for batch_size in self.inputs.v04.pilot.batch_sizes:
+                training = RemediationTraining(
+                    seed=self.inputs.v04.training.seed,
+                    device=self.inputs.v04.training.device,
+                    allow_cpu_fallback=self.inputs.v04.training.allow_cpu_fallback,
+                    steps=self.inputs.v04.pilot.steps,
+                    batch_size=batch_size,
+                    learning_rate=self.inputs.v04.training.learning_rate,
+                    weight_decay=self.inputs.v04.training.weight_decay,
+                    gradient_clip_norm=self.inputs.v04.training.gradient_clip_norm,
+                    evaluation_interval=self.inputs.v04.pilot.steps,
+                    durable_checkpoint_interval=self.inputs.v04.pilot.steps,
+                )
+                candidate_id = f"{self.inputs.v04.pilot.candidate_id}-b{batch_size}"
+                result, result_artifacts = _run_training(
+                    context,
+                    guard=self.guard,
+                    inputs=self.inputs,
+                    candidate_id=candidate_id,
+                    sampling_strategy="task_balanced",
+                    model_config=self.inputs.v04.longer_context_model,
+                    training=training,
+                    train_examples=smoke_train,
+                    validation_examples=smoke_validation,
+                    evaluation_callback=None,
+                )
+                _load_candidate_checkpoint(
+                    context.attempt_directory,
+                    candidate_id,
+                    result,
+                    self.inputs.tokenizer,
+                )
+                artifacts.extend(result_artifacts)
+                measurements.append(
+                    V04PilotMeasurement(
+                        batch_size=batch_size,
+                        training_result_sha256=result.checksum_sha256,
+                        finite_loss=True,
+                        checkpoint_reloaded=True,
+                        elapsed_seconds=float(result.elapsed_seconds),
+                        process_peak_rss_bytes=result.process_peak_rss_bytes,
+                    )
+                )
+        draft = V04PilotReport.model_construct(
+            candidate_id=self.inputs.v04.pilot.candidate_id,
+            prompt_truncation_rate=frozen_truncation_rate,
+            v03_train_prompt_truncation_rate=v03_train_truncation_rate,
+            material_truncation_threshold=threshold,
+            activated=activated,
+            measurements=tuple(measurements),
+            passed=True,
+            checksum_sha256="0" * 64,
+        )
+        report = _bound_model(draft, V04PilotReport)
+        artifacts.append(_contract_artifact(context, "v04-pilot.json", report))
+        return self._finish(
+            context,
+            _stage_outcome(
+                "D-073 mandatory v0.4 context pilot completed with v0.3 truncation reported.",
+                advancement_allowed=bool(report.passed),
+                artifacts=tuple(artifacts),
+                metrics=(
+                    StageMetric(
+                        name="prompt_truncation_rate",
+                        value=float(frozen_truncation_rate),
+                        unit="ratio",
+                    ),
+                    StageMetric(
+                        name="v03_train_prompt_truncation_rate",
+                        value=float(v03_train_truncation_rate),
+                        unit="ratio",
+                    ),
+                ),
+            ),
+        )
+
+    def v04_candidate_training(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        pilot_attempt = _upstream_attempt(context, self.config, "v04_pilot")
+        pilot = _read_contract(pilot_attempt / "v04-pilot.json", V04PilotReport)
+        selection_attempt = _upstream_attempt(context, self.config, "v03_development_evaluation")
+        selection = _read_contract(
+            selection_attempt / "v03-candidate-selection.json",
+            CandidateSelectionReport,
+        )
+        if not pilot.activated:
+            training_attempt = _upstream_attempt(context, self.config, "v03_candidate_training")
+            result = _load_training_result(
+                training_attempt,
+                selection.selected_candidate_id,
+            )
+            draft = V04CandidateTrainingReport.model_construct(
+                activated=False,
+                candidate_id=selection.selected_candidate_id,
+                reused_v03_candidate=True,
+                source_stage="v03_candidate_training",
+                training_result_sha256=result.checksum_sha256,
+                checkpoint_manifest_sha256=result.checkpoint_manifest_sha256,
+                checksum_sha256="0" * 64,
+            )
+            report = _bound_model(draft, V04CandidateTrainingReport)
+            artifact = _contract_artifact(context, "v04-candidate-training.json", report)
+            return self._finish(
+                context,
+                _stage_outcome(
+                    "Longer context was not activated; the frozen v0.3 candidate is reused.",
+                    artifacts=(artifact,),
+                ),
+            )
+
+        passed_pilot_batches = {
+            item.batch_size
+            for item in pilot.measurements
+            if item.finite_loss and item.checkpoint_reloaded
+        }
+        if self.inputs.v04.training.batch_size not in passed_pilot_batches:
+            raise PipelineExecutionError("v0.4 main training batch size lacks a passing MPS pilot")
+
+        iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        shadow = _load_stage_dataset(
+            context, self.config, "v04_shadow_freeze", "dataset-v04-shadow"
+        )
+        audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+        selection_manifest = _read_contract(
+            audit_attempt / "v03-semantic-selection.json",
+            SemanticSelectionManifest,
+        )
+        iid_selection = resolve_semantic_selection_examples(
+            iid,
+            selection_manifest,
+            self.inputs.v03,
+        )
+        train_examples = tuple(
+            item for item in iid.examples if item.view is RemediationView.IID_TRAIN
+        )
+
+        def evaluation_callback(model: TransformerLM, _step: int, _nll: float) -> float:
+            device = next(model.parameters()).device
+            scores = [
+                semantic_composite_score(
+                    iid_selection,
+                    _decode_examples(
+                        model,
+                        self.inputs.tokenizer,
+                        iid_selection,
+                        generation_caps=self.inputs.generation_caps,
+                        device=device,
+                    ),
+                )
+            ]
+            for view in SHADOW_VIEWS:
+                examples = tuple(item for item in shadow.examples if item.view is view)
+                scores.append(
+                    semantic_composite_score(
+                        examples,
+                        _decode_examples(
+                            model,
+                            self.inputs.tokenizer,
+                            examples,
+                            generation_caps=self.inputs.generation_caps,
+                            device=device,
+                        ),
+                    )
+                )
+            return 1.0 - min(scores)
+
+        result, artifacts = _run_training(
+            context,
+            guard=self.guard,
+            inputs=self.inputs,
+            candidate_id=self.inputs.v04.pilot.candidate_id,
+            sampling_strategy="task_balanced",
+            model_config=self.inputs.v04.longer_context_model,
+            training=self.inputs.v04.training,
+            train_examples=train_examples,
+            validation_examples=iid_selection,
+            evaluation_callback=evaluation_callback,
+        )
+        draft = V04CandidateTrainingReport.model_construct(
+            activated=True,
+            candidate_id=self.inputs.v04.pilot.candidate_id,
+            reused_v03_candidate=False,
+            source_stage="v04_candidate_training",
+            training_result_sha256=result.checksum_sha256,
+            checkpoint_manifest_sha256=result.checkpoint_manifest_sha256,
+            checksum_sha256="0" * 64,
+        )
+        report = _bound_model(draft, V04CandidateTrainingReport)
+        report_artifact = _contract_artifact(context, "v04-candidate-training.json", report)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Activated v0.4 longer-context candidate completed worst-view-aware training.",
+                artifacts=(*artifacts, report_artifact),
+            ),
+        )
+
+    def _v04_checkpoint(
+        self,
+        context: StageContext,
+    ) -> tuple[
+        V04CandidateTrainingReport,
+        CompactTrainingResult,
+        TransformerLM,
+        CheckpointManifest,
+        torch.device,
+    ]:
+        v04_attempt = _upstream_attempt(context, self.config, "v04_candidate_training")
+        report = _read_contract(
+            v04_attempt / "v04-candidate-training.json",
+            V04CandidateTrainingReport,
+        )
+        training_attempt = (
+            _upstream_attempt(context, self.config, "v03_candidate_training")
+            if report.reused_v03_candidate
+            else v04_attempt
+        )
+        result = _load_training_result(training_attempt, report.candidate_id)
+        if (
+            result.checksum_sha256 != report.training_result_sha256
+            or result.checkpoint_manifest_sha256 != report.checkpoint_manifest_sha256
+        ):
+            raise PipelineExecutionError("v0.4 candidate binding differs from training evidence")
+        model, checkpoint, device = _load_candidate_checkpoint(
+            training_attempt,
+            report.candidate_id,
+            result,
+            self.inputs.tokenizer,
+        )
+        return report, result, model, checkpoint, device
+
+    def v04_shadow_evaluation(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        if (
+            self.inputs.v04.variants.context_candidate_selection_rule
+            != "all_gates_then_highest_min_view_composite_then_iid_composite_then_shorter_context"
+        ):
+            raise PipelineExecutionError("v0.4 context-candidate selection rule is not frozen")
+        iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        shadow = _load_stage_dataset(
+            context, self.config, "v04_shadow_freeze", "dataset-v04-shadow"
+        )
+        train_examples = tuple(
+            item for item in iid.examples if item.view is RemediationView.IID_TRAIN
+        )
+        full_iid_validation = tuple(
+            item for item in iid.examples if item.view is RemediationView.IID_VALIDATION
+        )
+        if not train_examples or not full_iid_validation:
+            raise PipelineExecutionError("v0.4 requires non-empty train and full IID views")
+
+        selection_attempt = _upstream_attempt(
+            context,
+            self.config,
+            "v03_development_evaluation",
+        )
+        selection = _read_contract(
+            selection_attempt / "v03-candidate-selection.json",
+            CandidateSelectionReport,
+        )
+        v03_training_attempt = _upstream_attempt(
+            context,
+            self.config,
+            "v03_candidate_training",
+        )
+        control_result = _load_training_result(
+            v03_training_attempt,
+            selection.selected_candidate_id,
+        )
+        control_model, control_checkpoint, control_device = _load_candidate_checkpoint(
+            v03_training_attempt,
+            selection.selected_candidate_id,
+            control_result,
+            self.inputs.tokenizer,
+        )
+        if control_model.config.context_length != self.inputs.v02.model.context_length:
+            raise PipelineExecutionError("v0.4 control no longer uses the frozen 512 context")
+        candidates = [
+            _EvaluationCandidate(
+                candidate_id=selection.selected_candidate_id,
+                result=control_result,
+                model=control_model,
+                checkpoint=control_checkpoint,
+                device=control_device,
+            )
+        ]
+        candidate_report, candidate_result, model, checkpoint, device = self._v04_checkpoint(
+            context
+        )
+        if candidate_report.activated:
+            if model.config.context_length != self.inputs.v04.longer_context_model.context_length:
+                raise PipelineExecutionError("activated v0.4 candidate is not the frozen variant")
+            candidates.append(
+                _EvaluationCandidate(
+                    candidate_id=candidate_report.candidate_id,
+                    result=candidate_result,
+                    model=model,
+                    checkpoint=checkpoint,
+                    device=device,
+                )
+            )
+        elif (
+            candidate_report.candidate_id != selection.selected_candidate_id
+            or checkpoint.checksum_sha256 != control_checkpoint.checksum_sha256
+        ):
+            raise PipelineExecutionError("inactive v0.4 candidate did not reuse the control")
+
+        ordered_candidates = tuple(sorted(candidates, key=lambda item: item.candidate_id))
+        if len({item.candidate_id for item in ordered_candidates}) != len(ordered_candidates):
+            raise PipelineExecutionError("v0.4 comparison candidate identities collide")
+        artifacts: list[ArtifactReference] = []
+        candidate_evidence: list[V04CandidateEvaluation] = []
+        candidate_acceptance: dict[str, V04AcceptanceResult] = {}
+        for candidate_index, candidate in enumerate(ordered_candidates):
+            stem = f"v04-candidate-{candidate_index:02d}"
+            iid_evaluation, _iid_baseline, iid_predictions, iid_artifacts = (
+                _evaluate_candidate_view(
+                    context,
+                    inputs=self.inputs,
+                    config_sha256_value=config_sha256(self.inputs.v04),
+                    dataset=iid,
+                    train_examples=train_examples,
+                    evaluation_examples=full_iid_validation,
+                    view=RemediationView.IID_VALIDATION,
+                    model=candidate.model,
+                    checkpoint_manifest=candidate.checkpoint,
+                    device=candidate.device,
+                    stem=f"{stem}-iid",
+                )
+            )
+            artifacts.extend(iid_artifacts)
+            iid_composite = semantic_composite_score(
+                full_iid_validation,
+                iid_predictions,
+            )
+            iid_acceptance = evaluate_v03_acceptance(iid_evaluation.view_metrics)
+            artifacts.append(
+                _contract_artifact(
+                    context,
+                    f"{stem}-iid-acceptance.json",
+                    iid_acceptance,
+                )
+            )
+
+            shadow_evaluations: list[SemanticEvaluationReport] = []
+            shadow_index: list[tuple[RemediationView, str]] = []
+            view_composites = [iid_composite]
+            for view in SHADOW_VIEWS:
+                examples = tuple(item for item in shadow.examples if item.view is view)
+                evaluation, _baseline, predictions, view_artifacts = _evaluate_candidate_view(
+                    context,
+                    inputs=self.inputs,
+                    config_sha256_value=config_sha256(self.inputs.v04),
+                    dataset=shadow,
+                    train_examples=train_examples,
+                    evaluation_examples=examples,
+                    view=view,
+                    model=candidate.model,
+                    checkpoint_manifest=candidate.checkpoint,
+                    device=candidate.device,
+                    stem=f"{stem}-{view.value}",
+                )
+                shadow_evaluations.append(evaluation)
+                shadow_index.append((view, evaluation.checksum_sha256))
+                artifacts.extend(view_artifacts)
+                view_composites.append(semantic_composite_score(examples, predictions))
+            acceptance = evaluate_v04_acceptance(
+                iid_acceptance,
+                tuple(item.view_metrics for item in shadow_evaluations),
+            )
+            candidate_acceptance[candidate.candidate_id] = acceptance
+            artifacts.append(
+                _contract_artifact(
+                    context,
+                    f"{stem}-acceptance.json",
+                    acceptance,
+                )
+            )
+            candidate_evidence.append(
+                V04CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    context_length=candidate.model.config.context_length,
+                    checkpoint_manifest_sha256=candidate.checkpoint.checksum_sha256,
+                    iid_report_sha256=iid_evaluation.checksum_sha256,
+                    iid_acceptance_sha256=iid_acceptance.checksum_sha256,
+                    shadow_reports=tuple(shadow_index),
+                    v04_acceptance_sha256=acceptance.checksum_sha256,
+                    all_required_gates_passed=bool(acceptance.advancement_allowed),
+                    worst_view_semantic_composite=min(view_composites),
+                    iid_semantic_composite=iid_composite,
+                )
+            )
+
+        ordered_evidence = tuple(sorted(candidate_evidence, key=lambda item: item.candidate_id))
+        selected = _select_v04_candidate(ordered_evidence)
+        selected_acceptance = candidate_acceptance[selected.candidate_id]
+        artifacts.append(
+            _contract_artifact(
+                context,
+                "v04-acceptance.json",
+                selected_acceptance,
+            )
+        )
+        draft = V04EvaluationIndex.model_construct(
+            candidates=ordered_evidence,
+            selected_candidate_id=selected.candidate_id,
+            checkpoint_manifest_sha256=selected.checkpoint_manifest_sha256,
+            iid_report_sha256=selected.iid_report_sha256,
+            shadow_reports=selected.shadow_reports,
+            v04_acceptance_sha256=selected.v04_acceptance_sha256,
+            checksum_sha256="0" * 64,
+        )
+        index = _bound_model(draft, V04EvaluationIndex)
+        index_artifact = _contract_artifact(context, "v04-evaluation-index.json", index)
+        artifacts.append(index_artifact)
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Control and activated context variant were compared on full IID and shadows.",
+                artifacts=tuple(artifacts),
+                metrics=(
+                    StageMetric(
+                        name="candidate_count",
+                        value=float(len(ordered_evidence)),
+                        unit="candidates",
+                    ),
+                    StageMetric(
+                        name="required_shadow_views",
+                        value=float(len(SHADOW_VIEWS)),
+                        unit="views",
+                    ),
+                    StageMetric(
+                        name="selected_worst_view_semantic_composite",
+                        value=float(selected.worst_view_semantic_composite),
+                        unit="ratio",
+                    ),
+                ),
+            ),
+        )
+
+    def v04_gate_and_final_policy_freeze(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        evaluation_attempt = _upstream_attempt(context, self.config, "v04_shadow_evaluation")
+        index = _read_contract(
+            evaluation_attempt / "v04-evaluation-index.json",
+            V04EvaluationIndex,
+        )
+        for candidate_index, candidate in enumerate(index.candidates):
+            candidate_acceptance = _read_contract(
+                evaluation_attempt / f"v04-candidate-{candidate_index:02d}-acceptance.json",
+                V04AcceptanceResult,
+            )
+            if (
+                candidate_acceptance.checksum_sha256 != candidate.v04_acceptance_sha256
+                or bool(candidate_acceptance.advancement_allowed)
+                is not candidate.all_required_gates_passed
+            ):
+                raise PipelineExecutionError(
+                    "v0.4 candidate index differs from its immutable acceptance"
+                )
+        acceptance = _read_contract(
+            evaluation_attempt / "v04-acceptance.json",
+            V04AcceptanceResult,
+        )
+        if acceptance.checksum_sha256 != index.v04_acceptance_sha256:
+            raise PipelineExecutionError("v0.4 gate acceptance differs from selected evidence")
+        draft = FinalEvaluationPolicyFreeze.model_construct(
+            v04_acceptance_sha256=acceptance.checksum_sha256,
+            development_gate_passed=bool(acceptance.advancement_allowed),
+            status=(
+                "locked_pending_owner_reviewed_fresh_extension"
+                if acceptance.advancement_allowed
+                else "locked_development_gate_failed"
+            ),
+            checksum_sha256="0" * 64,
+        )
+        policy = _bound_model(draft, FinalEvaluationPolicyFreeze)
+        policy_artifact = _contract_artifact(
+            context,
+            "final-evaluation-policy.json",
+            policy,
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Worst-split v0.4 development gate evaluated and final-access policy froze.",
+                advancement_allowed=bool(acceptance.advancement_allowed),
+                artifacts=(policy_artifact,),
+            ),
+        )
+
+    def review_bundle(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        state = PipelineStore(
+            context.run_directory,
+            maximum_state_bytes=self.config.maximum_status_bytes,
+        ).load_state()
+        bindings: list[ReviewStageBinding] = []
+        for record in state.stages[:-1]:
+            if record.status is not StageStatus.COMPLETED or record.latest_attempt_path is None:
+                raise PipelineExecutionError("complete review bundle lacks a completed prefix")
+            bindings.append(
+                ReviewStageBinding(
+                    stage=record.name,
+                    outcome=_stage_completion_outcome(
+                        context.run_directory,
+                        record.latest_attempt_path,
+                    ),
+                )
+            )
+        policy_attempt = _upstream_attempt(context, self.config, "v04_gate_and_final_policy_freeze")
+        policy = _read_contract(
+            policy_attempt / "final-evaluation-policy.json",
+            FinalEvaluationPolicyFreeze,
+        )
+        if not policy.development_gate_passed:
+            raise PipelineExecutionError("complete review bundle requires a passing policy")
+        for filename in (
+            FINAL_EVALUATION_READY_FILENAME,
+            OWNER_REVIEW_APPROVED_FILENAME,
+            FRESH_EXTENSION_MANIFEST_FILENAME,
+            FINAL_ACCESS_LEDGER_FILENAME,
+        ):
+            path = context.run_directory / filename
+            if path.exists() or path.is_symlink():
+                raise PipelineExecutionError("development review bundle found a final-access file")
+        summary_path = context.attempt_directory / "REVIEW_BUNDLE.md"
+        summary = _complete_review_markdown(
+            run_name=self.config.run_name,
+            source_commit=context.source_commit,
+            bindings=tuple(bindings),
+            policy=policy,
+        )
+        _write_bytes(summary_path, summary.encode("utf-8"))
+        summary_relative = summary_path.relative_to(context.run_directory).as_posix()
+        draft = ReviewBundleManifest.model_construct(
+            run_name=self.config.run_name,
+            source_commit=context.source_commit,
+            pipeline_config_sha256=config_sha256(self.config),
+            stages=tuple(bindings),
+            final_policy_sha256=policy.checksum_sha256,
+            summary_relative_path=summary_relative,
+            summary_sha256=_sha256(summary_path),
+            checksum_sha256="0" * 64,
+        )
+        manifest = _bound_model(draft, ReviewBundleManifest)
+        manifest_artifact = _contract_artifact(context, "review-bundle.json", manifest)
+        summary_artifact = _artifact_reference(
+            summary_path,
+            run_directory=context.run_directory,
+        )
+        return self._finish(
+            context,
+            _stage_outcome(
+                "Machine-readable and human-readable development review bundles completed.",
+                artifacts=(manifest_artifact, summary_artifact),
+            ),
+        )
+
+
+def _complete_review_markdown(
+    *,
+    run_name: str,
+    source_commit: str,
+    bindings: tuple[ReviewStageBinding, ...],
+    policy: FinalEvaluationPolicyFreeze,
+) -> str:
+    if (
+        type(run_name) is not str
+        or not run_name
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}", run_name)
+        or type(source_commit) is not str
+        or not re.fullmatch(r"[0-9a-f]{7,64}", source_commit)
+        or type(bindings) is not tuple
+        or any(type(binding) is not ReviewStageBinding for binding in bindings)
+        or type(policy) is not FinalEvaluationPolicyFreeze
+    ):
+        raise TypeError("complete review summary requires exact frozen contracts")
+    if tuple(binding.stage for binding in bindings) != PIPELINE_STAGES[:-1]:
+        raise ValueError("complete review summary differs from the frozen stage prefix")
+    lines = [
+        "# ReactorBench-LM development review bundle",
+        "",
+        f"- Run: `{run_name}`",
+        f"- Source commit: `{source_commit}`",
+        f"- Final-access policy: `{policy.status}`",
+        f"- Final-access policy checksum: `{policy.checksum_sha256}`",
+        "- Final or historical held-out payload included: `no`",
+        "",
+        "## Immutable development stages",
+        "",
+        "| Stage | Outcome | SHA-256 |",
+        "|---|---|---|",
+    ]
+    lines.extend(
+        f"| `{binding.stage}` | `{binding.outcome.relative_path}` | `{binding.outcome.sha256}` |"
+        for binding in bindings
+    )
+    lines.extend(
+        (
+            "",
+            "This bundle records development evidence only. It does not authorize, run, "
+            "or report final evaluation.",
+            "",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _terminal_review_markdown(
+    *,
+    state: PipelineState,
+    stages: tuple[TerminalReviewStage, ...],
+    completed_prefix_length: int,
+) -> str:
+    lines = [
+        "# ReactorBench-LM terminal development review",
+        "",
+        f"- Run: `{state.run_name}`",
+        f"- Source commit: `{state.source_commit}`",
+        f"- Pipeline status: `{state.status}`",
+        f"- Pipeline-state checksum: `{state.checksum_sha256}`",
+        f"- Completed stage prefix: `{completed_prefix_length}/{len(PIPELINE_STAGES)}`",
+        "- Final evaluation accessed: `no`",
+        "",
+        "## Recorded stage prefix",
+        "",
+    ]
+    if stages:
+        lines.extend(("| Stage | Status | Attempt | Outcome SHA-256 |", "|---|---|---|---|"))
+        for stage in stages:
+            outcome_checksum = "-" if stage.outcome is None else stage.outcome.sha256
+            lines.append(
+                f"| `{stage.stage}` | `{stage.status}` | `{stage.latest_attempt_path}` | "
+                f"`{outcome_checksum}` |"
+            )
+    else:
+        lines.append("No stage began before the stop request was honored.")
+    lines.extend(
+        (
+            "",
+            "This checksum-bound bundle contains only development pipeline metadata and "
+            "immutable outcome references. It contains no final, fresh, golden, or "
+            "historical held-out payload.",
+            "",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _terminal_review_stages(
+    *,
+    run_directory: Path,
+    state: PipelineState,
+) -> tuple[tuple[TerminalReviewStage, ...], int]:
+    stages: list[TerminalReviewStage] = []
+    completed_prefix_length = 0
+    for record in state.stages:
+        if record.status is StageStatus.PENDING:
+            break
+        if record.status is StageStatus.RUNNING or record.latest_attempt_path is None:
+            raise PipelineExecutionError("terminal review found a nonterminal stage")
+        expected_attempt = (
+            f"stages/{record.ordinal:02d}-{record.name}/attempt-{record.attempt_count:04d}"
+        )
+        if record.latest_attempt_path != expected_attempt:
+            raise PipelineExecutionError("terminal review stage attempt is not canonical")
+        attempt = run_directory / expected_attempt
+        if attempt.is_symlink() or not attempt.is_dir():
+            raise PipelineExecutionError("terminal review stage attempt is unsafe")
+        outcome: ArtifactReference | None = None
+        if record.status in {StageStatus.COMPLETED, StageStatus.BLOCKED}:
+            outcome = _stage_completion_outcome(run_directory, expected_attempt)
+            expected_outcome_path = f"{expected_attempt}/outcome.json"
+            if outcome.relative_path != expected_outcome_path or outcome != _artifact_reference(
+                run_directory / expected_outcome_path,
+                run_directory=run_directory,
+            ):
+                raise PipelineExecutionError("terminal review outcome binding is invalid")
+        else:
+            marker = attempt.parent / "completed.json"
+            if marker.exists() or marker.is_symlink():
+                raise PipelineExecutionError("unsuccessful stage has a committed outcome")
+        stage_status = cast(
+            Literal["completed", "blocked", "failed", "stopped"],
+            record.status.value,
+        )
+        stages.append(
+            TerminalReviewStage(
+                stage=record.name,
+                status=stage_status,
+                latest_attempt_path=expected_attempt,
+                outcome=outcome,
+            )
+        )
+        if record.status is StageStatus.COMPLETED:
+            completed_prefix_length += 1
+            continue
+        break
+    return tuple(stages), completed_prefix_length
+
+
+def _write_or_verify_bytes(path: Path, expected: bytes) -> None:
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != expected:
+            raise PipelineExecutionError("existing terminal review output differs")
+        return
+    try:
+        _write_bytes(path, expected)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != expected:
+            raise PipelineExecutionError("concurrent terminal review output differs") from None
+
+
+def write_terminal_review_bundle(
+    *,
+    project_root: Path,
+    config: PipelineConfig,
+    source_commit: str,
+    state: PipelineState,
+) -> ReviewBundleOutput:
+    """Publish one idempotent, development-only terminal-state evidence bundle."""
+
+    if (
+        not isinstance(project_root, Path)
+        or type(config) is not PipelineConfig
+        or type(source_commit) is not str
+        or not re.fullmatch(r"[0-9a-f]{7,64}", source_commit)
+        or type(state) is not PipelineState
+    ):
+        raise TypeError("terminal review requires exact project/config/state bindings")
+    if project_root.is_symlink() or not project_root.is_dir():
+        raise ValueError("terminal review project root is unsafe")
+    root = project_root.resolve(strict=True)
+    validated_state = PipelineState.model_validate_json(
+        canonical_json_bytes(state.model_dump(mode="json", round_trip=True)),
+        strict=True,
+    )
+    if validated_state != state or state.status not in {
+        "completed",
+        "blocked",
+        "failed",
+        "stopped",
+    }:
+        raise ValueError("terminal review requires a valid terminal pipeline state")
+    run_directory = root / config.run_root / config.run_name
+    if run_directory.is_symlink() or not run_directory.is_dir():
+        raise ValueError("terminal review run directory is unsafe")
+    if not run_directory.resolve(strict=True).is_relative_to(root):
+        raise ValueError("terminal review run directory escapes the project")
+    store = PipelineStore(
+        run_directory,
+        maximum_state_bytes=config.maximum_status_bytes,
+    )
+    manifest = store.load_manifest()
+    durable_state = store.load_state()
+    expected_config_sha256 = config_sha256(config)
+    if (
+        durable_state != state
+        or state.run_name != config.run_name
+        or state.pipeline_config_sha256 != expected_config_sha256
+        or state.source_commit != source_commit
+        or manifest.run_name != config.run_name
+        or manifest.pipeline_config_sha256 != expected_config_sha256
+        or manifest.source_commit != source_commit
+        or manifest.v02_config_sha256 != config.v02_config_sha256
+        or manifest.v03_config_sha256 != config.v03_config_sha256
+        or manifest.v04_config_sha256 != config.v04_config_sha256
+    ):
+        raise PipelineExecutionError("terminal review state/source/config binding differs")
+
+    def unreachable(_context: StageContext) -> StageOutcome:
+        raise AssertionError("terminal review dry-run invoked a scientific stage")
+
+    actions: Mapping[str, StageAction] = MappingProxyType(
+        dict.fromkeys(PIPELINE_STAGES, unreachable)
+    )
+    audited = PipelineEngine(
+        project_root=root,
+        config=config,
+        store=store,
+        actions=actions,
+        stop_requested=lambda: False,
+    ).run(dry_run=True)
+    if audited != state:
+        raise PipelineExecutionError("terminal review changed during boundary audit")
+    for filename in (
+        FINAL_EVALUATION_READY_FILENAME,
+        OWNER_REVIEW_APPROVED_FILENAME,
+        FRESH_EXTENSION_MANIFEST_FILENAME,
+        FINAL_ACCESS_LEDGER_FILENAME,
+        FINAL_RESULT_FILENAME,
+        FINAL_REVIEW_FILENAME,
+    ):
+        forbidden = run_directory / filename
+        if forbidden.exists() or forbidden.is_symlink():
+            raise PipelineExecutionError("terminal review found a final-access artifact")
+
+    stages, completed_prefix_length = _terminal_review_stages(
+        run_directory=run_directory,
+        state=state,
+    )
+    review_root = run_directory / TERMINAL_REVIEW_DIRECTORY
+    if not review_root.exists() and not review_root.is_symlink():
+        try:
+            review_root.mkdir(mode=0o750)
+        except FileExistsError:
+            pass
+    if review_root.is_symlink() or not review_root.is_dir():
+        raise PipelineExecutionError("terminal review root is unsafe")
+    bundle_directory = review_root / f"state-{state.checksum_sha256}"
+    if not bundle_directory.exists() and not bundle_directory.is_symlink():
+        try:
+            bundle_directory.mkdir(mode=0o750)
+        except FileExistsError:
+            pass
+    if bundle_directory.is_symlink() or not bundle_directory.is_dir():
+        raise PipelineExecutionError("terminal review bundle directory is unsafe")
+    allowed_names = {
+        TERMINAL_REVIEW_MANIFEST_FILENAME,
+        TERMINAL_REVIEW_SUMMARY_FILENAME,
+    }
+    if any(child.name not in allowed_names for child in bundle_directory.iterdir()):
+        raise PipelineExecutionError("terminal review bundle contains an unexpected entry")
+
+    summary_path = bundle_directory / TERMINAL_REVIEW_SUMMARY_FILENAME
+    summary_bytes = _terminal_review_markdown(
+        state=state,
+        stages=stages,
+        completed_prefix_length=completed_prefix_length,
+    ).encode("utf-8")
+    summary_relative = summary_path.relative_to(run_directory).as_posix()
+    draft = TerminalReviewBundleManifest.model_construct(
+        run_name=config.run_name,
+        source_commit=source_commit,
+        pipeline_config_sha256=expected_config_sha256,
+        pipeline_state_sha256=state.checksum_sha256,
+        pipeline_status=cast(
+            Literal["completed", "blocked", "failed", "stopped"],
+            state.status,
+        ),
+        stages=stages,
+        completed_prefix_length=completed_prefix_length,
+        summary_relative_path=summary_relative,
+        summary_sha256=hashlib.sha256(summary_bytes).hexdigest(),
+        checksum_sha256="0" * 64,
+    )
+    terminal_manifest = _bound_model(draft, TerminalReviewBundleManifest)
+    manifest_bytes = (
+        canonical_json_bytes(terminal_manifest.model_dump(mode="json", round_trip=True)) + b"\n"
+    )
+    manifest_path = bundle_directory / TERMINAL_REVIEW_MANIFEST_FILENAME
+    _write_or_verify_bytes(summary_path, summary_bytes)
+    _write_or_verify_bytes(manifest_path, manifest_bytes)
+    verified_manifest = _read_contract(
+        manifest_path,
+        TerminalReviewBundleManifest,
+        maximum_bytes=config.maximum_status_bytes,
+    )
+    if verified_manifest != terminal_manifest or _sha256(summary_path) != (
+        terminal_manifest.summary_sha256
+    ):
+        raise PipelineExecutionError("terminal review publication failed verification")
+    if store.load_state() != state:
+        raise PipelineExecutionError("pipeline state changed during terminal review publication")
+    return ReviewBundleOutput(
+        manifest_path=manifest_path,
+        summary_path=summary_path,
+        manifest=verified_manifest,
+    )
+
+
+def build_stage_actions(
+    project_root: Path,
+    config: PipelineConfig,
+    source_commit: str,
+) -> Mapping[str, StageAction]:
+    """Construct the frozen development graph after a read-only full preflight."""
+
+    if (
+        not isinstance(project_root, Path)
+        or type(config) is not PipelineConfig
+        or type(source_commit) is not str
+        or not re.fullmatch(r"[0-9a-f]{7,64}", source_commit)
+    ):
+        raise TypeError("stage actions require exact project/config/source bindings")
+    if project_root.is_symlink() or not project_root.is_dir():
+        raise ValueError("pipeline project root is unsafe")
+    root = project_root.resolve(strict=True)
+    if tuple(config.stage_order) != PIPELINE_STAGES:
+        raise ValueError("pipeline config differs from the frozen stage graph")
+    verified_commit = _verify_runner_source(
+        root,
+        source_commit=source_commit,
+        run_root=config.run_root,
+    )
+    if verified_commit != source_commit:
+        raise PipelineExecutionError("pipeline source binding must use the full Git commit")
+    inputs = _load_execution_inputs(project_root=root, config=config)
+    runtime = _PipelineRuntime(
+        project_root=root,
+        config=config,
+        source_commit=source_commit,
+        inputs=inputs,
+    )
+    actions: dict[str, StageAction] = {
+        "preflight": runtime.preflight,
+        "v02_inventory_and_caps": runtime.v02_inventory_and_caps,
+        "v02_smoke": runtime.v02_smoke,
+        "v02_development_training": runtime.v02_development_training,
+        "v02_development_gate": runtime.v02_development_gate,
+        "v03_data_audit": runtime.v03_data_audit,
+        "v03_smoke": runtime.v03_smoke,
+        "v03_candidate_training": runtime.v03_candidate_training,
+        "v03_development_evaluation": runtime.v03_development_evaluation,
+        "v03_gate": runtime.v03_gate,
+        "v04_shadow_freeze": runtime.v04_shadow_freeze,
+        "v04_pilot": runtime.v04_pilot,
+        "v04_candidate_training": runtime.v04_candidate_training,
+        "v04_shadow_evaluation": runtime.v04_shadow_evaluation,
+        "v04_gate_and_final_policy_freeze": runtime.v04_gate_and_final_policy_freeze,
+        "review_bundle": runtime.review_bundle,
+    }
+    if tuple(actions) != PIPELINE_STAGES or any(
+        not callable(action) for action in actions.values()
+    ):
+        raise PipelineExecutionError("constructed actions differ from the frozen graph")
+    return MappingProxyType(actions)
+
+
+def run_final_evaluation(
+    *,
+    project_root: Path,
+    config: PipelineConfig,
+    source_commit: str,
+    explicit_confirmation: bool,
+) -> Never:
+    """Fail closed until a separately reviewed final-evidence executor exists."""
+
+    if not isinstance(project_root, Path) or not project_root.is_absolute():
+        raise TypeError("final evaluation project root must be an absolute Path")
+    if type(config) is not PipelineConfig:
+        raise TypeError("final evaluation config must use the exact pipeline contract")
+    if type(source_commit) is not str or not re.fullmatch(r"[0-9a-f]{7,64}", source_commit):
+        raise TypeError("final evaluation source commit is invalid")
+    if type(explicit_confirmation) is not bool:
+        raise TypeError("final evaluation confirmation must be an exact boolean")
+    raise FinalEvaluationBlockedError(
+        "Final evaluation remains locked because the distinct final-evidence executor "
+        "has not been implemented or independently reviewed."
+    )
+
+
+__all__ = [
+    "ExecutionPreflightReport",
+    "FinalEvaluationBlockedError",
+    "FinalEvaluationPolicyFreeze",
+    "PipelineExecutionError",
+    "PipelineResourceLimitError",
+    "PipelineStopRequest",
+    "ReviewBundleManifest",
+    "ReviewBundleOutput",
+    "TerminalReviewBundleManifest",
+    "TerminalReviewStage",
+    "V02DevelopmentGateReport",
+    "V04CandidateEvaluation",
+    "V04EvaluationIndex",
+    "archive_pipeline_stop",
+    "build_stage_actions",
+    "build_stop_requested",
+    "pipeline_stop_file",
+    "request_pipeline_stop",
+    "run_final_evaluation",
+    "verify_final_evaluation_prerequisites",
+    "write_terminal_review_bundle",
+]

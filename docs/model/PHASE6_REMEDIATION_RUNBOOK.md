@@ -1,0 +1,341 @@
+# Phase 6 remediation local runbook
+
+Status: **engineering workflow available; long-run results pending**
+Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
+generalization gates
+
+This runbook operates the local, checksum-bound remediation pipeline. It does not push
+to GitHub, deploy a service, call a hosted model, or automatically open the frozen
+final evaluation. A completed development pipeline is engineering evidence, not proof
+that the model passed its scientific gates.
+
+## Safety boundary
+
+The ordinary pipeline may use only training, IID validation, and designated
+development shadow views. Final held-out data and golden answers are isolated from all
+training, checkpoint selection, threshold selection, and routine status commands.
+
+The historical G01–G15 packet is prohibited for the v0.4 final gate. A future final
+evaluation requires all of the following before its one permitted access:
+
+- a newly generated and frozen v0.4 final manifest;
+- a fresh golden extension that was never used for development;
+- explicit project-owner review and approval of that extension;
+- the checksum-bound final-ready, owner-review, and fresh-extension markers;
+- a development pipeline whose frozen gates completed; and
+- the explicit `--confirm-final-evaluation` flag.
+
+Those prerequisites are necessary but are not sufficient in this release. The
+separate fresh final-evaluation executor is intentionally unimplemented and locked;
+the command is only a fail-closed guard and returns exit code `10`. Files whose names
+look like readiness, owner-review, extension, or access records cannot authorize
+access or substitute for the missing independently reviewed executor. Do not create
+such files by hand or use the command to probe whether a historical packet works.
+
+## One-time setup
+
+Run these commands from Terminal:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+uv sync --frozen --all-groups
+./scripts/run_phase6_pipeline.sh --dry-run
+```
+
+The wrappers resolve the repository and invoke only its `.venv/bin/python`. Preflight
+checks reject a missing or unsafe virtual environment, changed source commit,
+incompatible configuration or contract, incorrect tokenizer or artifact checksum,
+unsafe existing output, and unavailable pipeline component.
+
+Do not start the long run until the dry run exits with code `0` and reports the frozen
+configuration checksum, source commit, and stage count. The primary run uses Apple MPS
+when the validated configuration and local PyTorch build support it, with the
+documented CPU fallback. The resolved device and runtime versions are recorded in the
+run evidence.
+
+Finish and review the intended source commit before starting. From the start of the
+run through the later Codex evidence review, do not create a new commit, check out
+another commit or branch, or pull changes. The run remains bound to its original
+commit. Pushing that exact already-bound commit is safe because it does not change the
+local checkout; pushing remains an owner action, not a pipeline action.
+
+## Start the development pipeline
+
+The exact primary command is:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/run_phase6_pipeline.sh
+```
+
+Keep that Terminal window open. On a Mac laptop, connect power and prevent idle sleep
+if necessary; an optional foreground form is:
+
+```bash
+caffeinate -i ./scripts/run_phase6_pipeline.sh
+```
+
+The runner executes the frozen stages in order. It starts with v0.2 inventory,
+correctness, smoke, training, and development gates; advances to v0.3 data audit,
+candidate training, semantic evaluation, and acceptance only when v0.2 passes; and
+then runs the permitted v0.4 pilot, candidate, shadow evaluation, policy freeze, and
+review-bundle stages only when v0.3 passes. A failed scientific gate stops later work
+cleanly instead of weakening a threshold.
+
+The mandatory v0.4 context pilot checks batch sizes **1, 2, and 4**. The 512-token
+control and activated 1024-token candidate are compared on full IID validation and all
+six development shadow views. Selection follows the preregistered order: all required
+gates must pass, then the highest worst-view semantic composite wins, then the highest
+full-IID composite, with the shorter 512-token context as the deterministic final
+tie-break. No result may change that rule after the run begins.
+
+The run is non-overwriting. If the run directory already exists, the start command
+refuses and tells you to resume it. It also remains bound to the Git commit at which it
+started; do not change commits, check out or pull other code, or edit tracked
+scientific inputs before the Codex evidence review is complete.
+
+## Progress and periodic updates
+
+The runner records a heartbeat every **30 seconds**, plus stage, evaluation,
+checkpoint, stop, failure, and completion events. In another Terminal window, inspect
+the newest verified snapshot at any time:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/check_phase6_status.sh
+```
+
+For a continuously refreshed view, use:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+while true; do
+  ./scripts/check_phase6_status.sh
+  sleep 30
+done
+```
+
+Press Control-C only in the monitoring window to stop that display. The status command
+does not train, evaluate, mutate checkpoints, or open final data.
+
+The status command strictly validates canonical `status.json` and requires it to equal
+the final complete event in `progress.jsonl`; it refuses mismatched, truncated, or
+unsafe progress evidence. The verified display reports the overall state, current or
+next stage, interruption count, latest event and message, stage position, completed
+work units, latest metric, estimated time remaining, and latest durable checkpoint
+when those fields are available. The machine-readable heartbeat and append-only event
+log are:
+
+```text
+runs/phase6-remediation-v0.4.0-local/status.json
+runs/phase6-remediation-v0.4.0-local/progress.jsonl
+```
+
+## Stop safely
+
+From a second Terminal window, request a cooperative stop:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/stop_phase6_pipeline.sh
+```
+
+The request is idempotent. The active stage stops at its next safe boundary; a training
+stage writes its next applicable durable checkpoint before returning a resumable
+state. Continue checking status until it says `stopped`. A stop request is not an
+immediate process kill, so allow the current atomic operation to finish.
+
+Use the stop command instead of deleting files or terminating the process. If an
+unavoidable Control-C or system interruption occurs, inspect status before resuming;
+the orchestrator recovers only checksum-valid completion markers and starts a new,
+non-overwriting attempt when required.
+
+## Resume
+
+After status reports `stopped`, or after diagnosing a safely recorded interruption,
+run:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/resume_phase6_pipeline.sh
+```
+
+To prevent idle sleep while the resumed process remains in the foreground, use:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+caffeinate -i ./scripts/resume_phase6_pipeline.sh
+```
+
+Resume verifies the original source/configuration binding, audits committed stage
+boundaries, archives the previous stop request, and continues from the last valid
+stage or durable training state. It does not silently skip a failed integrity check.
+
+Do not use resume to override `blocked`. A blocked state means a frozen scientific gate
+did not pass and later stages were intentionally not run; preserve it for analysis.
+
+## Runtime and storage expectations
+
+These are planning estimates, not measured v0.3/v0.4 results:
+
+- **Apple MPS development pipeline estimate:** approximately 6–24 hours.
+- **CPU-fallback development pipeline estimate:** approximately 24–72 hours.
+- **Storage estimate:** approximately 2–6 GiB, with a hard configured run-directory
+  limit of 8 GiB.
+- **Process-memory boundary:** 16 GiB RSS as configured for this pipeline.
+- **Overall development-run time boundary:** 72 hours.
+
+Actual time depends on the Mac, MPS availability, selected candidate, decoding length,
+and whether optional v0.4 work is activated by measured development evidence. The run
+records duration, throughput, checkpoint size, device/runtime details, and failures;
+replace these estimates with those measurements when reporting results.
+
+No final-evaluation runtime estimate is offered because that separate executor is not
+implemented in this release.
+
+## Outputs and interpretation
+
+All ordinary pipeline outputs stay under:
+
+```text
+runs/phase6-remediation-v0.4.0-local/
+```
+
+Important top-level evidence includes:
+
+- `run-manifest.json` — command, Git commit, runtime, and frozen config bindings;
+- `pipeline-state.json` — checksum-bound stage state and completion prefix;
+- `status.json` — latest bounded human/machine-readable progress snapshot;
+- `progress.jsonl` — ordered progress, heartbeat, and checkpoint evidence;
+- `stages/` — immutable numbered stage attempts, outcomes, reports, and completion
+  markers; and
+- the final `review_bundle` stage artifacts — compact machine-readable and human-
+  readable result indexes with paths to detailed evidence.
+
+After a completed development run, the human and machine review indexes are under the
+committed review-bundle attempt:
+
+```text
+runs/phase6-remediation-v0.4.0-local/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
+runs/phase6-remediation-v0.4.0-local/stages/15-review_bundle/attempt-*/review-bundle.json
+```
+
+For `blocked`, `stopped`, or `failed` runs, the command prints the exact paths to an
+idempotent terminal-prefix bundle. If you return later, find it at:
+
+```text
+runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
+```
+
+Use the exact attempt or state-checksum path reported by the command; do not choose a
+file merely because its name looks current.
+
+Interpret terminal states as follows:
+
+- `completed`: every permitted development stage and review-bundle stage committed.
+  This still does **not** mean the fresh final evaluation ran or that Phase 7 unlocked.
+- `blocked`: a scientific advancement gate failed; later stages were not run. This is
+  a valid negative research result, not corrupted execution.
+- `stopped`: work ended at a safe resumable boundary.
+- `failed`: implementation, environment, resource, or integrity validation failed;
+  inspect the recorded failure and do not edit around it.
+
+Shell exit codes are meaningful: `0` success, `2` invalid usage, `3` missing input,
+`4` configuration refusal, `5` unsafe/incompatible state, `6` another active runner,
+`7` stage failure, `8` a managed stage stop or interrupt preserved at a safe boundary,
+`9` scientific block, `10` locked final access, and `130` only a keyboard interrupt
+that reached the outer command layer rather than being handled inside a managed stage.
+
+## Safe failure recovery
+
+Always run `./scripts/check_phase6_status.sh` first and preserve the entire run
+directory. Public errors are deliberately bounded and may report a category without a
+raw traceback or private internal detail.
+
+- Exit `4` means the source, configuration, contract, tokenizer, or other frozen input
+  binding was refused. Restore the exact bound checkout; do not edit evidence to make
+  it match.
+- Exit `5` means local state or integrity validation failed. Stop and ask Codex to
+  inspect the verified state and terminal bundle before retrying.
+- Exit `6` means another runner holds the lock. Check the existing process and status;
+  do not start a competing runner.
+- Exit `7` means a managed stage failed safely. Preserve its attempt and terminal
+  bundle so Codex can distinguish implementation, environment, resource, and
+  integrity categories before deciding whether resume is valid.
+- Exit `8` means the managed pipeline reached a resumable stop boundary. Resume only
+  after status verifies `stopped`.
+- Exit `9` is a frozen scientific block, not a runtime failure. Do not resume past it
+  or weaken the gate.
+- Exit `10` is the expected final-access lock in this release. Do not create or edit
+  marker files.
+- Exit `130` means the outer command was interrupted. Verify status before deciding
+  whether the managed pipeline recorded a resumable state.
+
+## Files that must not be edited during or after a run
+
+Do not manually edit, rename, replace, or delete:
+
+- any file under `runs/phase6-remediation-v0.4.0-local/`;
+- the v0.2, v0.3, v0.4, or pipeline TOML configurations;
+- the compact-output contract or its manifest;
+- the v0.2 inventory or v0.3 counterfactual-cap reports;
+- tokenizer files, checkpoints, safetensors, manifests, checksums, stage markers,
+  progress records, review bundles, final-ready records, or access ledgers; or
+- dataset split manifests, final manifests, fresh golden-extension records, or owner-
+  review records.
+
+Do not remove `STOP_REQUESTED` yourself; the resume command archives it safely. Do not
+copy another run over this one. If a clean restart is scientifically justified, ask
+for a reviewed, versioned run-name change rather than deleting evidence.
+
+## Review handoff after the development run
+
+First record one final verified snapshot:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/check_phase6_status.sh
+```
+
+Then ask Codex to inspect, without rerunning the long job:
+
+> Review the completed ReactorBench-LM Phase 6 remediation run in
+> `/Users/zachary/Documents/Personal-Projects/AI-transformer`. Read
+> `docs/IMPLEMENTATION_STATUS.md` and
+> `docs/model/PHASE6_REMEDIATION_RUNBOOK.md` first. Verify Git status and inspect the
+> checksum-bound run manifest, pipeline state, status, progress log, completion
+> markers, review bundle, detailed v0.2/v0.3/v0.4 reports, baselines, checkpoints, and
+> acceptance outcomes under `runs/phase6-remediation-v0.4.0-local/`. Do not retrain,
+> open frozen final data, use historical G01–G15 as the new golden gate, push, or
+> deploy. Tell me whether development completed, blocked, stopped, or failed; what the
+> measured results show; and the exact reviewed prerequisite needed next.
+
+Codex should verify the run manifest, `pipeline-state.json`, `status.json`,
+`progress.jsonl`, every committed `stages/*/completed.json`, the review-bundle indexes,
+and only the detailed artifacts referenced by those verified indexes. For a non-
+completed run, provide the printed terminal-review manifest and summary paths as the
+starting point.
+
+## Future frozen final evaluation
+
+The separate fresh final-evaluation executor remains intentionally unimplemented in
+this release. The development runner, a `completed` state, a passing policy, a
+confirmation flag, or readiness-looking files cannot unlock it. The existing
+`run_phase6_evaluation.sh` wrapper is a fail-closed boundary test, not an executable
+research step; it returns exit code `10` and does not open final data or create an
+access record.
+
+Its exact boundary-test form is shown only so its refusal remains auditable; do not use
+it as a research command:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/run_phase6_evaluation.sh --confirm-final-evaluation
+```
+
+A later reviewed implementation must first define the distinct executor, freeze a
+fresh final manifest and fresh golden extension, obtain explicit owner approval, and
+bind every prerequisite before one-access evaluation can be considered. Historical
+G01–G15 remains prohibited. Never fabricate, hand-edit, or bypass readiness,
+extension, access, or owner-review records.
