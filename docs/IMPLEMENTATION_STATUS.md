@@ -141,8 +141,13 @@ result and no v0.3/v0.4 training result exists.
   parameter device `mps:0`, one preserved validation example decoded, and checkpoint
   manifest checksum remained
   b27547e10fc0dfd08ea08337368dd3011c1c3bcb4e98747259ff49486ef9a44e.
-- New-rerun clean-tree dry-run: pending the local fix commit because the source verifier
-  intentionally refuses a dirty checkout.
+- New-rerun clean-tree dry-run at device-fix commit
+  f6f2369a050c9bf50d6c04351da603969a1f1273: exit 0; configuration checksum
+  96850668232781faa9d14319ce40e136aa1ada0c85317ed88b08ef795fcd6a13;
+  16 frozen stages; preserved failed run present; rerun state not created; no training,
+  data generation, or evaluation executed.
+- Local source and wheel distributions built successfully; both the preserved and
+  rerun pipeline configurations are present in the wheel.
 
 The module-name form of pytest-cov previously triggered a PyTorch import segmentation
 fault in this local Python environment. The path-based coverage target above completed
@@ -216,19 +221,21 @@ successfully.
 - Branch: main.
 - Failed-run source/handoff commit:
   2aafcd1661ec7c3640a385621db171041532e547
-- Before the local device-fix checkpoint, main is five commits ahead of origin/main.
-- Uncommitted work: the understood device correction, regression/config/package
-  updates, and documentation. No unrelated or unexpected file is present.
+- Complete device-fix/rerun implementation commit:
+  f6f2369a050c9bf50d6c04351da603969a1f1273
+- This status update is the final local handoff commit after that implementation
+  checkpoint. After it is created, main is seven commits ahead of origin/main.
+- Uncommitted work after the handoff commit: none; verify the clean tree on resume.
 - The failed run directory is preserved; the rerun directory does not exist yet.
 - No fresh-final ledger/result was created or accessed.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-Create the local device-fix checkpoint without pushing, run the new configuration's
-clean-tree dry-run, record its exact source/configuration/stage result here, and create
-the final local handoff commit. Then start the new rerun under caffeinate and keep a
-second Terminal available for verified status or cooperative stop commands.
+From the final clean local commit, rerun the non-mutating dry-run if desired. Then
+start the new non-overwriting rerun under caffeinate and keep a second Terminal
+available for verified status or cooperative stop commands. Do not resume or modify
+the preserved failed run.
 
 ## Exact recommended next commands after final handoff
 
