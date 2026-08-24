@@ -46,7 +46,7 @@ from .progress import (
     ProgressSnapshot,
 )
 
-DEFAULT_PIPELINE_CONFIG = "configs/experiments/phase6-remediation-pipeline-v0.4.0.toml"
+DEFAULT_PIPELINE_CONFIG = "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-01.toml"
 FINAL_READY_MARKER = "FINAL_EVALUATION_READY.json"
 OWNER_REVIEW_MARKER = "OWNER_REVIEW_APPROVED.json"
 FRESH_EXTENSION_MARKER = "FRESH_EXTENSION_MANIFEST.json"

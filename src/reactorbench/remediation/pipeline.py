@@ -2825,14 +2825,22 @@ def _load_candidate_checkpoint(
     result: CompactTrainingResult,
     tokenizer: ProjectTokenizer,
 ) -> tuple[TransformerLM, CheckpointManifest, torch.device]:
-    device = torch.device(result.device.resolved)
+    requested_device = torch.device(result.device.resolved)
     model, manifest = load_checkpoint(
         attempt / f"checkpoint-{candidate_id}",
         expected_manifest_sha256=result.checkpoint_manifest_sha256,
         expected_tokenizer_sha256=tokenizer.manifest.checksum_sha256,
-        device=device,
+        device=requested_device,
     )
-    return model, manifest, device
+    try:
+        actual_device = next(model.parameters()).device
+    except StopIteration:
+        raise PipelineExecutionError("loaded checkpoint model has no parameters") from None
+    if actual_device.type != requested_device.type or (
+        requested_device.index is not None and actual_device.index != requested_device.index
+    ):
+        raise PipelineExecutionError("loaded checkpoint model differs from its resolved device")
+    return model, manifest, actual_device
 
 
 def _training_checkpoint_matches_result(

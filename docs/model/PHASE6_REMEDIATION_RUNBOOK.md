@@ -1,6 +1,6 @@
 # Phase 6 remediation local runbook
 
-Status: **engineering workflow available; long-run results pending**
+Status: **device fix verified; non-overwriting rerun pending**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -31,6 +31,42 @@ the command is only a fail-closed guard and returns exit code `10`. Files whose 
 look like readiness, owner-review, extension, or access records cannot authorize
 access or substitute for the missing independently reviewed executor. Do not create
 such files by hand or use the command to probe whether a historical packet works.
+
+## Preserved failed attempt and current rerun
+
+The first owner-operated run remains preserved at:
+
+```text
+runs/phase6-remediation-v0.4.0-local/
+```
+
+It completed preflight, v0.2 inventory/caps, smoke, and all 1,500 v0.2 development
+training steps. It then failed safely at `0/252` before the first behavioral decode
+because the checkpoint loader requested generic device `mps`, PyTorch placed the model
+on the equivalent concrete device `mps:0`, and the decoder compared those spellings
+strictly. This is failed engineering evidence, not a model-quality gate result. Do not
+delete, rename, resume, or edit it.
+
+The corrected default configuration is:
+
+```text
+configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-01.toml
+runs/phase6-remediation-v0.4.0-local-rerun-01/
+```
+
+Checkpoint consumers now return the model's actual parameter device after verifying
+that its device type and any explicitly requested index match. A real CPU/MPS or
+explicit-index mismatch still fails closed. The exact preserved checkpoint operation
+that failed was repeated read-only after the fix and decoded one validation example
+on `mps:0` without changing the checkpoint.
+
+The ordinary wrappers below now select the rerun configuration. To inspect the old
+failed status without changing it, use:
+
+```bash
+.venv/bin/python -m reactorbench.remediation status \
+  --config configs/experiments/phase6-remediation-pipeline-v0.4.0.toml
+```
 
 ## One-time setup
 
@@ -185,8 +221,8 @@ when those fields are available. The machine-readable heartbeat and append-only 
 log are:
 
 ```text
-runs/phase6-remediation-v0.4.0-local/status.json
-runs/phase6-remediation-v0.4.0-local/progress.jsonl
+runs/phase6-remediation-v0.4.0-local-rerun-01/status.json
+runs/phase6-remediation-v0.4.0-local-rerun-01/progress.jsonl
 ```
 
 ## Stop safely
@@ -281,7 +317,7 @@ implemented in this release.
 All ordinary pipeline outputs stay under:
 
 ```text
-runs/phase6-remediation-v0.4.0-local/
+runs/phase6-remediation-v0.4.0-local-rerun-01/
 ```
 
 Important top-level evidence includes:
@@ -308,16 +344,16 @@ After a completed development run, the human and machine review indexes are unde
 committed review-bundle attempt:
 
 ```text
-runs/phase6-remediation-v0.4.0-local/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
-runs/phase6-remediation-v0.4.0-local/stages/15-review_bundle/attempt-*/review-bundle.json
+runs/phase6-remediation-v0.4.0-local-rerun-01/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
+runs/phase6-remediation-v0.4.0-local-rerun-01/stages/15-review_bundle/attempt-*/review-bundle.json
 ```
 
 For `blocked`, `stopped`, or `failed` runs, the command prints the exact paths to an
 idempotent terminal-prefix bundle. If you return later, find it at:
 
 ```text
-runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
-runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
+runs/phase6-remediation-v0.4.0-local-rerun-01/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-local-rerun-01/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
 ```
 
 Use the exact attempt or state-checksum path reported by the command; do not choose a
@@ -368,7 +404,8 @@ raw traceback or private internal detail.
 
 Do not manually edit, rename, replace, or delete:
 
-- any file under `runs/phase6-remediation-v0.4.0-local/`;
+- any file under `runs/phase6-remediation-v0.4.0-local-rerun-01/` or the preserved
+  failed `runs/phase6-remediation-v0.4.0-local/`;
 - the v0.2, v0.3, v0.4, or pipeline TOML configurations;
 - the compact-output contract or its manifest;
 - the v0.2 inventory or v0.3 counterfactual-cap reports;
@@ -398,7 +435,8 @@ Then ask Codex to inspect, without rerunning the long job:
 > `docs/model/PHASE6_REMEDIATION_RUNBOOK.md` first. Verify Git status and inspect the
 > checksum-bound run manifest, pipeline state, status, progress log, completion
 > markers, review bundle, detailed v0.2/v0.3/v0.4 reports, baselines, checkpoints, and
-> acceptance outcomes under `runs/phase6-remediation-v0.4.0-local/`. Do not retrain,
+> acceptance outcomes under
+> `runs/phase6-remediation-v0.4.0-local-rerun-01/`. Do not retrain,
 > open frozen final data, use historical G01–G15 as the new golden gate, push, or
 > deploy. Tell me whether development completed, blocked, stopped, or failed; what the
 > measured results show; and the exact reviewed prerequisite needed next.

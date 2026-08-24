@@ -2,17 +2,20 @@
 
 Last updated: 2026-08-24 America/New_York
 
-Current phase: **Phase 6 remediation engineering is complete; the owner-operated
-v0.2–v0.4 development run has not started**
+Current phase: **the first Phase 6 remediation run failed at an implementation
+boundary; the device fix is verified and a non-overwriting rerun is ready**
 
-Current objective: preserve the verified local implementation as a clean, non-pushed
-checkpoint and hand the checksum-bound long development run to the project owner.
-After that run completes, blocks, stops, or fails, Codex should review its immutable
-evidence without retraining or opening final data.
+Current objective: preserve the failed run unchanged, checkpoint the verified
+checkpoint-device correction and new rerun identity locally, and hand the fresh
+checksum-bound rerun to the project owner. After that rerun completes, blocks, stops,
+or fails, Codex should review its immutable evidence without retraining or opening
+final data.
 
-Checkpoint reason: v0.3/v0.4 data, training, evaluation, evidence-consumer, progress,
-stop/resume, and storage boundaries have passed integrated verification and fresh
-read-only review. Work stops before the long run by design.
+Checkpoint reason: the first run completed v0.2 training but failed at `0/252` before
+its first behavioral gate decode because PyTorch represented the same MPS device as
+generic `mps` at request time and concrete `mps:0` after model placement. The actual
+device is now returned after strict type/index verification, the preserved checkpoint
+decodes successfully read-only, and a new run name prevents overwrite.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -64,6 +67,16 @@ account-level percentage was measured.
 - Kept the ordinary runner physically separated from fresh final evaluation. The
   final executor remains intentionally unimplemented and fails closed.
 - Added and updated the owner runbook, README, decision log, and executable wrappers.
+- Preserved the first owner-operated run at
+  `runs/phase6-remediation-v0.4.0-local/`. It completed four stage-prefix entries,
+  including all 1,500 v0.2 development-training steps, then failed safely before its
+  first gate decode. Final evaluation was not accessed.
+- Diagnosed the exact boundary mismatch: the result requested `mps`, the loaded model
+  parameter device was the equivalent `mps:0`, and strict decoder equality rejected
+  the spelling difference. Checkpoint consumers now return the actual parameter
+  device while rejecting a different device type or explicitly requested index.
+- Added `phase6-remediation-v0.4.0-local-rerun-01` as the new default run identity.
+  The failed run is neither deleted nor reused.
 
 ## Frozen development evidence
 
@@ -85,22 +98,31 @@ account-level percentage was measured.
   exhaustion; cap 108; every control prompt truncates at 512 tokens.
 - v0.3 frozen cap report checksum:
   19612c9784612b2cbf5feb7c97a6bb2b351a510e28a853706ba212cfbfdf113f
-- Canonical pipeline configuration checksum:
+- Preserved failed-run configuration checksum:
   4de973e2e009dccea7fc2ea430b4946c85b3066bde7b79673786479517ae666a
+- New rerun configuration checksum:
+  96850668232781faa9d14319ce40e136aa1ada0c85317ed88b08ef795fcd6a13
+- Preserved v0.2 training result checksum:
+  bc0332e69dd01aa9d2b48f5ca5c130c2e3c944a9435e5863399c0340bad68cac
+- Preserved v0.2 checkpoint-manifest checksum:
+  b27547e10fc0dfd08ea08337368dd3011c1c3bcb4e98747259ff49486ef9a44e
+- Preserved v0.2 selected validation NLL: 0.1484147810350759 at the completed
+  1,500-step boundary.
 
-These are data, tokenizer, and engineering-contract measurements, not new model-quality
-results. No v0.2, v0.3, or v0.4 long training result or acceptance result exists.
+The failed v0.2 checkpoint is engineering evidence, not an accepted model-quality
+result: the behavioral gate never decoded its first example. No remediation acceptance
+result and no v0.3/v0.4 training result exists.
 
 ## Tests and checks run
 
 - Ruff format check: 188 files passed.
 - Ruff lint: passed.
 - Strict mypy: 153 source files passed.
-- Complete non-golden remediation unit plus separate-process owner lifecycle suite:
-  331 passed in 112.29 seconds.
+- Complete non-golden remediation unit plus separate-process owner lifecycle and safe
+  distribution-configuration suite: 332 passed in 116.26 seconds.
 - Final permitted repository suite:
-  1,072 passed, 2 deliberately deselected, in 527.05 seconds.
-- Branch coverage: 86.07%, above the required 85%.
+  1,072 passed, 2 deliberately deselected, in 543.67 seconds.
+- Branch coverage: 86.06%, above the required 85%.
 - The two deselections are the documented historical final/golden asset readers:
   test_resource_api_reads_the_root_reviewed_assets_without_drift and
   test_approved_golden_packet_projects_sixty_examples. No held-out or final evaluation
@@ -115,6 +137,12 @@ results. No v0.2, v0.3, or v0.4 long training result or acceptance result exists
   bebb03cf239c966b2a4228b429fc9a98a1b6fd32: exit 0; exact configuration checksum;
   source commit matched; 16 frozen stages; no training, data generation, or evaluation;
   no run directory created.
+- Read-only exact-failure diagnostic after the patch: requested device `mps`, actual
+  parameter device `mps:0`, one preserved validation example decoded, and checkpoint
+  manifest checksum remained
+  b27547e10fc0dfd08ea08337368dd3011c1c3bcb4e98747259ff49486ef9a44e.
+- New-rerun clean-tree dry-run: pending the local fix commit because the source verifier
+  intentionally refuses a dirty checkout.
 
 The module-name form of pytest-cov previously triggered a PyTorch import segmentation
 fault in this local Python environment. The path-based coverage target above completed
@@ -132,13 +160,17 @@ successfully.
 - D-082 defines cooperative evaluation stopping and view-atomic artifact publication.
 - D-083 requires downstream reconstruction of scientific evidence and ranking.
 - D-084 makes stop archival crash-durable and conflict-intolerant.
+- D-085 preserves the failed run, normalizes actual checkpoint device identity without
+  weakening real mismatch rejection, and creates a new non-overwriting rerun name.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
 ## Residual risks, known failures, and blockers
 
-- The long development run is pending. Approximately 6–24 hours on Apple MPS is only
-  a planning estimate.
+- The first long run failed after approximately 3,627.6 active seconds at the v0.2
+  development gate. It is terminal and must not be resumed or edited.
+- The replacement development rerun is pending. Approximately 6–24 hours on Apple MPS
+  remains only a planning estimate.
 - CPU fallback is permitted for earlier stages but cannot satisfy an activated v0.4
   pilot. There is no successful activated-CPU estimate. An inactive control-only path
   may complete but provides no 1,024-token evidence.
@@ -158,6 +190,8 @@ successfully.
 ## Files and artifact paths
 
 - Pipeline configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-01.toml
+- Preserved failed-run configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0.toml
 - Iteration configurations:
   configs/experiments/phase6-remediation-v0.2.0.toml,
@@ -168,29 +202,33 @@ successfully.
   docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json
 - Owner instructions:
   docs/model/PHASE6_REMEDIATION_RUNBOOK.md
-- Future run root:
+- Preserved failed run:
   runs/phase6-remediation-v0.4.0-local/
+- New rerun root:
+  runs/phase6-remediation-v0.4.0-local-rerun-01/
 - Canonical live status:
-  runs/phase6-remediation-v0.4.0-local/status.json
+  runs/phase6-remediation-v0.4.0-local-rerun-01/status.json
 - Append-only progress:
-  runs/phase6-remediation-v0.4.0-local/progress.jsonl
+  runs/phase6-remediation-v0.4.0-local-rerun-01/progress.jsonl
 
 ## Repository state
 
 - Branch: main.
-- Complete implementation/evidence commit:
-  bebb03cf239c966b2a4228b429fc9a98a1b6fd32
-- This status update is the final local handoff commit after that implementation
-  checkpoint. After it is created, local main is five commits ahead of origin/main.
-- Uncommitted work after the handoff commit: none; verify the clean tree on resume.
-- No remediation run directory or fresh-final ledger/result was created.
+- Failed-run source/handoff commit:
+  2aafcd1661ec7c3640a385621db171041532e547
+- Before the local device-fix checkpoint, main is five commits ahead of origin/main.
+- Uncommitted work: the understood device correction, regression/config/package
+  updates, and documentation. No unrelated or unexpected file is present.
+- The failed run directory is preserved; the rerun directory does not exist yet.
+- No fresh-final ledger/result was created or accessed.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-From the final clean local commit, rerun the non-mutating dry-run. When ready to occupy
-the Mac for the long owner-operated development run, start it under caffeinate and
-keep a second Terminal available for verified status or cooperative stop commands.
+Create the local device-fix checkpoint without pushing, run the new configuration's
+clean-tree dry-run, record its exact source/configuration/stage result here, and create
+the final local handoff commit. Then start the new rerun under caffeinate and keep a
+second Terminal available for verified status or cooperative stop commands.
 
 ## Exact recommended next commands after final handoff
 

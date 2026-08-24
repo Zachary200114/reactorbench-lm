@@ -4352,16 +4352,22 @@ def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
     training_result = cast(
         CompactTrainingResult,
         SimpleNamespace(
-            device=SimpleNamespace(resolved="cpu"),
+            device=SimpleNamespace(resolved="mps"),
             checkpoint_manifest_sha256=HASH_D,
         ),
     )
     tokenizer = SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_C))
-    loaded_model = object()
-    loaded_manifest = SimpleNamespace(checksum_sha256=HASH_D)
+    loaded_model = cast(
+        TransformerLM,
+        SimpleNamespace(parameters=lambda: iter((SimpleNamespace(device=torch.device("mps:0")),))),
+    )
+    loaded_manifest = cast(
+        CheckpointManifest,
+        SimpleNamespace(checksum_sha256=HASH_D),
+    )
     observed_checkpoint: list[dict[str, object]] = []
 
-    def load_checkpoint(path: Path, **kwargs: object) -> tuple[object, object]:
+    def load_checkpoint(path: Path, **kwargs: object) -> tuple[TransformerLM, CheckpointManifest]:
         observed_checkpoint.append({"path": path, **kwargs})
         return loaded_model, loaded_manifest
 
@@ -4374,8 +4380,29 @@ def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
     )
     assert model is loaded_model
     assert manifest.checksum_sha256 == HASH_D
-    assert device.type == "cpu"
+    assert device == torch.device("mps:0")
+    assert observed_checkpoint[0]["device"] == torch.device("mps")
     assert observed_checkpoint[0]["expected_tokenizer_sha256"] == HASH_C
+
+    mismatched_model = cast(
+        TransformerLM,
+        SimpleNamespace(parameters=lambda: iter((SimpleNamespace(device=torch.device("cpu")),))),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_checkpoint",
+        lambda *_args, **_kwargs: (mismatched_model, loaded_manifest),
+    )
+    with pytest.raises(
+        pipeline.PipelineExecutionError,
+        match="differs from its resolved device",
+    ):
+        pipeline._load_candidate_checkpoint(
+            tmp_path,
+            "control",
+            training_result,
+            cast(ProjectTokenizer, tokenizer),
+        )
 
 
 def test_view_evaluation_stops_after_one_of_1024_examples_without_partial_artifacts(
