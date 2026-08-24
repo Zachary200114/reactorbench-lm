@@ -77,6 +77,38 @@ def test_verified_status_parses_every_gui_field_and_progress_fraction() -> None:
     assert status.latest_update_utc == "2026-08-24T20:15:30+00:00"
     assert status.work_percent == pytest.approx(50.79365079)
     assert status.overall_percent == pytest.approx(28.17460317)
+    version_name, version_stage_index, version_stage_total, version_percent = (
+        status.version_progress
+    )
+    assert (version_name, version_stage_index, version_stage_total) == ("v0.2", 4, 4)
+    assert version_percent == pytest.approx(87.69841270)
+
+
+@pytest.mark.parametrize(
+    ("stage_index", "expected"),
+    [
+        (1, ("Setup", 1, 1, 0.0)),
+        (2, ("v0.2", 1, 4, 0.0)),
+        (5, ("v0.2", 4, 4, 75.0)),
+        (6, ("v0.3", 1, 5, 0.0)),
+        (10, ("v0.3", 5, 5, 80.0)),
+        (11, ("v0.4", 1, 5, 0.0)),
+        (15, ("v0.4", 5, 5, 80.0)),
+        (16, ("Finalization", 1, 1, 0.0)),
+    ],
+)
+def test_version_progress_covers_every_frozen_pipeline_group(
+    stage_index: int,
+    expected: tuple[str, int, int, float],
+) -> None:
+    status = replace(
+        parse_status_output(_running_status_output()),
+        stage_index=stage_index,
+        completed_units=None,
+        total_units=None,
+    )
+
+    assert status.version_progress == expected
 
 
 def test_ready_status_without_progress_is_valid_but_cannot_start_again() -> None:
@@ -313,6 +345,12 @@ def test_native_window_payload_contains_exact_safe_policy_and_no_arbitrary_paths
     assert payload["state"] == "Not started"
     assert payload["run_name"] == RUN_NAME
     assert payload["source_commit"] == SOURCE_COMMIT
+    assert payload["overall_percent"] == 0.0
+    assert payload["version_name"] == "Setup"
+    assert payload["version_percent"] == 0.0
+    assert payload["version_stage_index"] == 0
+    assert payload["version_stage_total"] == 1
+    assert payload["work_percent"] == 0.0
     assert payload["policy"] == {
         "copy_status": True,
         "dry_run": True,

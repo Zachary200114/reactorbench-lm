@@ -49,6 +49,13 @@ PIPELINE_STAGES: Final = (
     "v04_gate_and_final_policy_freeze",
     "review_bundle",
 )
+VERSION_STAGE_GROUPS: Final = (
+    ("Setup", 0, 1),
+    ("v0.2", 1, 5),
+    ("v0.3", 5, 10),
+    ("v0.4", 10, 15),
+    ("Finalization", 15, 16),
+)
 PROGRESS_ONLY_STAGES: Final = ("pipeline_start", "pipeline_resume")
 
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,64}$")
@@ -216,6 +223,26 @@ class MonitorStatus:
         if self.completed_units is None or self.total_units is None:
             return 0.0
         return min(100.0, max(0.0, (self.completed_units / self.total_units) * 100))
+
+    @property
+    def version_progress(self) -> tuple[str, int, int, float]:
+        """Return the active version's stage position and bounded completion percent."""
+
+        if self.state is MonitorState.COMPLETED:
+            return ("Complete", 1, 1, 100.0)
+        if self.stage_index is None:
+            return ("Setup", 0, 1, 0.0)
+        stage_offset = self.stage_index - 1
+        stage_fraction = 0.0
+        if self.completed_units is not None and self.total_units is not None:
+            stage_fraction = self.completed_units / self.total_units
+        for name, first_offset, end_offset in VERSION_STAGE_GROUPS:
+            if first_offset <= stage_offset < end_offset:
+                stage_total = end_offset - first_offset
+                stage_index = stage_offset - first_offset + 1
+                percent = ((stage_index - 1 + stage_fraction) / stage_total) * 100
+                return (name, stage_index, stage_total, min(100.0, max(0.0, percent)))
+        raise AssertionError("current stage is outside the frozen version groups")
 
     def concise_summary(self) -> str:
         stage = self.current_stage
@@ -789,6 +816,9 @@ def _status_payload(status: MonitorStatus) -> dict[str, object]:
         operation_in_progress=False,
         local_launcher_active=False,
     )
+    version_name, version_stage_index, version_stage_total, version_percent = (
+        status.version_progress
+    )
     return {
         "completed_units": status.completed_units,
         "current_stage": status.current_stage,
@@ -825,6 +855,10 @@ def _status_payload(status: MonitorStatus) -> dict[str, object]:
         "summary": status.concise_summary(),
         "total_units": status.total_units,
         "verified": status.verified,
+        "version_name": version_name,
+        "version_percent": version_percent,
+        "version_stage_index": version_stage_index,
+        "version_stage_total": version_stage_total,
         "work_percent": status.work_percent,
     }
 

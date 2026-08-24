@@ -264,6 +264,17 @@ status, safe-stop, stopped-run Resume, Finder, and copy operations. The activity
 is bounded and non-scientific; the monitor never reads `status.json` or
 `progress.jsonl` directly and never changes their artifact contracts.
 
+The window separates progress into three explicit levels:
+
+1. **ENTIRE RERUN** — stage-based completion across setup, every v0.2–v0.4 stage,
+   and final review (all 16 pipeline stages);
+2. **Current version** — completion within Setup, v0.2, v0.3, v0.4, or Finalization;
+3. **Current work** — exact units reported by the active task when available.
+
+The entire-rerun percentage is a completion indicator, not a wall-clock prediction:
+the 16 stages do not have equal runtimes. Use the separately displayed estimated
+remaining time only when the validated status reporter supplies it.
+
 The Homebrew project Python currently lacks `_tkinter`, and the importable macOS
 system Tk 8.5 was visually probed and rendered even a minimal window blank on this
 Mac. The launcher therefore uses the already-installed `/usr/bin/swiftc` AppKit toolchain

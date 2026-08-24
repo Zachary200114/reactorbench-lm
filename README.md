@@ -215,7 +215,9 @@ The window is an owner testing utility, not the Phase 7 public interface. Openin
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. The current default is
 `phase6-remediation-v0.4.0-local-rerun-02`; do not resume or modify either preserved
-failed attempt.
+failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
+the current version, and exact current-task work when the runner reports it. The
+entire-rerun bar is stage-based rather than a wall-clock estimate.
 
 Infrastructure availability is not a positive model result. The routine pipeline
 cannot open the frozen final evaluation, and the historical G01–G15 packet is

@@ -2,8 +2,8 @@
 
 Last updated: 2026-08-24 America/New_York
 
-Current phase: **Phase 6 remediation rerun 02 ready after the verified v0.3
-counterfactual-decoder fix; rerun 02 not started**
+Current phase: **Phase 6 remediation rerun 02 ready with explicit three-level GUI
+progress after the verified v0.3 counterfactual-decoder fix; rerun 02 not started**
 
 Current objective: let the project owner start the new non-overwriting rerun 02 from
 the local progress window. Preserve both failed engineering attempts and every
@@ -123,6 +123,10 @@ account-level percentage was measured.
 - Refreshed the public README to describe both preserved engineering failures, the
   verified counterfactual-decoder correction, rerun 02's exact pending identity, and
   the latest permitted test and coverage totals without implying model acceptance.
+- Added a distinct, visually prominent `ENTIRE RERUN` bar for all 16 stages to the
+  local macOS testing GUI. A second bar now reports progress within Setup, v0.2, v0.3,
+  v0.4, or Finalization, while the third retains exact current-task work. The entire-
+  run value is explicitly documented as stage-based, not a wall-clock estimate.
 
 ## Frozen development evidence
 
@@ -181,6 +185,11 @@ v0.3/v0.4 remediation result exists.
   protected resource-reader test was deselected in 15.20 seconds.
 - Native Swift/AppKit type checking: passed. Property-list lint: passed. The GUI
   launcher and closed controller bridge both pass Bash syntax.
+- Three-level GUI-focused verification: Ruff formatting/lint passed, strict mypy
+  passed, and 30 controller tests passed in 1.10 seconds. Native Swift type checking,
+  property-list lint, and both GUI-wrapper Bash syntax checks passed. The exact local
+  window visually displayed all three bars in the verified `Not started` state; only
+  Close was pressed, and no lifecycle operation ran.
 - Post-commit dry run passed at source commit
   `3e70032d1767b4bee1a0e357cbbaca3b07b96eb3`: config checksum
   `6515bd0f2ae78ef566b4e322630a8759f49068f4577a98c83cdaf6acdf308710`,
@@ -335,8 +344,9 @@ successfully.
   034b41cca07b999f701850986a67a692b40d8c30
 - Counterfactual decoder fix, safe diagnostic, and rerun-02 implementation commit:
   3e70032d1767b4bee1a0e357cbbaca3b07b96eb3
-- The README/status update is intended as the next local handoff commit. After it is
-  created, main is thirteen commits ahead of origin/main.
+- The three-level GUI/status update is intended as the next local handoff commit.
+  After it is created, main is one commit ahead of origin/main; the previously recorded
+  thirteen commits are now present in the local `origin/main` tracking reference.
 - Uncommitted work after the status handoff commit: none; verify the clean tree on
   resume.
 - Both failed run directories are preserved; the rerun-02 directory does not exist.

@@ -54,6 +54,10 @@ private struct StatusPayload: Decodable {
     let summary: String
     let totalUnits: Int?
     let verified: Bool
+    let versionName: String
+    let versionPercent: Double
+    let versionStageIndex: Int
+    let versionStageTotal: Int
     let workPercent: Double
 }
 
@@ -76,7 +80,8 @@ private let statusKeys: Set<String> = [
     "latest_message", "latest_update_utc", "metric_name", "metric_value",
     "next_stage", "overall_percent", "pipeline_status", "policy", "run_exists",
     "run_name", "safe_error", "source_commit", "stage_index", "stage_total",
-    "state", "stop_requested", "summary", "total_units", "verified", "work_percent",
+    "state", "stop_requested", "summary", "total_units", "verified", "version_name",
+    "version_percent", "version_stage_index", "version_stage_total", "work_percent",
 ]
 
 private let policyKeys: Set<String> = [
@@ -110,8 +115,15 @@ private func decodeStatus(_ data: Data) throws -> StatusPayload {
     guard
         payload.runName == expectedRunName,
         payload.overallPercent.isFinite,
+        payload.versionPercent.isFinite,
         payload.workPercent.isFinite,
         (0 ... 100).contains(payload.overallPercent),
+        (0 ... 100).contains(payload.versionPercent),
+        ["Setup", "v0.2", "v0.3", "v0.4", "Finalization", "Complete"].contains(
+            payload.versionName
+        ),
+        payload.versionStageTotal > 0,
+        (0 ... payload.versionStageTotal).contains(payload.versionStageIndex),
         (0 ... 100).contains(payload.workPercent)
     else {
         throw MonitorDecodeError.invalidShape
@@ -131,9 +143,13 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
 
     private let stateLabel = NSTextField(labelWithString: "Checking…")
     private let stageLabel = NSTextField(labelWithString: "Stage unavailable")
-    private let overallLabel = NSTextField(labelWithString: "Overall: 0%")
+    private let overallLabel = NSTextField(
+        labelWithString: "ENTIRE RERUN — all versions and all 16 stages: 0.0%"
+    )
+    private let versionLabel = NSTextField(labelWithString: "Current version — Setup: 0.0%")
     private let workLabel = NSTextField(labelWithString: "Current work: unavailable")
     private let overallProgress = NSProgressIndicator()
+    private let versionProgress = NSProgressIndicator()
     private let workProgress = NSProgressIndicator()
     private var detailLabels: [String: NSTextField] = [:]
     private let activityView = NSTextView()
@@ -248,17 +264,23 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         let progressContent = NSStackView()
         progressContent.orientation = .vertical
         progressContent.alignment = .leading
-        progressContent.spacing = 5
+        progressContent.spacing = 6
+        overallLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
         progressContent.addArrangedSubview(overallLabel)
-        configureProgress(overallProgress)
+        configureProgress(overallProgress, height: 18)
         progressContent.addArrangedSubview(overallProgress)
+        versionLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        progressContent.addArrangedSubview(versionLabel)
+        configureProgress(versionProgress, height: 12)
+        progressContent.addArrangedSubview(versionProgress)
         progressContent.addArrangedSubview(workLabel)
-        configureProgress(workProgress)
+        configureProgress(workProgress, height: 12)
         progressContent.addArrangedSubview(workProgress)
-        let progressBox = makeBox(title: "Progress", content: progressContent)
+        let progressBox = makeBox(title: "Entire run, current version, and current task", content: progressContent)
         stack.addArrangedSubview(progressBox)
         progressBox.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         overallProgress.widthAnchor.constraint(equalTo: progressContent.widthAnchor).isActive = true
+        versionProgress.widthAnchor.constraint(equalTo: progressContent.widthAnchor).isActive = true
         workProgress.widthAnchor.constraint(equalTo: progressContent.widthAnchor).isActive = true
 
         let detailRows = [
@@ -317,12 +339,13 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         activityBox.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
 
-    private func configureProgress(_ progress: NSProgressIndicator) {
+    private func configureProgress(_ progress: NSProgressIndicator, height: CGFloat) {
         progress.style = .bar
         progress.isIndeterminate = false
         progress.minValue = 0
         progress.maxValue = 100
         progress.doubleValue = 0
+        progress.heightAnchor.constraint(equalToConstant: height).isActive = true
     }
 
     private func makeBox(title: String, content: NSView) -> NSBox {
@@ -548,7 +571,18 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             stageLabel.stringValue = status.currentStage
         }
         overallProgress.doubleValue = status.overallPercent
-        overallLabel.stringValue = String(format: "Overall: %.1f%%", status.overallPercent)
+        overallLabel.stringValue = String(
+            format: "ENTIRE RERUN — all versions and all 16 stages: %.1f%%",
+            status.overallPercent
+        )
+        versionProgress.doubleValue = status.versionPercent
+        versionLabel.stringValue = String(
+            format: "Current version — %@, stage %d of %d: %.1f%%",
+            status.versionName,
+            status.versionStageIndex,
+            status.versionStageTotal,
+            status.versionPercent
+        )
         workProgress.doubleValue = status.workPercent
         if let completed = status.completedUnits, let total = status.totalUnits {
             workLabel.stringValue = String(
