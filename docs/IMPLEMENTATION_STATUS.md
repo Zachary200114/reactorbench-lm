@@ -2,25 +2,27 @@
 
 Last updated: 2026-08-24 America/New_York
 
-Current phase: **Phase 6 remediation rerun 02 ready with explicit three-level GUI
-progress after the verified v0.3 counterfactual-decoder fix; rerun 02 not started**
+Current phase: **Phase 6 remediation rerun 02 preserved after a checksum-contract
+failure; the canonical fix and non-overwriting rerun 03 are prepared but not run**
 
-Current objective: let the project owner start the new non-overwriting rerun 02 from
-the local progress window. Preserve both failed engineering attempts and every
-scientific boundary. After rerun 02 completes, blocks, stops, or fails, Codex should
-review its immutable evidence without retraining or opening final data.
+Current objective: verify and hand off the single-source tokenized-inventory checksum
+fix, preserve all three completed engineering attempts unchanged, and leave rerun 03
+ready for an owner-operated run. No claim is made that the corrected rerun will pass
+the frozen scientific gate.
 
-Checkpoint reason: rerun 01 failed safely during v0.3 candidate training at work 32 of
-48. The exact dead end was reproduced, fixed at the truth-independent constrained-
-decoder boundary, and replayed successfully on MPS. Full permitted tests pass. The
-new rerun 02 identity and monitor defaults are verified at a clean pre-run boundary.
-No training, data generation, final evaluation, push, or deployment was started.
+Checkpoint reason: rerun 02 completed the first nine pipeline stages, both 2,000-step
+v0.3 candidate trainings, and the 531-example development evaluation before stage 10
+failed. The gate reconstructed tokenized inventories as dictionaries while training
+hashed the same inventory as tuples. Only those two bindings differed. Delegating the
+gate to the training contract exactly reproduces both recorded hashes. A separate
+read-only reconstruction shows that the preserved model passes seven of ten v0.3
+criteria and legitimately misses fault margin, continuation F1, and calibration.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
 
-Exact account usage is not observable in this environment. No claim is made that an
-account-level percentage was measured.
+Exact account usage is not observable in this environment. No account-level
+percentage was measured.
 
 ## Completed work
 
@@ -117,12 +119,26 @@ account-level percentage was measured.
   stage callback failures. It records only safe exception class names and package-
   relative code sites; exception messages, raw traceback text, and absolute paths are
   excluded. Diagnostic publication can never mask or delay durable failure state.
-- Added `phase6-remediation-v0.4.0-local-rerun-02` as the new default run identity in
-  the CLI, GUI monitor, packaged resources, tests, and runbook. Both earlier attempts
-  remain immutable. Rerun 02 has not been created or started.
-- Refreshed the public README to describe both preserved engineering failures, the
-  verified counterfactual-decoder correction, rerun 02's exact pending identity, and
-  the latest permitted test and coverage totals without implying model acceptance.
+- Added `phase6-remediation-v0.4.0-local-rerun-02` as the next non-overwriting run
+  identity. It is now also preserved as failed engineering evidence; none of the
+  three existing run roots was deleted, reused, resumed, or edited.
+- Rerun 02 completed stages 1 through 9, both 2,000-step v0.3 candidate trainings,
+  and the 531-example development evaluation. Stage 10 failed safely because its
+  duplicated reconstruction helper encoded tokenized inventories as dictionaries
+  while training encoded the same canonical values as tuples.
+- Made `tokenized_inventory_sha256` the one public, validated, tuple-based contract
+  used by both the training producer and pipeline reconstruction gate. Unit tests
+  freeze its canonical digest and prove the two call sites cannot drift silently.
+- Verified read-only that the corrected contract exactly reproduces rerun 02's two
+  recorded tokenized hashes. Every other candidate-ranking binding already passed.
+- Reconstructed the preserved v0.3 acceptance evidence without using held-out or
+  final data. Seven of ten criteria pass; fault margin, continuation macro F1, and
+  expected calibration error miss their frozen thresholds.
+- Added `phase6-remediation-v0.4.0-local-rerun-03` as the new default identity in the
+  CLI, GUI monitor, packaged resources, tests, README, and runbook. It has not been
+  created or started.
+- Refreshed the public README, owner runbook, decision log, and this handoff record to
+  distinguish the engineering fix from the model's still-unmet scientific criteria.
 - Added a distinct, visually prominent `ENTIRE RERUN` bar for all 16 stages to the
   local macOS testing GUI. A second bar now reports progress within Setup, v0.2, v0.3,
   v0.4, or Finalization, while the third retains exact current-task work. The entire-
@@ -166,8 +182,38 @@ account-level percentage was measured.
 The first failed v0.2 checkpoint and rerun 01's partial v0.3 checkpoints are
 engineering evidence, not accepted model-quality results. Rerun 01's step-100
 validation NLL was 1.6342359354; its disposable corrected step-200 replay measured
-1.3842025559550057. Neither is a completed v0.3 acceptance result. No completed
-v0.3/v0.4 remediation result exists.
+1.3842025559550057.
+
+Rerun 02 is completed development evidence but not an accepted model result:
+
+- Source commit: `cf732307d1d1f756772af7a87214ffde8e9bf8b0`
+- Terminal stage: 10 of 16, `v03_gate`, after 10,772.9 active seconds
+- Selected candidate/checkpoint: `v02-uniform-control`, step 1,900
+- Selected validation NLL: 0.3456375
+- Selected semantic composite: 0.9513827957041954
+- Full IID constrained exact match: 0.749529
+- Full IID constrained parse/schema validity: 1.0 / 1.0
+- Full IID unconstrained parse/schema validity: 0.873823 / 0.762712
+- Reconstructed v0.3 acceptance: seven of ten criteria pass
+  - fault comparator margin: 0.00975186975; required at least 0.02
+  - continuation macro F1: 0.718230958; required at least 0.90
+  - expected calibration error: 0.185504519; required at most 0.15
+- Recorded tokenized-inventory hashes now reproduced exactly by both call sites:
+  - train: `0de3e814e74f3960b17918e0086b9b3c9870c7416d1adaf04c7a37985930f560`
+  - validation: `bc4583c06412784dd6726fe33dea8c0ebc9b46453848a40cb65164a32c48290c`
+- Preserved run-manifest checksum:
+  `4ed02f09278cf985bd17c152359ee80dae3bcf154cabaeb243efb245447655c0`
+- Preserved pipeline-state checksum:
+  `fab17fd1b31c2e230be439ceec0d86a6846063817410f89ecc913f1b97fc05d3`
+- Preserved status checksum:
+  `14c800385882d3655af606e5f24614d2aa9fd3c60a9e2aece70e25122b1e8916`
+- Preserved progress checksum:
+  `4af616a1d43f3acbdc84e28a4e29df860560d8bd5e753fd0229aaeb4957324ff`
+
+An unchanged deterministic rerun 03 is expected to reach a legitimate v0.3
+scientific block after the checksum fix unless training variation changes the three
+missed metrics. Repeating it verifies the corrected contract; it does not guarantee
+scientific acceptance.
 
 ## Tests and checks run
 
@@ -257,6 +303,8 @@ successfully.
 - D-087 preserves rerun 01, requires a truth-independent reachable difference between
   counterfactual conclusions, adds bounded safe local diagnostics, and assigns the
   corrected attempt the new non-overwriting rerun-02 identity.
+- D-088 preserves rerun 02, makes the training checksum contract canonical, assigns
+  rerun 03, and requires honest reporting of the reconstructed seven-of-ten gate.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -268,15 +316,19 @@ successfully.
   training at step 200 and work item 32 of 48. It is terminal and must not be resumed
   or edited. Its preserved engineering evidence proves the device fix and identifies
   the now-corrected counterfactual dead end.
-- Rerun 02 is pending. Approximately 6–24 hours on Apple MPS remains only a planning
-  estimate; the fix removes the reproduced dead end but cannot promise that a long
-  research run will uncover no different failure or that model gates will pass.
+- Rerun 02 failed safely after approximately 10,772.9 active seconds at `v03_gate`.
+  It is terminal and must not be resumed or edited. The false checksum mismatch is
+  corrected, but its preserved model independently misses three frozen thresholds.
+- Rerun 03 is pending. A new run may take hours on Apple MPS. Because the inputs and
+  training contract remain deterministic, it is expected to reach a legitimate v0.3
+  scientific block if its results reproduce rerun 02; it may also expose a different
+  engineering failure. The checksum fix is not a promise of model acceptance.
 - The monitor is a macOS owner utility, not a cross-platform product surface. It
   compiles a temporary AppKit bundle on each open, so the window can take roughly 20
   to 30 seconds to appear on this Mac.
-- The final GUI check intentionally did not press readiness, Start, stop, Resume, or
-  Finder. Lifecycle correctness is covered by unit/contract tests and the existing
-  wrapper integration suite; the first real Start remains an owner action.
+- The final rerun-03 GUI check must not press readiness, Start, stop, Resume, or
+  Finder. Lifecycle correctness is covered by unit/contract tests; a real Start
+  remains an owner action.
 - CPU fallback is permitted for earlier stages but cannot satisfy an activated v0.4
   pilot. There is no successful activated-CPU estimate. An inactive control-only path
   may complete but provides no 1,024-token evidence.
@@ -296,6 +348,8 @@ successfully.
 ## Files and artifact paths
 
 - Pipeline configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml
+- Preserved rerun-02 configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-02.toml
 - Preserved rerun-01 configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-01.toml
@@ -324,12 +378,14 @@ successfully.
   runs/phase6-remediation-v0.4.0-local/
 - Preserved failed rerun 01:
   runs/phase6-remediation-v0.4.0-local-rerun-01/
-- New rerun-02 root (currently absent):
+- Preserved failed rerun 02:
   runs/phase6-remediation-v0.4.0-local-rerun-02/
+- New rerun-03 root (currently absent):
+  runs/phase6-remediation-v0.4.0-local-rerun-03/
 - Canonical live status after start:
-  runs/phase6-remediation-v0.4.0-local-rerun-02/status.json
+  runs/phase6-remediation-v0.4.0-local-rerun-03/status.json
 - Append-only progress after start:
-  runs/phase6-remediation-v0.4.0-local-rerun-02/progress.jsonl
+  runs/phase6-remediation-v0.4.0-local-rerun-03/progress.jsonl
 
 ## Repository state
 
@@ -344,32 +400,37 @@ successfully.
   034b41cca07b999f701850986a67a692b40d8c30
 - Counterfactual decoder fix, safe diagnostic, and rerun-02 implementation commit:
   3e70032d1767b4bee1a0e357cbbaca3b07b96eb3
-- The three-level GUI/status update is intended as the next local handoff commit.
-  After it is created, main is one commit ahead of origin/main; the previously recorded
-  thirteen commits are now present in the local `origin/main` tracking reference.
-- Uncommitted work after the status handoff commit: none; verify the clean tree on
-  resume.
-- Both failed run directories are preserved; the rerun-02 directory does not exist.
+- Rerun-02 source commit:
+  cf732307d1d1f756772af7a87214ffde8e9bf8b0
+- Canonical checksum/rerun-03 implementation commit: pending local checkpoint.
+- Status handoff commit: pending local checkpoint.
+- Uncommitted work: checksum fix, rerun-03 identity, tests, README, runbook, decision
+  log, packaging inventory, and this status update.
+- All three failed run directories are preserved; the rerun-03 directory does not
+  exist.
 - No fresh-final ledger/result was created or accessed.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-Open the local monitor from the final clean local commit. Wait for the native window
-to appear, confirm it reports `Not started` and
-`phase6-remediation-v0.4.0-local-rerun-02`, optionally run the non-mutating readiness
-check, and press `Start new rerun` only when ready for the long owner-operated run.
-Do not resume or modify either preserved failed run.
+Complete the permitted repository and package gates, make local checkpoint commits,
+and confirm the tree is clean. The owner may then push. Tomorrow, open the local
+monitor, confirm it reports `Not started` and
+`phase6-remediation-v0.4.0-local-rerun-03`, optionally run the non-mutating readiness
+check, and press `Start new rerun` only if a clean engineering replay is worth the
+compute despite the preserved three-metric scientific shortfall. Do not resume or
+modify any preserved failed run.
 
 ## Exact recommended next command after final handoff
 
     cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-    git status --short --branch
+    git status
+    git push origin main
     ./scripts/open_phase6_progress_gui.sh
 
-Opening the monitor does not start training. The readiness, Start, cooperative stop,
-and stopped-run Resume controls are inside the window. The locked evaluation wrapper
-is not a research command in this release.
+Pushing does not start training. Opening the monitor does not start training. The
+readiness, Start, cooperative stop, and stopped-run Resume controls are inside the
+window. The locked evaluation wrapper is not a research command in this release.
 
 ## Resume prompt
 
