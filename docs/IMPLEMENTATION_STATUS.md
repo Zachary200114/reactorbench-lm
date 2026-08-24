@@ -111,8 +111,10 @@ results. No v0.2, v0.3, or v0.4 long training result or acceptance result exists
 - Git diff whitespace check: passed.
 - Fresh read-only integration review: no actionable material findings remained after
   the final provenance and crash-boundary regressions.
-- Clean-tree 16-stage dry-run: pending the local implementation checkpoint because the
-  source verifier intentionally refuses a dirty checkout.
+- Clean-tree dry-run at implementation commit
+  bebb03cf239c966b2a4228b429fc9a98a1b6fd32: exit 0; exact configuration checksum;
+  source commit matched; 16 frozen stages; no training, data generation, or evaluation;
+  no run directory created.
 
 The module-name form of pytest-cov previously triggered a PyTorch import segmentation
 fault in this local Python environment. The path-based coverage target above completed
@@ -176,19 +178,19 @@ successfully.
 ## Repository state
 
 - Branch: main.
-- Last known Git commit before this hardening checkpoint:
-  2d9f8f7f437248f81fd18eb6a17df00015a08bd3
-- Before the checkpoint commit, local main is three commits ahead of origin/main.
-- Uncommitted work: 20 understood ReactorBench-LM files containing the reviewed
-  hardening, tests, and documentation. No unrelated or unexpected file is present.
+- Complete implementation/evidence commit:
+  bebb03cf239c966b2a4228b429fc9a98a1b6fd32
+- This status update is the final local handoff commit after that implementation
+  checkpoint. After it is created, local main is five commits ahead of origin/main.
+- Uncommitted work after the handoff commit: none; verify the clean tree on resume.
 - No remediation run directory or fresh-final ledger/result was created.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-Create the local implementation checkpoint without pushing, run the clean-tree
-non-mutating dry-run, record its exact result here, and create the final local handoff
-commit. Then the owner may start the long development run from that clean commit.
+From the final clean local commit, rerun the non-mutating dry-run. When ready to occupy
+the Mac for the long owner-operated development run, start it under caffeinate and
+keep a second Terminal available for verified status or cooperative stop commands.
 
 ## Exact recommended next commands after final handoff
 
