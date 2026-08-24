@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import resource
 import shutil
 import tempfile
@@ -60,10 +61,16 @@ STATE_FILE_INVENTORY = (
 MAX_STATE_MANIFEST_BYTES = 1024 * 1024
 MAX_STATE_TENSOR_FILE_BYTES = 512 * 1024 * 1024
 MAX_STATE_FILES_TOTAL_BYTES = 1536 * 1024 * 1024
+MAX_RETAINED_DURABLE_STATES = 2
+MAX_SAFETENSORS_HEADER_BYTES = 1024 * 1024
+MAX_SERIALIZED_RNG_BYTES = 1024 * 1024
 MAX_EXAMPLES = 1_000_000
 MAX_BATCH_SIZE = 4096
 MAX_SAFE_INTEGER = (1 << 63) - 1
 _TRAINING_RNG_LOCK = threading.Lock()
+_STATE_DIRECTORY_PATTERN = re.compile(r"^state-step-([0-9]{8})$")
+_STATE_LOCK_PATTERN = re.compile(r"^\.state-step-[0-9]{8}\.lock$")
+_STATE_TEMPORARY_PATTERN = re.compile(r"^\.state-step-[0-9]{8}\.tmp-[A-Za-z0-9_-]{1,64}$")
 
 Sha256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 CandidateId = Annotated[
@@ -243,7 +250,11 @@ class CompactTrainingResult(ContractModel):
     process_peak_rss_bytes: StrictInt = Field(ge=1)
     mps_peak_current_allocated_bytes: StrictInt = Field(ge=0)
     mps_peak_driver_allocated_bytes: StrictInt = Field(ge=0)
-    durable_state_count: StrictInt = Field(ge=1, le=50_000)
+    durable_state_count: StrictInt = Field(
+        ge=1,
+        le=MAX_RETAINED_DURABLE_STATES,
+        description="Committed durable training states retained when fitting completed.",
+    )
     checkpoint_manifest_sha256: Sha256
     checkpoint_weights_sha256: Sha256
     checkpoint_size_bytes: StrictInt = Field(ge=1)
@@ -327,6 +338,68 @@ class _LoadedTrainingState:
     best_model_state: dict[str, Tensor]
     cpu_rng_state: Tensor
     mps_rng_state: Tensor | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CommittedTrainingState:
+    directory: Path
+    manifest: TrainingStateManifest
+
+
+def _optimizer_parameter_tensor_count(config: TransformerConfig) -> int:
+    tensors_per_affine = 2 if config.bias else 1
+    embeddings = 2
+    block_tensors = config.layers * 6 * tensors_per_affine
+    final_norm = tensors_per_affine
+    untied_output = 0 if config.tie_embeddings else 1
+    return embeddings + block_tensors + final_norm + untied_output
+
+
+def durable_training_state_upper_bound_bytes(
+    model_config: TransformerConfig,
+    *,
+    vocab_size: int,
+) -> int:
+    """Return the enforced float32 byte ceiling for one committed training state.
+
+    The ceiling includes the current and best model snapshots, both AdamW moment
+    tensors, bounded scalar/RNG/header overhead, and the canonical JSON manifest.
+    Tied output embeddings are counted twice because safetensors receives cloned
+    state-dict entries even though the architecture counts the shared parameter once.
+    """
+
+    if type(model_config) is not TransformerConfig:
+        raise TypeError("storage budgeting requires an exact TransformerConfig")
+    if type(vocab_size) is not int or not 8 <= vocab_size <= 65_536:
+        raise ValueError("vocab_size must be an integer in [8, 65536]")
+    parameter_count = exact_parameter_count(model_config, vocab_size=vocab_size)
+    duplicated_tied_elements = vocab_size * model_config.width if model_config.tie_embeddings else 0
+    parameter_tensors = _optimizer_parameter_tensor_count(model_config)
+    tensor_payload = 16 * parameter_count + 8 * duplicated_tied_elements + 8 * parameter_tensors
+    bounded_overhead = (
+        3 * MAX_SAFETENSORS_HEADER_BYTES + 2 * MAX_SERIALIZED_RNG_BYTES + MAX_STATE_MANIFEST_BYTES
+    )
+    return tensor_payload + bounded_overhead
+
+
+def selected_checkpoint_upper_bound_bytes(
+    model_config: TransformerConfig,
+    *,
+    vocab_size: int,
+) -> int:
+    """Return the float32 byte ceiling for the separately published checkpoint."""
+
+    if type(model_config) is not TransformerConfig:
+        raise TypeError("storage budgeting requires an exact TransformerConfig")
+    if type(vocab_size) is not int or not 8 <= vocab_size <= 65_536:
+        raise ValueError("vocab_size must be an integer in [8, 65536]")
+    parameter_count = exact_parameter_count(model_config, vocab_size=vocab_size)
+    duplicated_tied_elements = vocab_size * model_config.width if model_config.tie_embeddings else 0
+    return (
+        4 * (parameter_count + duplicated_tied_elements)
+        + MAX_SAFETENSORS_HEADER_BYTES
+        + MAX_STATE_MANIFEST_BYTES
+    )
 
 
 def resolve_training_device(training: RemediationTraining) -> DeviceResolution:
@@ -563,6 +636,10 @@ def _save_training_state(
     best_model_state: dict[str, Tensor],
     include_mps_rng: bool,
 ) -> tuple[Path, TrainingStateManifest]:
+    if any(parameter.dtype != torch.float32 for parameter in model.parameters()) or any(
+        tensor.dtype != torch.float32 for tensor in best_model_state.values()
+    ):
+        raise TrainingError("durable training storage budgeting requires float32 tensors")
     name = f"state-step-{step:08d}"
     target = state_root / name
     lock = state_root / f".{name}.lock"
@@ -639,6 +716,13 @@ def _save_training_state(
         payload = canonical_json_bytes(manifest.model_dump(mode="json", round_trip=True)) + b"\n"
         if len(payload) > MAX_STATE_MANIFEST_BYTES:
             raise TrainingError("durable training-state manifest exceeds its byte bound")
+        actual_state_bytes = len(payload) + sum(item.size_bytes for item in manifest.files)
+        storage_bound = durable_training_state_upper_bound_bytes(
+            model.config,
+            vocab_size=vocab_size,
+        )
+        if actual_state_bytes > storage_bound:
+            raise TrainingError("durable training state exceeds its deterministic byte budget")
         manifest_path = temporary / STATE_MANIFEST_FILENAME
         with manifest_path.open("xb") as stream:
             stream.write(payload)
@@ -693,6 +777,206 @@ def _read_state_manifest(directory: Path) -> TrainingStateManifest:
         if path.stat().st_size != file.size_bytes or _sha256(path) != file.sha256:
             raise ValueError("durable training-state tensor checksum or size mismatch")
     return manifest
+
+
+def _committed_training_states(
+    state_root: Path,
+    *,
+    candidate_id: str,
+) -> tuple[_CommittedTrainingState, ...]:
+    """Verify every committed state while leaving known in-progress entries untouched."""
+
+    if state_root.is_symlink() or not state_root.is_dir():
+        raise ValueError("durable state root must be a regular non-symlink directory")
+    resolved_root = state_root.resolve(strict=True)
+    states: list[_CommittedTrainingState] = []
+    for entry in sorted(resolved_root.iterdir(), key=lambda path: path.name):
+        state_match = _STATE_DIRECTORY_PATTERN.fullmatch(entry.name)
+        if state_match is not None:
+            if entry.is_symlink() or not entry.is_dir():
+                raise ValueError("committed durable state entry is a symlink or non-directory")
+            resolved_entry = entry.resolve(strict=True)
+            if resolved_entry.parent != resolved_root:
+                raise ValueError("committed durable state escapes its bounded candidate root")
+            manifest = _read_state_manifest(resolved_entry)
+            recorded_step = int(state_match.group(1))
+            if manifest.step != recorded_step or manifest.candidate_id != candidate_id:
+                raise ValueError("committed durable state identity is inconsistent")
+            states.append(_CommittedTrainingState(directory=resolved_entry, manifest=manifest))
+            continue
+
+        if _STATE_LOCK_PATTERN.fullmatch(entry.name) is not None:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValueError("durable state lock is a symlink or non-file")
+            continue
+        if _STATE_TEMPORARY_PATTERN.fullmatch(entry.name) is not None:
+            if entry.is_symlink() or not entry.is_dir():
+                raise ValueError("durable temporary state is a symlink or non-directory")
+            continue
+        raise ValueError("durable state root contains an unexpected entry")
+
+    return tuple(
+        sorted(
+            states,
+            key=lambda state: (state.manifest.step, state.directory.name),
+        )
+    )
+
+
+def _retain_newest_training_states(
+    *,
+    state_root: Path,
+    candidate_id: str,
+    current_directory: Path,
+    current_manifest: TrainingStateManifest,
+) -> tuple[_CommittedTrainingState, ...]:
+    """Prune only verified obsolete states after the new state is durably committed."""
+
+    resolved_root = state_root.resolve(strict=True)
+    if current_directory.is_symlink():
+        raise TrainingError("current durable state is unsafe for retention")
+    resolved_current = current_directory.resolve(strict=True)
+    if resolved_current.parent != resolved_root:
+        raise TrainingError("current durable state escapes its bounded candidate root")
+
+    states = _committed_training_states(resolved_root, candidate_id=candidate_id)
+    current = next(
+        (state for state in states if state.directory == resolved_current),
+        None,
+    )
+    if current is None or current.manifest != current_manifest:
+        raise TrainingError("current durable state failed retention verification")
+    if states[-1].directory != resolved_current:
+        raise TrainingError("newly committed durable state is not the newest valid state")
+
+    obsolete = states[:-MAX_RETAINED_DURABLE_STATES]
+    for state in obsolete:
+        if state.directory == resolved_current:
+            raise TrainingError("retention attempted to remove the current durable state")
+        if (
+            state.directory.is_symlink()
+            or state.directory.resolve(strict=True).parent != resolved_root
+        ):
+            raise TrainingError("obsolete durable state failed path-containment verification")
+        observed = _read_state_manifest(state.directory)
+        if observed != state.manifest or observed.candidate_id != candidate_id:
+            raise TrainingError("obsolete durable state changed before retention")
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise TrainingError("platform cannot safely retire a durable state")
+        parent_descriptor = os.open(resolved_root, os.O_RDONLY)
+        try:
+            shutil.rmtree(state.directory.name, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+        except OSError as error:
+            raise TrainingError("verified obsolete durable state could not be retired") from error
+        finally:
+            os.close(parent_descriptor)
+
+    retained = _committed_training_states(resolved_root, candidate_id=candidate_id)
+    if (
+        not 1 <= len(retained) <= MAX_RETAINED_DURABLE_STATES
+        or retained[-1].directory != resolved_current
+    ):
+        raise TrainingError("durable-state retention did not reach its bounded safe state")
+    return retained
+
+
+_RESUME_LINEAGE_FIELDS = (
+    "candidate_id",
+    "sampling_strategy",
+    "source_commit",
+    "device",
+    "total_steps",
+    "batch_size",
+    "vocab_size",
+    "training_config_sha256",
+    "model_config_sha256",
+    "train_inventory_sha256",
+    "validation_inventory_sha256",
+    "train_tokenized_sha256",
+    "validation_tokenized_sha256",
+    "tokenizer_manifest_sha256",
+    "optimizer_parameter_names",
+)
+
+
+def latest_committed_training_state(
+    state_root: Path,
+    *,
+    candidate_id: str,
+) -> Path | None:
+    """Return the newest verified state while safely ignoring known crash remnants."""
+
+    states = _committed_training_states(state_root, candidate_id=candidate_id)
+    return None if not states else states[-1].directory
+
+
+def retire_superseded_training_states(
+    source_root: Path,
+    *,
+    candidate_id: str,
+    successor_directory: Path,
+) -> int:
+    """Retire verified committed states only after a bound successor is durable.
+
+    Known lock and temporary crash remnants remain untouched for forensic inspection.
+    The successor may be in a later non-overwriting attempt, but it must carry the
+    same frozen training lineage and be at least as advanced as every retired state.
+    """
+
+    if source_root.is_symlink() or not source_root.is_dir():
+        raise ValueError("retired training-state root must be a regular directory")
+    if (
+        successor_directory.is_symlink()
+        or successor_directory.parent.is_symlink()
+        or not successor_directory.is_dir()
+    ):
+        raise ValueError("successor training state must be a regular directory")
+    resolved_source = source_root.resolve(strict=True)
+    resolved_successor = successor_directory.resolve(strict=True)
+    if resolved_successor.parent == resolved_source:
+        raise ValueError("successor training state must be outside the retired root")
+    successor = _read_state_manifest(resolved_successor)
+    if successor.candidate_id != candidate_id:
+        raise ValueError("successor training state belongs to another candidate")
+
+    states = _committed_training_states(resolved_source, candidate_id=candidate_id)
+    if not states:
+        return 0
+    for state in states:
+        if state.manifest.step > successor.step or any(
+            getattr(state.manifest, field) != getattr(successor, field)
+            for field in _RESUME_LINEAGE_FIELDS
+        ):
+            raise TrainingError("successor training state does not supersede its source")
+        if (
+            state.manifest.step == successor.step
+            and state.manifest.checksum_sha256 != successor.checksum_sha256
+        ):
+            raise TrainingError("equal-step successor training state differs from its source")
+
+    retired = 0
+    for state in states:
+        if state.directory.is_symlink() or state.directory.resolve(strict=True).parent != (
+            resolved_source
+        ):
+            raise TrainingError("superseded durable state failed containment verification")
+        if _read_state_manifest(state.directory) != state.manifest:
+            raise TrainingError("superseded durable state changed before retirement")
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise TrainingError("platform cannot safely retire a durable state")
+        parent_descriptor = os.open(resolved_source, os.O_RDONLY)
+        try:
+            shutil.rmtree(state.directory.name, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+        except OSError as error:
+            raise TrainingError("verified superseded durable state could not be retired") from error
+        finally:
+            os.close(parent_descriptor)
+        retired += 1
+    if _committed_training_states(resolved_source, candidate_id=candidate_id):
+        raise TrainingError("superseded durable-state retirement remained incomplete")
+    return retired
 
 
 def _restore_model_state(model: TransformerLM, path: Path) -> dict[str, Tensor]:
@@ -1040,6 +1324,21 @@ def train_compact_model(
     state_root = durable_state_root.resolve(strict=True)
     if resume_state_directory is not None and not isinstance(resume_state_directory, Path):
         raise TypeError("resume_state_directory must be a pathlib.Path or None")
+    committed_states = _committed_training_states(state_root, candidate_id=candidate_id)
+    if resume_state_directory is None:
+        if committed_states:
+            raise FileExistsError(
+                "durable training state already exists; resume from the newest state"
+            )
+    else:
+        if resume_state_directory.is_symlink():
+            raise ValueError("resume state must be a direct non-symlink child of the state root")
+        resolved_resume = resume_state_directory.resolve(strict=True)
+        if resolved_resume.parent != state_root:
+            raise ValueError("resume state must be a direct non-symlink child of the state root")
+        if not committed_states or committed_states[-1].directory != resolved_resume:
+            raise ValueError("resume state must be the newest surviving valid durable state")
+        resume_state_directory = resolved_resume
 
     _validate_tokenized_inventory(train_examples, name="training")
     _validate_tokenized_inventory(validation_examples, name="validation")
@@ -1083,7 +1382,7 @@ def train_compact_model(
     except BaseException:
         _TRAINING_RNG_LOCK.release()
         raise
-    durable_state_count = 0
+    durable_state_count = len(committed_states)
     try:
         if resume_state_directory is None:
             torch.manual_seed(training.seed)
@@ -1307,8 +1606,14 @@ def train_compact_model(
                     best_model_state=best_state,
                     include_mps_rng=include_mps_rng,
                 )
-                durable_state_count += 1
                 state_path, state_manifest = last_state
+                retained_states = _retain_newest_training_states(
+                    state_root=state_root,
+                    candidate_id=candidate_id,
+                    current_directory=state_path,
+                    current_manifest=state_manifest,
+                )
+                durable_state_count = len(retained_states)
                 _notify(
                     progress_callback,
                     TrainingProgress(
@@ -1368,6 +1673,15 @@ def train_compact_model(
             initial_loss=initial_nll,
             final_loss=best_nll,
         )
+        checkpoint_bytes = (
+            checkpoint.weights_size_bytes
+            + (output_directory / STATE_MANIFEST_FILENAME).stat().st_size
+        )
+        if checkpoint_bytes > selected_checkpoint_upper_bound_bytes(
+            model_config,
+            vocab_size=vocab_size,
+        ):
+            raise TrainingError("selected checkpoint exceeds its deterministic byte budget")
         reloaded, reloaded_manifest = load_checkpoint(
             output_directory,
             expected_manifest_sha256=checkpoint.checksum_sha256,
@@ -1422,7 +1736,7 @@ def train_compact_model(
             process_peak_rss_bytes=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
             mps_peak_current_allocated_bytes=peak_current,
             mps_peak_driver_allocated_bytes=peak_driver,
-            durable_state_count=max(1, durable_state_count),
+            durable_state_count=durable_state_count,
             checkpoint_manifest_sha256=checkpoint.checksum_sha256,
             checkpoint_weights_sha256=checkpoint.weights_sha256,
             checkpoint_size_bytes=checkpoint.weights_size_bytes,
@@ -1439,6 +1753,7 @@ def train_compact_model(
 
 
 __all__ = [
+    "MAX_RETAINED_DURABLE_STATES",
     "TRAINING_CONTRACT_VERSION",
     "TRAINING_STATE_VERSION",
     "CompactTrainingOutcome",
@@ -1456,7 +1771,11 @@ __all__ = [
     "TrainingStateFile",
     "TrainingStateManifest",
     "compact_validation_nll",
+    "durable_training_state_upper_bound_bytes",
+    "latest_committed_training_state",
     "resolve_training_device",
+    "retire_superseded_training_states",
+    "selected_checkpoint_upper_bound_bytes",
     "train_compact_model",
     "uniform_control_batch_indices",
 ]

@@ -18,6 +18,7 @@ from reactorbench.model import TransformerConfig, TransformerLM
 from reactorbench.remediation.config import RemediationTraining
 from reactorbench.remediation.serialization import CompactTokenizedExample
 from reactorbench.remediation.training import (
+    MAX_RETAINED_DURABLE_STATES,
     CompactTrainingResult,
     CompactTrainingStopped,
     DeviceResolution,
@@ -28,7 +29,11 @@ from reactorbench.remediation.training import (
     TrainingError,
     TrainingProgress,
     TrainingStateManifest,
+    durable_training_state_upper_bound_bytes,
+    latest_committed_training_state,
     resolve_training_device,
+    retire_superseded_training_states,
+    selected_checkpoint_upper_bound_bytes,
     train_compact_model,
     uniform_control_batch_indices,
 )
@@ -55,18 +60,21 @@ def _training(
     *,
     device: Literal["cpu", "mps"] = "cpu",
     allow_cpu_fallback: bool = False,
+    steps: int = 4,
+    evaluation_interval: int = 1,
+    durable_checkpoint_interval: int = 2,
 ) -> RemediationTraining:
     return RemediationTraining(
         seed=29,
         device=device,
         allow_cpu_fallback=allow_cpu_fallback,
-        steps=4,
+        steps=steps,
         batch_size=6,
         learning_rate=0.003,
         weight_decay=0.01,
         gradient_clip_norm=1.0,
-        evaluation_interval=1,
-        durable_checkpoint_interval=2,
+        evaluation_interval=evaluation_interval,
+        durable_checkpoint_interval=durable_checkpoint_interval,
     )
 
 
@@ -143,6 +151,7 @@ def _run(
     train_examples: tuple[CompactTokenizedExample, ...] | None = None,
     validation_examples: tuple[CompactTokenizedExample, ...] | None = None,
     monotonic_clock: MonotonicClock = time.perf_counter,
+    training: RemediationTraining | None = None,
 ) -> CompactTrainingResult | CompactTrainingStopped:
     states = base / "states"
     states.mkdir(parents=True, exist_ok=True)
@@ -151,7 +160,7 @@ def _run(
         candidate_id=candidate_id,
         sampling_strategy=sampling,
         model_config=_model_config(),
-        training=_training(),
+        training=_training() if training is None else training,
         vocab_size=vocab_size,
         tokenizer_manifest=_tokenizer_manifest(),
         train_examples=_examples() if train_examples is None else train_examples,
@@ -294,6 +303,287 @@ def test_uninterrupted_and_interrupted_resume_are_bit_exact(tmp_path: Path) -> N
         "durable_checkpoint",
         "stopped",
     ]
+
+
+def test_retention_keeps_two_newest_states_and_resume_requires_newest(tmp_path: Path) -> None:
+    training = _training(steps=6, durable_checkpoint_interval=1)
+    resumed_base = tmp_path / "retained-resume"
+    stopped = _run(
+        resumed_base,
+        training=training,
+        stop_requested=lambda step: step == 4,
+    )
+    assert isinstance(stopped, CompactTrainingStopped)
+    state_root = resumed_base / "states"
+    assert sorted(path.name for path in state_root.iterdir()) == [
+        "state-step-00000003",
+        "state-step-00000004",
+    ]
+
+    with pytest.raises(ValueError, match="newest surviving valid"):
+        _run(
+            resumed_base,
+            training=training,
+            resume=state_root / "state-step-00000003",
+        )
+
+    resumed = _run(
+        resumed_base,
+        training=training,
+        resume=state_root / "state-step-00000004",
+    )
+    assert isinstance(resumed, CompactTrainingResult)
+    assert resumed.durable_state_count == MAX_RETAINED_DURABLE_STATES
+    assert sorted(path.name for path in state_root.iterdir()) == [
+        "state-step-00000005",
+        "state-step-00000006",
+    ]
+    assert (resumed_base / "final-checkpoint/model.safetensors").is_file()
+
+    uninterrupted_base = tmp_path / "retained-full"
+    uninterrupted = _run(uninterrupted_base, training=training)
+    assert isinstance(uninterrupted, CompactTrainingResult)
+    assert uninterrupted.checkpoint_weights_sha256 == resumed.checkpoint_weights_sha256
+    assert (uninterrupted_base / "final-checkpoint/model.safetensors").read_bytes() == (
+        resumed_base / "final-checkpoint/model.safetensors"
+    ).read_bytes()
+
+
+def test_retention_preserves_interrupted_temporary_and_lock_entries(tmp_path: Path) -> None:
+    base = tmp_path / "interrupted-temporary"
+    state_root = base / "states"
+    temporary = state_root / ".state-step-99999999.tmp-interrupted"
+    temporary.mkdir(parents=True)
+    sentinel = temporary / "partial.safetensors"
+    sentinel.write_bytes(b"partial-state-must-not-be-deleted")
+    lock = state_root / ".state-step-99999999.lock"
+    lock.write_text("interrupted\n", encoding="ascii")
+
+    result = _run(
+        base,
+        training=_training(steps=4, durable_checkpoint_interval=1),
+    )
+
+    assert isinstance(result, CompactTrainingResult)
+    assert sentinel.read_bytes() == b"partial-state-must-not-be-deleted"
+    assert lock.read_text(encoding="ascii") == "interrupted\n"
+    assert sorted(
+        path.name for path in state_root.iterdir() if path.name.startswith("state-step-")
+    ) == ["state-step-00000003", "state-step-00000004"]
+    assert latest_committed_training_state(state_root, candidate_id="candidate-control") == (
+        state_root / "state-step-00000004"
+    )
+
+
+def test_verified_successor_retires_only_committed_cross_attempt_states(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    result = _run(
+        source,
+        training=_training(steps=4, durable_checkpoint_interval=1),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    source_root = source / "states"
+    temporary = source_root / ".state-step-99999999.tmp-interrupted"
+    temporary.mkdir()
+    sentinel = temporary / "partial.safetensors"
+    sentinel.write_bytes(b"preserve")
+    lock = source_root / ".state-step-99999999.lock"
+    lock.write_bytes(b"preserve\n")
+
+    successor_root = tmp_path / "successor"
+    successor_root.mkdir()
+    successor = successor_root / "state-step-00000004"
+    shutil.copytree(source_root / successor.name, successor)
+
+    assert (
+        retire_superseded_training_states(
+            source_root,
+            candidate_id="candidate-control",
+            successor_directory=successor,
+        )
+        == 2
+    )
+    assert latest_committed_training_state(source_root, candidate_id="candidate-control") is None
+    assert sentinel.read_bytes() == b"preserve"
+    assert lock.read_bytes() == b"preserve\n"
+    assert (
+        latest_committed_training_state(successor_root, candidate_id="candidate-control")
+        == successor
+    )
+
+
+def test_cross_attempt_retirement_rejects_unbound_or_older_successors(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    result = _run(
+        source,
+        training=_training(steps=4, durable_checkpoint_interval=1),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    source_root = source / "states"
+
+    older_root = tmp_path / "older"
+    older_root.mkdir()
+    older = older_root / "state-step-00000003"
+    shutil.copytree(source_root / older.name, older)
+    with pytest.raises(TrainingError, match="does not supersede"):
+        retire_superseded_training_states(
+            source_root,
+            candidate_id="candidate-control",
+            successor_directory=older,
+        )
+
+    different_root = tmp_path / "different"
+    different = different_root / "states"
+    different.mkdir(parents=True)
+    different_result = _run(
+        different_root,
+        candidate_id="other",
+        training=_training(steps=4, durable_checkpoint_interval=1),
+    )
+    assert isinstance(different_result, CompactTrainingResult)
+    with pytest.raises(ValueError, match="another candidate"):
+        retire_superseded_training_states(
+            source_root,
+            candidate_id="candidate-control",
+            successor_directory=different / "state-step-00000004",
+        )
+    assert (
+        latest_committed_training_state(source_root, candidate_id="candidate-control") is not None
+    )
+
+
+def test_cross_attempt_retirement_requires_symlink_safe_directory_deletion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    result = _run(
+        source,
+        training=_training(steps=2, durable_checkpoint_interval=1),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    source_root = source / "states"
+    successor_root = tmp_path / "successor"
+    successor_root.mkdir()
+    successor = successor_root / "state-step-00000002"
+    shutil.copytree(source_root / successor.name, successor)
+    monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+
+    with pytest.raises(TrainingError, match="platform cannot safely retire"):
+        retire_superseded_training_states(
+            source_root,
+            candidate_id="candidate-control",
+            successor_directory=successor,
+        )
+
+    assert (
+        latest_committed_training_state(
+            source_root,
+            candidate_id="candidate-control",
+        )
+        is not None
+    )
+    assert (
+        latest_committed_training_state(
+            successor_root,
+            candidate_id="candidate-control",
+        )
+        == successor
+    )
+
+
+def test_state_root_refuses_symlink_and_out_of_root_resume(tmp_path: Path) -> None:
+    symlink_base = tmp_path / "symlink-root-entry"
+    symlink_states = symlink_base / "states"
+    symlink_states.mkdir(parents=True)
+    outside = tmp_path / "outside-directory"
+    outside.mkdir()
+    (symlink_states / "state-step-00000001").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+    with pytest.raises(ValueError, match="symlink"):
+        _run(symlink_base)
+
+    source = tmp_path / "outside-resume-source"
+    stopped = _run(source, stop_requested=lambda step: step == 2)
+    assert isinstance(stopped, CompactTrainingStopped)
+    source_state = source / "states" / stopped.durable_state_name
+    with pytest.raises(ValueError, match="direct non-symlink child"):
+        _run(tmp_path / "outside-resume-target", resume=source_state)
+
+
+def test_frozen_training_artifact_budget_is_deterministically_below_eight_gib() -> None:
+    main = TransformerConfig(
+        model_version="0.3.0",
+        layers=8,
+        width=384,
+        heads=8,
+        context_length=512,
+        feed_forward_multiplier=4,
+        dropout=0.1,
+        tie_embeddings=True,
+        bias=True,
+    )
+    longer = TransformerConfig(
+        model_version="0.4.0",
+        layers=8,
+        width=384,
+        heads=8,
+        context_length=1024,
+        feed_forward_multiplier=4,
+        dropout=0.1,
+        tie_embeddings=True,
+        bias=True,
+    )
+    smoke = TransformerConfig(
+        model_version="0.3.0",
+        layers=2,
+        width=64,
+        heads=4,
+        context_length=512,
+        feed_forward_multiplier=2,
+        dropout=0.0,
+        tie_embeddings=True,
+        bias=True,
+    )
+    vocab_size = 2048
+    large_state_bound = max(
+        durable_training_state_upper_bound_bytes(main, vocab_size=vocab_size),
+        durable_training_state_upper_bound_bytes(longer, vocab_size=vocab_size),
+    )
+    large_checkpoint_bound = max(
+        selected_checkpoint_upper_bound_bytes(main, vocab_size=vocab_size),
+        selected_checkpoint_upper_bound_bytes(longer, vocab_size=vocab_size),
+    )
+    smoke_state_bound = durable_training_state_upper_bound_bytes(
+        smoke,
+        vocab_size=vocab_size,
+    )
+    smoke_checkpoint_bound = selected_checkpoint_upper_bound_bytes(
+        smoke,
+        vocab_size=vocab_size,
+    )
+    large_candidate_count = 7
+    smoke_candidate_count = 2
+    uninterrupted_training_artifact_bound = large_candidate_count * (
+        MAX_RETAINED_DURABLE_STATES * large_state_bound + large_checkpoint_bound
+    ) + smoke_candidate_count * (
+        MAX_RETAINED_DURABLE_STATES * smoke_state_bound + smoke_checkpoint_bound
+    )
+    one_large_candidate_resume_bound = (
+        uninterrupted_training_artifact_bound + MAX_RETAINED_DURABLE_STATES * large_state_bound
+    )
+
+    assert large_state_bound == 258_601_760
+    assert uninterrupted_training_artifact_bound == 4_138_885_952
+    assert one_large_candidate_resume_bound == 4_656_089_472
+    assert uninterrupted_training_artifact_bound < 4 * 1024**3
+    assert one_large_candidate_resume_bound < 8 * 1024**3
 
 
 def test_checksum_bound_result_rejects_tampering(tmp_path: Path) -> None:

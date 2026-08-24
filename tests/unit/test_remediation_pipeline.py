@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Literal, cast
@@ -13,11 +18,17 @@ import pytest
 import torch
 from pydantic import BaseModel, ValidationError
 
+import reactorbench.remediation.data as remediation_data
 import reactorbench.remediation.pipeline as pipeline
-from reactorbench.evaluation.compact import compact_output_contract
+from reactorbench.dataset.catalog import AliasFamily, TemplateFamily
+from reactorbench.evaluation.compact import CompactTargetContext, compact_output_contract
 from reactorbench.model import TransformerConfig, TransformerLM
 from reactorbench.model.checkpoint import CheckpointManifest
-from reactorbench.remediation.acceptance import DevelopmentArtifactBinding
+from reactorbench.remediation.acceptance import (
+    DevelopmentArtifactBinding,
+    DevelopmentView,
+    V03AcceptanceResult,
+)
 from reactorbench.remediation.config import (
     PIPELINE_STAGES,
     SHADOW_VIEWS,
@@ -26,10 +37,19 @@ from reactorbench.remediation.config import (
     RemediationView,
     config_sha256,
 )
-from reactorbench.remediation.data import RemediationExample, SafeDevelopmentDataset
-from reactorbench.remediation.decoding import MAX_DECODE_BATCH_SIZE, DualPathCompactPrediction
-from reactorbench.remediation.inventory import CompactInventoryReport
+from reactorbench.remediation.data import (
+    FrozenV03IIDMaterial,
+    RemediationExample,
+    SafeDevelopmentDataset,
+    TaskScopedStructuredFingerprint,
+)
+from reactorbench.remediation.decoding import DualPathCompactPrediction
+from reactorbench.remediation.inventory import (
+    CompactInventoryReport,
+    CounterfactualCapExtensionReport,
+)
 from reactorbench.remediation.metrics import (
+    SemanticEvaluationReport,
     canonical_prediction_jsonl_bytes,
     prediction_artifact_byte_sha256,
 )
@@ -44,11 +64,24 @@ from reactorbench.remediation.orchestration import (
     StageOutcome,
     StageStatus,
 )
-from reactorbench.remediation.progress import ProgressMetric
+from reactorbench.remediation.progress import (
+    ProgressEventKind,
+    ProgressMetric,
+    ProgressSnapshot,
+    ProgressState,
+)
+from reactorbench.remediation.selection import SemanticSelectionManifest
 from reactorbench.remediation.serialization import CompactTokenizedExample
-from reactorbench.remediation.training import CompactTrainingResult, TrainingProgress
+from reactorbench.remediation.training import (
+    CompactTrainingResult,
+    DeviceResolution,
+    TrainingProgress,
+    durable_training_state_upper_bound_bytes,
+    selected_checkpoint_upper_bound_bytes,
+)
 from reactorbench.schemas.base import canonical_json_bytes, canonical_sha256
-from reactorbench.schemas.enums import TaskName
+from reactorbench.schemas.enums import ActionLabel, SplitName, TaskName
+from reactorbench.schemas.target import NextActionTarget
 from reactorbench.tokenizer import ProjectTokenizer
 
 SOURCE_COMMIT = "abcdef0"
@@ -442,32 +475,155 @@ def test_v04_candidate_ranking_uses_frozen_gate_worst_iid_and_context_order() ->
     assert pipeline._select_v04_candidate((control, variant)) is control
 
 
-def _pilot_report(batch_sizes: tuple[int, ...]) -> pipeline.V04PilotReport:
+def test_semantic_report_composite_reconstructs_supported_frozen_formula() -> None:
+    def metric(estimate: float, *, support: int = 1) -> SimpleNamespace:
+        return SimpleNamespace(estimate=estimate, support=support)
+
+    metrics = SimpleNamespace(
+        constrained_schema_validity_rate=metric(1.0),
+        fault_family_macro_f1=metric(0.75),
+        next_action_macro_f1=metric(0.75),
+        continuation_macro_f1=metric(0.0, support=0),
+        evidence_f1=metric(0.75),
+        required_abstention_accuracy=metric(0.0, support=0),
+        no_fault_false_positive_rate=metric(0.25),
+        expected_calibration_error=metric(0.25),
+        selective_risk_at_80_percent_coverage=metric(0.25),
+    )
+    report = SemanticEvaluationReport.model_construct(
+        constrained=SimpleNamespace(schema_validity_rate=1.0, exact_match_rate=0.75),
+        view_metrics=SimpleNamespace(metrics=metrics),
+    )
+    assert pipeline._semantic_report_composite(report) == 0.75
+
+    mismatched = report.model_copy(
+        update={"constrained": SimpleNamespace(schema_validity_rate=0.5, exact_match_rate=0.75)}
+    )
+    with pytest.raises(ValueError, match="schema-validity fields disagree"):
+        pipeline._semantic_report_composite(mismatched)
+
+    metrics.constrained_schema_validity_rate = metric(0.5)
+    assert pipeline._semantic_report_composite(mismatched) == 0.0
+
+
+def test_semantic_report_scope_rejects_self_bound_subset_and_manifest_rebinding() -> None:
+    artifacts = SimpleNamespace(
+        source_commit=SOURCE_COMMIT,
+        config_sha256=HASH_A,
+        dataset_manifest_sha256=HASH_B,
+        tokenizer_manifest_sha256=HASH_C,
+        output_contract_sha256=HASH_D,
+        checkpoint_sha256=HASH_E,
+        prediction_artifact_sha256=HASH_A,
+        comparator_artifact_sha256=HASH_B,
+    )
+    report = SemanticEvaluationReport.model_construct(
+        evaluation_view=RemediationView.SHADOW_RENDERER,
+        example_count=12,
+        predictions_sha256=HASH_A,
+        baseline_report_sha256=HASH_B,
+        view_metrics=SimpleNamespace(
+            view=DevelopmentView.RENDERER_SHADOW,
+            sample_count=12,
+            artifacts=artifacts,
+        ),
+    )
+
+    def require_scope(candidate: SemanticEvaluationReport) -> None:
+        pipeline._require_semantic_report_scope(
+            candidate,
+            view=RemediationView.SHADOW_RENDERER,
+            example_count=12,
+            dataset_manifest_sha256=HASH_B,
+            source_commit=SOURCE_COMMIT,
+            config_sha256_value=HASH_A,
+            tokenizer_manifest_sha256=HASH_C,
+            output_contract_sha256=HASH_D,
+            checkpoint_manifest_sha256=HASH_E,
+        )
+
+    require_scope(report)
+
+    subset = report.model_copy(update={"example_count": 11})
+    with pytest.raises(pipeline.PipelineExecutionError, match="exact frozen development scope"):
+        require_scope(subset)
+
+    rebound_artifacts = SimpleNamespace(**vars(artifacts))
+    rebound_artifacts.dataset_manifest_sha256 = HASH_C
+    rebound = report.model_copy(
+        update={
+            "view_metrics": SimpleNamespace(
+                view=DevelopmentView.RENDERER_SHADOW,
+                sample_count=12,
+                artifacts=rebound_artifacts,
+            )
+        }
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="exact frozen development scope"):
+        require_scope(rebound)
+
+
+def _pilot_report(
+    batch_sizes: tuple[int, ...],
+    *,
+    resolved_device: Literal["cpu", "mps"] = "mps",
+    resolved_devices: tuple[Literal["cpu", "mps"], ...] | None = None,
+) -> pipeline.V04PilotReport:
+    devices = (
+        (resolved_device,) * len(batch_sizes) if resolved_devices is None else resolved_devices
+    )
+    if len(devices) != len(batch_sizes):
+        raise ValueError("pilot test device inventory must cover every batch")
     measurements = tuple(
         pipeline.V04PilotMeasurement(
             batch_size=batch_size,
             training_result_sha256=HASH_A,
+            training_config_sha256=HASH_B,
+            model_config_sha256=HASH_C,
+            train_tokenized_sha256=HASH_D,
+            validation_tokenized_sha256=HASH_E,
+            tokenizer_manifest_sha256=HASH_A,
+            checkpoint_manifest_sha256=HASH_B,
+            device=DeviceResolution(
+                requested="mps",
+                resolved=observed_device,
+                fallback_used=observed_device == "cpu",
+            ),
+            train_example_count=100,
+            validation_example_count=40,
+            pilot_train_example_count=3,
+            pilot_validation_example_count=3,
+            train_length_inventory_sha256=HASH_B,
+            validation_length_inventory_sha256=HASH_C,
+            maximum_train_sequence_tokens=1024,
+            maximum_validation_sequence_tokens=900,
+            mean_train_sequence_tokens=700.0,
+            mean_validation_sequence_tokens=650.0,
+            maximum_train_sequence_exercised=True,
             finite_loss=True,
             checkpoint_reloaded=True,
             elapsed_seconds=1.0,
             process_peak_rss_bytes=1,
         )
-        for batch_size in batch_sizes
+        for batch_size, observed_device in zip(batch_sizes, devices, strict=True)
     )
     draft = pipeline.V04PilotReport.model_construct(
         candidate_id="v04-context-1024",
+        requested_device="mps",
+        required_resolved_device="mps",
+        mandatory_batch_resolved_device=devices[-1] if devices else None,
         prompt_truncation_rate=668 / 882,
         v03_train_prompt_truncation_rate=0.5,
         material_truncation_threshold=0.1,
         activated=True,
         measurements=measurements,
-        passed=True,
+        passed=all(device == "mps" for device in devices),
         checksum_sha256="0" * 64,
     )
     return pipeline._bound_model(draft, pipeline.V04PilotReport)
 
 
-def test_v04_candidate_training_requires_the_main_batch_to_pass_the_pilot(
+def test_v04_candidate_training_refuses_incomplete_and_cpu_fallback_pilots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -484,27 +640,663 @@ def test_v04_candidate_training_requires_the_main_batch_to_pass_the_pilot(
         source_commit=SOURCE_COMMIT,
         inputs=inputs,
     )
-    monkeypatch.setattr(runtime, "_start", lambda _context: None)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
     monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
     complete_pilot = _pilot_report((1, 2, 4))
+    cpu_fallback_pilot = _pilot_report((1, 2, 4), resolved_device="cpu")
+    mixed_device_pilot = _pilot_report(
+        (1, 2, 4),
+        resolved_devices=("cpu", "mps", "mps"),
+    )
     incomplete_pilot = pipeline.V04PilotReport.model_construct(
         **complete_pilot.model_dump(mode="python", exclude={"measurements"}),
         measurements=complete_pilot.measurements[:2],
     )
 
+    selected_pilot = [incomplete_pilot]
+
     def read(_path: Path, model_type: type[object], **_kwargs: object) -> object:
         if model_type is pipeline.V04PilotReport:
-            return incomplete_pilot
+            return selected_pilot[0]
         return SimpleNamespace(selected_candidate_id="control")
 
     monkeypatch.setattr(pipeline, "_read_contract", read)
+    monkeypatch.setattr(
+        pipeline,
+        "_verify_v04_pilot_training_evidence",
+        lambda *_args, **_kwargs: None,
+    )
 
     with pytest.raises(pipeline.PipelineExecutionError, match="lacks a passing MPS pilot"):
-        runtime.v04_candidate_training(cast(StageContext, SimpleNamespace()))
+        runtime.v04_candidate_training(
+            cast(StageContext, SimpleNamespace(source_commit=SOURCE_COMMIT))
+        )
+
+    selected_pilot[0] = cpu_fallback_pilot
+    with pytest.raises(pipeline.PipelineExecutionError, match="lacks a passing MPS pilot"):
+        runtime.v04_candidate_training(
+            cast(StageContext, SimpleNamespace(source_commit=SOURCE_COMMIT))
+        )
+
+    selected_pilot[0] = mixed_device_pilot
+    with pytest.raises(pipeline.PipelineExecutionError, match="lacks a passing MPS pilot"):
+        runtime.v04_candidate_training(
+            cast(StageContext, SimpleNamespace(source_commit=SOURCE_COMMIT))
+        )
 
     assert {item.batch_size for item in complete_pilot.measurements} == {1, 2, 4}
+    assert complete_pilot.passed is True
+    assert complete_pilot.measurements[-1].device.resolved == "mps"
+    assert cpu_fallback_pilot.passed is False
+    assert cpu_fallback_pilot.mandatory_batch_resolved_device == "cpu"
+    assert cpu_fallback_pilot.measurements[-1].device.fallback_used is True
+    assert mixed_device_pilot.mandatory_batch_resolved_device == "mps"
+    assert mixed_device_pilot.measurements[0].device.resolved == "cpu"
+    assert mixed_device_pilot.measurements[-1].device.resolved == "mps"
+    assert mixed_device_pilot.passed is False
     with pytest.raises(ValidationError, match="batches 1, 2, and 4"):
         _pilot_report((1, 2))
+
+    legacy_measurement = complete_pilot.measurements[0].model_dump(mode="python")
+    legacy_measurement.pop("device")
+    with pytest.raises(ValidationError, match="device"):
+        pipeline.V04PilotMeasurement.model_validate(legacy_measurement, strict=True)
+    legacy_report = complete_pilot.model_dump(mode="python")
+    legacy_report.pop("requested_device")
+    legacy_report.pop("required_resolved_device")
+    legacy_report.pop("mandatory_batch_resolved_device")
+    with pytest.raises(
+        ValidationError,
+        match=r"requested_device|required_resolved_device|mandatory_batch_resolved_device",
+    ):
+        pipeline.V04PilotReport.model_validate(legacy_report, strict=True)
+
+
+def test_verified_v04_candidate_inventory_binds_control_and_optional_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_config = TransformerConfig(
+        model_version="0.3.0",
+        layers=2,
+        width=32,
+        heads=4,
+        context_length=512,
+        feed_forward_multiplier=2,
+        dropout=0.0,
+        tie_embeddings=True,
+        bias=True,
+    )
+    variant_config = control_config.model_copy(
+        update={"model_version": "0.4.0", "context_length": 1024}
+    )
+    runtime = pipeline._PipelineRuntime(
+        project_root=tmp_path,
+        config=_config("candidate-inventory"),
+        source_commit=SOURCE_COMMIT,
+        inputs=cast(
+            pipeline._ExecutionInputs,
+            SimpleNamespace(
+                tokenizer=object(),
+                v02=SimpleNamespace(model=control_config),
+                v04=SimpleNamespace(longer_context_model=variant_config),
+            ),
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
+    selection = SimpleNamespace(
+        selected_candidate_id="control",
+        selected_checkpoint_manifest_sha256=HASH_A,
+    )
+    monkeypatch.setattr(pipeline, "_read_contract", lambda *_args, **_kwargs: selection)
+    control_result = SimpleNamespace(
+        candidate_id="control",
+        checkpoint_manifest_sha256=HASH_A,
+        checksum_sha256=HASH_C,
+    )
+    monkeypatch.setattr(pipeline, "_load_training_result", lambda *_args: control_result)
+    control_model = SimpleNamespace(config=control_config)
+    control_checkpoint = SimpleNamespace(checksum_sha256=HASH_A)
+    monkeypatch.setattr(
+        pipeline,
+        "_load_candidate_checkpoint",
+        lambda *_args: (control_model, control_checkpoint, torch.device("cpu")),
+    )
+    variant_report = SimpleNamespace(
+        activated=True,
+        candidate_id="variant",
+        checkpoint_manifest_sha256=HASH_B,
+    )
+    variant_result = SimpleNamespace(candidate_id="variant")
+    variant_model = SimpleNamespace(config=variant_config)
+    variant_checkpoint = SimpleNamespace(checksum_sha256=HASH_B)
+    monkeypatch.setattr(
+        runtime,
+        "_v04_checkpoint",
+        lambda _context: (
+            variant_report,
+            variant_result,
+            variant_model,
+            variant_checkpoint,
+            torch.device("cpu"),
+        ),
+    )
+    verified_variants: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        runtime,
+        "_require_v04_variant_training_provenance",
+        lambda _context, *evidence: verified_variants.append(evidence),
+    )
+
+    assert runtime._verified_v04_candidate_inventory(cast(StageContext, SimpleNamespace())) == (
+        ("control", 512, HASH_A),
+        ("variant", 1024, HASH_B),
+    )
+    assert verified_variants == [
+        (variant_report, variant_result, variant_checkpoint),
+    ]
+
+    variant_model.config = control_config
+    with pytest.raises(pipeline.PipelineExecutionError, match="variant identity"):
+        runtime._verified_v04_candidate_inventory(cast(StageContext, SimpleNamespace()))
+
+
+def test_v04_variant_training_provenance_rebuilds_exact_1024_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = TransformerConfig(
+        model_version="0.4.0",
+        layers=2,
+        width=32,
+        heads=4,
+        context_length=1024,
+        feed_forward_multiplier=2,
+        dropout=0.0,
+        tie_embeddings=True,
+        bias=True,
+    )
+    training = RemediationTraining(
+        seed=17,
+        device="mps",
+        allow_cpu_fallback=True,
+        steps=20,
+        batch_size=4,
+        learning_rate=0.001,
+        weight_decay=0.0,
+        gradient_clip_norm=1.0,
+        evaluation_interval=10,
+        durable_checkpoint_interval=10,
+    )
+    train_examples = (
+        SimpleNamespace(
+            example_id="train",
+            checksum_sha256=HASH_A,
+            view=RemediationView.IID_TRAIN,
+        ),
+    )
+    validation_examples = tuple(
+        SimpleNamespace(
+            example_id=f"validation-{index:02d}",
+            checksum_sha256=hashlib.sha256(f"validation-{index}".encode()).hexdigest(),
+            view=RemediationView.IID_VALIDATION,
+        )
+        for index in range(48)
+    )
+    iid = SimpleNamespace(examples=(*train_examples, *validation_examples))
+    encoded = {
+        item.example_id: CompactTokenizedExample(
+            example_id=item.example_id,
+            task_name=TaskName.FAULT_FAMILY,
+            group_id=f"group-{item.example_id}",
+            token_ids=(1, 2),
+            target_mask=(False, True),
+            prompt_token_count=1,
+            target_token_count=1,
+            prompt_tokens_retained=1,
+            prompt_truncated=False,
+        )
+        for item in (*train_examples, *validation_examples)
+    }
+    tokenizer = SimpleNamespace(
+        manifest=SimpleNamespace(checksum_sha256=HASH_C),
+    )
+    inputs = cast(
+        pipeline._ExecutionInputs,
+        SimpleNamespace(
+            v03_dataset_config=object(),
+            frozen_data_source_commit=SOURCE_COMMIT,
+            v03=SimpleNamespace(
+                augmentation=SimpleNamespace(
+                    train_template_families=("template",),
+                    train_alias_families=("alias",),
+                    renderer_variants_per_projection=3,
+                    include_insufficient_evidence_views=True,
+                ),
+                semantic_selection_example_limit=48,
+            ),
+            v04=SimpleNamespace(
+                pilot=SimpleNamespace(candidate_id="v04-context-1024"),
+                longer_context_model=model,
+                training=training,
+            ),
+            tokenizer=tokenizer,
+            generation_caps={},
+        ),
+    )
+    runtime = pipeline._PipelineRuntime(
+        project_root=tmp_path,
+        config=_config("v04-variant-provenance"),
+        source_commit=SOURCE_COMMIT,
+        inputs=inputs,
+    )
+    monkeypatch.setattr(pipeline, "_load_stage_dataset", lambda *_args: iid)
+    monkeypatch.setattr(
+        pipeline,
+        "build_frozen_v03_iid_material",
+        lambda *_args, **_kwargs: SimpleNamespace(dataset=iid),
+    )
+    monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
+    monkeypatch.setattr(
+        pipeline,
+        "_read_contract",
+        lambda *_args, **_kwargs: SimpleNamespace(checksum_sha256=HASH_D),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_semantic_selection_examples",
+        lambda *_args: validation_examples,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_tokenize_examples",
+        lambda examples, *_args, **_kwargs: tuple(encoded[item.example_id] for item in examples),
+    )
+    train_tokenized = tuple(encoded[item.example_id] for item in train_examples)
+    validation_tokenized = tuple(encoded[item.example_id] for item in validation_examples)
+    result = SimpleNamespace(
+        candidate_id="v04-context-1024",
+        checksum_sha256=HASH_E,
+        sampling_strategy="task_balanced",
+        source_commit=SOURCE_COMMIT,
+        training_steps=training.steps,
+        training_config_sha256=canonical_sha256(training.model_dump(mode="json", round_trip=True)),
+        model_config_sha256=canonical_sha256(model.model_dump(mode="json", round_trip=True)),
+        tokenizer_manifest_sha256=HASH_C,
+        train_example_count=1,
+        validation_example_count=48,
+        train_inventory_sha256=canonical_sha256((("train", HASH_A),)),
+        validation_inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in validation_examples)
+        ),
+        train_tokenized_sha256=pipeline._tokenized_inventory_sha256(train_tokenized),
+        validation_tokenized_sha256=pipeline._tokenized_inventory_sha256(validation_tokenized),
+        checkpoint_manifest_sha256=HASH_B,
+        checkpoint_weights_sha256=HASH_D,
+        checkpoint_size_bytes=4096,
+        selected_step=10,
+        initial_validation_nll=1.25,
+        selected_validation_nll=0.5,
+        parameter_count=321,
+        vocab_size=64,
+    )
+    checkpoint = SimpleNamespace(
+        checksum_sha256=HASH_B,
+        transformer_config=model,
+        vocab_size=64,
+        parameter_count=321,
+        tokenizer_manifest_sha256=HASH_C,
+        source_commit=SOURCE_COMMIT,
+        seed=training.seed,
+        training_steps=10,
+        initial_loss=1.25,
+        final_loss=0.5,
+        weights_sha256=HASH_D,
+        weights_size_bytes=4096,
+    )
+    report = SimpleNamespace(
+        activated=True,
+        reused_v03_candidate=False,
+        source_stage="v04_candidate_training",
+        candidate_id="v04-context-1024",
+        training_result_sha256=HASH_E,
+    )
+    context = cast(StageContext, SimpleNamespace(source_commit=SOURCE_COMMIT))
+
+    runtime._require_v04_variant_training_provenance(
+        context,
+        cast(pipeline.V04CandidateTrainingReport, report),
+        cast(CompactTrainingResult, result),
+        cast(CheckpointManifest, checkpoint),
+    )
+
+    original_validation_inventory = result.validation_inventory_sha256
+    result.validation_inventory_sha256 = HASH_A
+    with pytest.raises(pipeline.PipelineExecutionError, match="exact frozen inputs"):
+        runtime._require_v04_variant_training_provenance(
+            context,
+            cast(pipeline.V04CandidateTrainingReport, report),
+            cast(CompactTrainingResult, result),
+            cast(CheckpointManifest, checkpoint),
+        )
+    result.validation_inventory_sha256 = original_validation_inventory
+    result.training_config_sha256 = HASH_A
+    with pytest.raises(pipeline.PipelineExecutionError, match="exact frozen inputs"):
+        runtime._require_v04_variant_training_provenance(
+            context,
+            cast(pipeline.V04CandidateTrainingReport, report),
+            cast(CompactTrainingResult, result),
+            cast(CheckpointManifest, checkpoint),
+        )
+
+
+def test_v04_candidate_consumer_reopens_and_binds_each_pilot_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = TransformerConfig(
+        model_version="0.4.0",
+        layers=2,
+        width=32,
+        heads=4,
+        context_length=1024,
+        feed_forward_multiplier=2,
+        dropout=0.0,
+        tie_embeddings=True,
+        bias=True,
+    )
+    training = RemediationTraining(
+        seed=7,
+        device="mps",
+        allow_cpu_fallback=True,
+        steps=20,
+        batch_size=4,
+        learning_rate=0.001,
+        weight_decay=0.0,
+        gradient_clip_norm=1.0,
+        evaluation_interval=5,
+        durable_checkpoint_interval=5,
+    )
+    inputs = cast(
+        pipeline._ExecutionInputs,
+        SimpleNamespace(
+            v03=SimpleNamespace(
+                augmentation=SimpleNamespace(
+                    train_template_families=("t",),
+                    train_alias_families=("a",),
+                    renderer_variants_per_projection=1,
+                    include_insufficient_evidence_views=True,
+                )
+            ),
+            v03_dataset_config=object(),
+            frozen_data_source_commit=SOURCE_COMMIT,
+            generation_caps={},
+            v02=SimpleNamespace(model=model.model_copy(update={"context_length": 512})),
+            v04=SimpleNamespace(
+                training=training,
+                pilot=SimpleNamespace(
+                    candidate_id="v04-context-1024",
+                    steps=10,
+                    batch_sizes=(1, 2, 4),
+                ),
+                longer_context_model=model,
+                variants=SimpleNamespace(material_prompt_truncation_rate=0.1),
+            ),
+            tokenizer=SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_A)),
+        ),
+    )
+    raw_train: list[RemediationExample] = []
+    raw_validation: list[RemediationExample] = []
+    encoded: dict[str, CompactTokenizedExample] = {}
+    short_train: list[CompactTokenizedExample] = []
+    for task_index, task_name in enumerate(TaskName):
+        for view, destination, base_length in (
+            (RemediationView.IID_TRAIN, raw_train, 100),
+            (RemediationView.IID_VALIDATION, raw_validation, 80),
+        ):
+            for variant, offset in (("short", 0), ("long", 40)):
+                example_id = f"{view.value}-{task_name.value}-{variant}"
+                group_id = f"group-{example_id}"
+                destination.append(
+                    cast(
+                        RemediationExample,
+                        SimpleNamespace(
+                            example_id=example_id,
+                            task_name=task_name,
+                            group_id=group_id,
+                            view=view,
+                            checksum_sha256=hashlib.sha256(example_id.encode()).hexdigest(),
+                        ),
+                    )
+                )
+                length = base_length + task_index + offset
+                tokenized = CompactTokenizedExample(
+                    example_id=example_id,
+                    task_name=task_name,
+                    group_id=group_id,
+                    token_ids=tuple(range(length)),
+                    target_mask=tuple(False for _ in range(length)),
+                    prompt_token_count=length - 1,
+                    target_token_count=1,
+                    prompt_tokens_retained=length - 1,
+                    prompt_truncated=variant == "long",
+                )
+                encoded[example_id] = tokenized
+                if view is RemediationView.IID_TRAIN and variant == "short":
+                    short_train.append(tokenized)
+    all_raw = (*raw_train, *raw_validation)
+    monkeypatch.setattr(
+        pipeline,
+        "build_frozen_v03_iid_material",
+        lambda *_args, **_kwargs: SimpleNamespace(dataset=SimpleNamespace(examples=all_raw)),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_tokenize_examples",
+        lambda examples, *_args, **_kwargs: tuple(encoded[item.example_id] for item in examples),
+    )
+    longer_train = tuple(encoded[item.example_id] for item in raw_train)
+    longer_validation = tuple(encoded[item.example_id] for item in raw_validation)
+    pilot_train, pilot_train_tokenized = pipeline._longest_pilot_examples_per_task(
+        tuple(raw_train),
+        longer_train,
+    )
+    pilot_validation, pilot_validation_tokenized = pipeline._longest_pilot_examples_per_task(
+        tuple(raw_validation),
+        longer_validation,
+    )
+    train_tokenized_sha256 = pipeline._tokenized_inventory_sha256(pilot_train_tokenized)
+    validation_tokenized_sha256 = pipeline._tokenized_inventory_sha256(pilot_validation_tokenized)
+    model_sha256 = canonical_sha256(model.model_dump(mode="json", round_trip=True))
+    original = _pilot_report((1, 2, 4))
+    measurements: list[pipeline.V04PilotMeasurement] = []
+    reopened: dict[str, SimpleNamespace] = {}
+    checkpoints: dict[str, SimpleNamespace] = {}
+    for measurement in original.measurements:
+        pilot_training = pipeline._v04_pilot_training_config(
+            inputs,
+            batch_size=measurement.batch_size,
+        )
+        training_sha256 = canonical_sha256(pilot_training.model_dump(mode="json", round_trip=True))
+        bound_measurement = measurement.model_copy(
+            update={
+                "training_config_sha256": training_sha256,
+                "model_config_sha256": model_sha256,
+                "tokenizer_manifest_sha256": HASH_A,
+                "train_tokenized_sha256": train_tokenized_sha256,
+                "validation_tokenized_sha256": validation_tokenized_sha256,
+                "train_example_count": len(raw_train),
+                "validation_example_count": len(raw_validation),
+                "pilot_train_example_count": len(pilot_train),
+                "pilot_validation_example_count": len(pilot_validation),
+                "train_length_inventory_sha256": pipeline._sequence_length_inventory_sha256(
+                    longer_train
+                ),
+                "validation_length_inventory_sha256": (
+                    pipeline._sequence_length_inventory_sha256(longer_validation)
+                ),
+                "maximum_train_sequence_tokens": max(len(item.token_ids) for item in longer_train),
+                "maximum_validation_sequence_tokens": max(
+                    len(item.token_ids) for item in longer_validation
+                ),
+                "mean_train_sequence_tokens": sum(len(item.token_ids) for item in longer_train)
+                / len(longer_train),
+                "mean_validation_sequence_tokens": sum(
+                    len(item.token_ids) for item in longer_validation
+                )
+                / len(longer_validation),
+                "elapsed_seconds": 1.25,
+                "process_peak_rss_bytes": 2048,
+            }
+        )
+        measurements.append(bound_measurement)
+        candidate_id = f"{original.candidate_id}-b{measurement.batch_size}"
+        reopened[candidate_id] = SimpleNamespace(
+            candidate_id=candidate_id,
+            sampling_strategy="task_balanced",
+            training_steps=10,
+            source_commit=SOURCE_COMMIT,
+            checksum_sha256=bound_measurement.training_result_sha256,
+            training_config_sha256=training_sha256,
+            model_config_sha256=model_sha256,
+            train_tokenized_sha256=bound_measurement.train_tokenized_sha256,
+            validation_tokenized_sha256=bound_measurement.validation_tokenized_sha256,
+            tokenizer_manifest_sha256=HASH_A,
+            checkpoint_manifest_sha256=bound_measurement.checkpoint_manifest_sha256,
+            checkpoint_weights_sha256=HASH_C,
+            checkpoint_size_bytes=4096,
+            device=bound_measurement.device,
+            train_example_count=bound_measurement.pilot_train_example_count,
+            validation_example_count=bound_measurement.pilot_validation_example_count,
+            train_inventory_sha256=canonical_sha256(
+                tuple((item.example_id, item.checksum_sha256) for item in pilot_train)
+            ),
+            validation_inventory_sha256=canonical_sha256(
+                tuple((item.example_id, item.checksum_sha256) for item in pilot_validation)
+            ),
+            selected_step=10,
+            elapsed_seconds=1.25,
+            process_peak_rss_bytes=2048,
+        )
+        checkpoints[candidate_id] = SimpleNamespace(
+            checksum_sha256=bound_measurement.checkpoint_manifest_sha256,
+            transformer_config=model,
+            tokenizer_manifest_sha256=HASH_A,
+            source_commit=SOURCE_COMMIT,
+            training_steps=10,
+            weights_sha256=HASH_C,
+            weights_size_bytes=4096,
+        )
+    draft = pipeline.V04PilotReport.model_construct(
+        **original.model_dump(
+            mode="python",
+            exclude={"measurements", "checksum_sha256"},
+        ),
+        measurements=tuple(measurements),
+        checksum_sha256="0" * 64,
+    )
+    pilot = pipeline._bound_model(draft, pipeline.V04PilotReport)
+    loaded_candidates: list[str] = []
+
+    def load_result(_attempt: Path, candidate_id: str) -> object:
+        loaded_candidates.append(candidate_id)
+        return reopened[candidate_id]
+
+    monkeypatch.setattr(pipeline, "_load_training_result", load_result)
+    monkeypatch.setattr(
+        pipeline,
+        "_read_contract",
+        lambda path, model_type, **_kwargs: (
+            checkpoints[path.parent.name.removeprefix("checkpoint-")]
+            if model_type is CheckpointManifest
+            else pytest.fail(f"unexpected contract type: {model_type}")
+        ),
+    )
+    pipeline._verify_v04_pilot_training_evidence(
+        tmp_path,
+        pilot,
+        inputs,
+        source_commit=SOURCE_COMMIT,
+    )
+    assert loaded_candidates == [
+        "v04-context-1024-b1",
+        "v04-context-1024-b2",
+        "v04-context-1024-b4",
+    ]
+
+    original_encoded = dict(encoded)
+    encoded.update(
+        {example_id: replace(item, prompt_truncated=False) for example_id, item in encoded.items()}
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="activation differs"):
+        pipeline._verify_v04_pilot_training_evidence(
+            tmp_path,
+            pilot,
+            inputs,
+            source_commit=SOURCE_COMMIT,
+        )
+    encoded.clear()
+    encoded.update(original_encoded)
+
+    inactive_draft = pipeline.V04PilotReport.model_construct(
+        **pilot.model_dump(
+            mode="python",
+            exclude={
+                "activated",
+                "mandatory_batch_resolved_device",
+                "measurements",
+                "passed",
+                "v03_train_prompt_truncation_rate",
+                "checksum_sha256",
+            },
+        ),
+        v03_train_prompt_truncation_rate=0.0,
+        activated=False,
+        mandatory_batch_resolved_device=None,
+        measurements=(),
+        passed=True,
+        checksum_sha256="0" * 64,
+    )
+    inactive = pipeline._bound_model(inactive_draft, pipeline.V04PilotReport)
+    with pytest.raises(pipeline.PipelineExecutionError, match="activation differs"):
+        pipeline._verify_v04_pilot_training_evidence(
+            tmp_path,
+            inactive,
+            inputs,
+            source_commit=SOURCE_COMMIT,
+        )
+
+    short_train_sha256 = pipeline._tokenized_inventory_sha256(tuple(short_train))
+    tampered_measurements = tuple(
+        item.model_copy(update={"train_tokenized_sha256": short_train_sha256})
+        for item in pilot.measurements
+    )
+    tampered_draft = pipeline.V04PilotReport.model_construct(
+        **pilot.model_dump(mode="python", exclude={"measurements", "checksum_sha256"}),
+        measurements=tampered_measurements,
+        checksum_sha256="0" * 64,
+    )
+    tampered = pipeline._bound_model(tampered_draft, pipeline.V04PilotReport)
+    for result in reopened.values():
+        result.train_tokenized_sha256 = short_train_sha256
+    with pytest.raises(pipeline.PipelineExecutionError, match="independently reopened"):
+        pipeline._verify_v04_pilot_training_evidence(
+            tmp_path,
+            tampered,
+            inputs,
+            source_commit=SOURCE_COMMIT,
+        )
+
+    for result in reopened.values():
+        result.train_tokenized_sha256 = train_tokenized_sha256
+    reopened["v04-context-1024-b2"].train_tokenized_sha256 = HASH_A
+    with pytest.raises(pipeline.PipelineExecutionError, match="independently reopened"):
+        pipeline._verify_v04_pilot_training_evidence(
+            tmp_path,
+            pilot,
+            inputs,
+            source_commit=SOURCE_COMMIT,
+        )
 
 
 def _bound_v02_report(
@@ -515,12 +1307,23 @@ def _bound_v02_report(
     draft = pipeline.V02DevelopmentGateReport.model_construct(
         inventory_report_sha256=HASH_A,
         prediction_manifest_sha256=HASH_B,
+        training_result_sha256=HASH_C,
+        checkpoint_manifest_sha256=HASH_D,
+        checkpoint_weights_sha256=HASH_E,
         example_count=252,
         constrained_parse_rate=1.0,
         constrained_schema_validity_rate=1.0,
+        constrained_exact_semantic_match_rate=0.5,
+        constrained_mean_latency_seconds=0.01,
         unconstrained_parse_rate=0.0,
         unconstrained_schema_validity_rate=0.0,
+        unconstrained_exact_semantic_match_rate=0.25,
+        unconstrained_mean_latency_seconds=0.02,
         generation_cap_exhaustion_rate=0.0,
+        process_peak_rss_bytes=1024,
+        mps_peak_current_allocated_bytes=0,
+        mps_peak_driver_allocated_bytes=0,
+        checkpoint_size_bytes=2048,
         inventory_example_count=882,
         prompt_truncation_count=prompt_truncation_count,
         prompt_truncation_rate=prompt_truncation_count / 882,
@@ -543,6 +1346,13 @@ def test_v02_gate_requires_exact_d073_inventory_and_never_claims_materiality() -
     assert report.v04_context_pilot_required is True
     with pytest.raises(ValidationError, match="advancement differs"):
         _bound_v02_report(prompt_truncation_count=667, advancement_allowed=True)
+
+    payload = report.model_dump(mode="json", round_trip=True)
+    payload["constrained_exact_semantic_match_rate"] = 0.75
+    with pytest.raises(ValidationError, match=r"v0\.2 development gate checksum mismatch"):
+        pipeline.V02DevelopmentGateReport.model_validate_json(
+            canonical_json_bytes(payload), strict=True
+        )
 
 
 class _FakeProgress:
@@ -681,7 +1491,7 @@ def test_v03_development_evaluation_selects_on_subset_but_gates_on_full_iid(
         source_commit=SOURCE_COMMIT,
         inputs=cast(pipeline._ExecutionInputs, inputs),
     )
-    monkeypatch.setattr(runtime, "_start", lambda _context: None)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
     monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
     monkeypatch.setattr(pipeline, "config_sha256", lambda _config: HASH_A)
     monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
@@ -725,15 +1535,16 @@ def test_v03_development_evaluation_selects_on_subset_but_gates_on_full_iid(
         score = 0.8 if len(examples) == 1 and len(evaluated_sizes) == 2 else 0.5
         prediction = SimpleNamespace(score=score)
         evaluation = SimpleNamespace(
-            checksum_sha256=hashlib.sha256(str(len(evaluated_sizes)).encode()).hexdigest()
+            checksum_sha256=hashlib.sha256(str(len(evaluated_sizes)).encode()).hexdigest(),
+            score=score,
         )
         return evaluation, None, (prediction,), ()
 
     monkeypatch.setattr(pipeline, "_evaluate_candidate_view", evaluate)
     monkeypatch.setattr(
         pipeline,
-        "semantic_composite_score",
-        lambda _examples, predictions: predictions[0].score,
+        "_semantic_report_composite",
+        lambda evaluation: evaluation.score,
     )
     written: list[tuple[str, object]] = []
 
@@ -752,6 +1563,342 @@ def test_v03_development_evaluation_selects_on_subset_but_gates_on_full_iid(
 
     assert evaluated_sizes == [1, 1, 3]
     assert evaluated_stems[-1] == "v03-selected-full-iid"
+
+
+def test_v03_gate_rederives_complete_candidate_ranking_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = TransformerConfig(
+        model_version="0.3.0",
+        layers=2,
+        width=32,
+        heads=4,
+        context_length=512,
+        feed_forward_multiplier=2,
+        dropout=0.0,
+        tie_embeddings=True,
+        bias=True,
+    )
+    training = RemediationTraining(
+        seed=5,
+        device="cpu",
+        allow_cpu_fallback=True,
+        steps=10,
+        batch_size=2,
+        learning_rate=0.001,
+        weight_decay=0.0,
+        gradient_clip_norm=1.0,
+        evaluation_interval=5,
+        durable_checkpoint_interval=5,
+    )
+    candidate_policies = (
+        SimpleNamespace(candidate_id="control", sampling="uniform_control", seed=7),
+        SimpleNamespace(candidate_id="balanced", sampling="task_balanced", seed=11),
+    )
+    inputs = cast(
+        pipeline._ExecutionInputs,
+        SimpleNamespace(
+            v02=SimpleNamespace(model=model),
+            v03=SimpleNamespace(training=training, candidates=candidate_policies),
+            tokenizer=SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_C)),
+            generation_caps={},
+            compact_contract_sha256=HASH_D,
+        ),
+    )
+    runtime = pipeline._PipelineRuntime(
+        project_root=tmp_path,
+        config=_config("v03-gate-provenance"),
+        source_commit=SOURCE_COMMIT,
+        inputs=inputs,
+    )
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
+    monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
+    monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
+    train_example = SimpleNamespace(
+        example_id="train",
+        checksum_sha256=HASH_A,
+        view=RemediationView.IID_TRAIN,
+    )
+    validation_example = SimpleNamespace(
+        example_id="validation",
+        checksum_sha256=HASH_B,
+        view=RemediationView.IID_VALIDATION,
+    )
+    iid_dataset = SimpleNamespace(
+        examples=(train_example, validation_example),
+        manifest=SimpleNamespace(checksum_sha256=HASH_B, dataset_version="0.3.0"),
+    )
+    monkeypatch.setattr(pipeline, "_load_stage_dataset", lambda *_args: iid_dataset)
+    frozen_selection = SimpleNamespace(checksum_sha256=HASH_E)
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_semantic_selection_examples",
+        lambda *_args: (validation_example,),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_subset_dataset",
+        lambda *_args, **_kwargs: SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_D)),
+    )
+    train_tokenized = CompactTokenizedExample(
+        example_id="train",
+        task_name=TaskName.FAULT_FAMILY,
+        group_id="train-group",
+        token_ids=(1, 2),
+        target_mask=(False, True),
+        prompt_token_count=1,
+        target_token_count=1,
+        prompt_tokens_retained=1,
+        prompt_truncated=False,
+    )
+    validation_tokenized = replace(
+        train_tokenized,
+        example_id="validation",
+        group_id="validation-group",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_tokenize_examples",
+        lambda examples, *_args, **_kwargs: (
+            (train_tokenized,)
+            if examples[0].view is RemediationView.IID_TRAIN
+            else (validation_tokenized,)
+        ),
+    )
+    monkeypatch.setattr(pipeline, "config_sha256", lambda _config: HASH_E)
+
+    scores = (
+        pipeline.CandidateScore(
+            candidate_id="balanced",
+            checkpoint_manifest_sha256=HASH_B,
+            semantic_composite=0.5,
+            selected_validation_nll=0.2,
+            selected_step=2,
+            evaluation_report_sha256=HASH_D,
+        ),
+        pipeline.CandidateScore(
+            candidate_id="control",
+            checkpoint_manifest_sha256=HASH_A,
+            semantic_composite=0.75,
+            selected_validation_nll=0.3,
+            selected_step=3,
+            evaluation_report_sha256=HASH_C,
+        ),
+    )
+
+    def selection_report(
+        candidate_scores: tuple[pipeline.CandidateScore, ...],
+        selected_id: str,
+        selected_checkpoint: str,
+    ) -> pipeline.CandidateSelectionReport:
+        draft = pipeline.CandidateSelectionReport.model_construct(
+            selection_manifest_sha256=HASH_E,
+            candidates=candidate_scores,
+            selected_candidate_id=selected_id,
+            selected_checkpoint_manifest_sha256=selected_checkpoint,
+            checksum_sha256="0" * 64,
+        )
+        return pipeline._bound_model(draft, pipeline.CandidateSelectionReport)
+
+    current_selection = [selection_report(scores, "control", HASH_A)]
+
+    def artifacts(checkpoint_sha256: str, dataset_sha256: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            source_commit=SOURCE_COMMIT,
+            config_sha256=HASH_E,
+            dataset_manifest_sha256=dataset_sha256,
+            tokenizer_manifest_sha256=HASH_C,
+            output_contract_sha256=HASH_D,
+            checkpoint_sha256=checkpoint_sha256,
+            prediction_artifact_sha256=HASH_A,
+            comparator_artifact_sha256=HASH_B,
+        )
+
+    reports = {
+        "balanced": SimpleNamespace(
+            evaluation_view=RemediationView.IID_VALIDATION,
+            example_count=1,
+            predictions_sha256=HASH_A,
+            baseline_report_sha256=HASH_B,
+            checksum_sha256=HASH_D,
+            derived_score=0.5,
+            view_metrics=SimpleNamespace(
+                view=DevelopmentView.IID_VALIDATION,
+                sample_count=1,
+                artifacts=artifacts(HASH_B, HASH_D),
+            ),
+        ),
+        "control": SimpleNamespace(
+            evaluation_view=RemediationView.IID_VALIDATION,
+            example_count=1,
+            predictions_sha256=HASH_A,
+            baseline_report_sha256=HASH_B,
+            checksum_sha256=HASH_C,
+            derived_score=0.75,
+            view_metrics=SimpleNamespace(
+                view=DevelopmentView.IID_VALIDATION,
+                sample_count=1,
+                artifacts=artifacts(HASH_A, HASH_D),
+            ),
+        ),
+    }
+    full_report = SimpleNamespace(
+        evaluation_view=RemediationView.IID_VALIDATION,
+        example_count=1,
+        predictions_sha256=HASH_A,
+        baseline_report_sha256=HASH_B,
+        checksum_sha256=HASH_E,
+        view_metrics=SimpleNamespace(
+            view=DevelopmentView.IID_VALIDATION,
+            sample_count=1,
+            artifacts=artifacts(HASH_A, HASH_B),
+        ),
+    )
+    model_sha256 = canonical_sha256(model.model_dump(mode="json", round_trip=True))
+    train_inventory_sha256 = canonical_sha256((("train", HASH_A),))
+    validation_inventory_sha256 = canonical_sha256((("validation", HASH_B),))
+    train_tokenized_sha256 = pipeline._tokenized_inventory_sha256((train_tokenized,))
+    validation_tokenized_sha256 = pipeline._tokenized_inventory_sha256((validation_tokenized,))
+    results = {
+        "balanced": SimpleNamespace(
+            candidate_id="balanced",
+            sampling_strategy="task_balanced",
+            source_commit=SOURCE_COMMIT,
+            training_steps=10,
+            parameter_count=123,
+            vocab_size=32,
+            checkpoint_manifest_sha256=HASH_B,
+            training_config_sha256=canonical_sha256(
+                pipeline._with_training_seed(training, 11).model_dump(mode="json", round_trip=True)
+            ),
+            model_config_sha256=model_sha256,
+            tokenizer_manifest_sha256=HASH_C,
+            train_example_count=1,
+            validation_example_count=1,
+            train_inventory_sha256=train_inventory_sha256,
+            validation_inventory_sha256=validation_inventory_sha256,
+            train_tokenized_sha256=train_tokenized_sha256,
+            validation_tokenized_sha256=validation_tokenized_sha256,
+            initial_validation_nll=1.2,
+            selected_validation_nll=0.2,
+            selected_score=0.5,
+            selected_step=2,
+            checkpoint_weights_sha256=HASH_D,
+            checkpoint_size_bytes=2048,
+        ),
+        "control": SimpleNamespace(
+            candidate_id="control",
+            sampling_strategy="uniform_control",
+            source_commit=SOURCE_COMMIT,
+            training_steps=10,
+            parameter_count=123,
+            vocab_size=32,
+            checkpoint_manifest_sha256=HASH_A,
+            training_config_sha256=canonical_sha256(
+                pipeline._with_training_seed(training, 7).model_dump(mode="json", round_trip=True)
+            ),
+            model_config_sha256=model_sha256,
+            tokenizer_manifest_sha256=HASH_C,
+            train_example_count=1,
+            validation_example_count=1,
+            train_inventory_sha256=train_inventory_sha256,
+            validation_inventory_sha256=validation_inventory_sha256,
+            train_tokenized_sha256=train_tokenized_sha256,
+            validation_tokenized_sha256=validation_tokenized_sha256,
+            initial_validation_nll=1.3,
+            selected_validation_nll=0.3,
+            selected_score=0.25,
+            selected_step=3,
+            checkpoint_weights_sha256=HASH_E,
+            checkpoint_size_bytes=2048,
+        ),
+    }
+    checkpoints = {
+        candidate_id: SimpleNamespace(
+            checksum_sha256=result.checkpoint_manifest_sha256,
+            transformer_config=model,
+            vocab_size=result.vocab_size,
+            parameter_count=result.parameter_count,
+            tokenizer_manifest_sha256=HASH_C,
+            source_commit=SOURCE_COMMIT,
+            seed=11 if candidate_id == "balanced" else 7,
+            training_steps=result.selected_step,
+            initial_loss=result.initial_validation_nll,
+            final_loss=result.selected_validation_nll,
+            weights_sha256=result.checkpoint_weights_sha256,
+            weights_size_bytes=result.checkpoint_size_bytes,
+        )
+        for candidate_id, result in results.items()
+    }
+
+    def read(path: Path, model_type: type[object], **_kwargs: object) -> object:
+        if model_type is pipeline.CandidateSelectionReport:
+            return current_selection[0]
+        if model_type is SemanticSelectionManifest:
+            return frozen_selection
+        if model_type is CheckpointManifest:
+            candidate_id = path.parent.name.removeprefix("checkpoint-")
+            return checkpoints[candidate_id]
+        if model_type is SemanticEvaluationReport:
+            if path.name == "v03-selected-full-iid-semantic-evaluation.json":
+                return full_report
+            candidate_id = path.name.removesuffix("-semantic-evaluation.json")
+            return reports[candidate_id]
+        raise AssertionError(f"unexpected contract read: {model_type}")
+
+    monkeypatch.setattr(pipeline, "_read_contract", read)
+    monkeypatch.setattr(
+        pipeline,
+        "_load_training_result",
+        lambda _attempt, candidate_id: results[candidate_id],
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_semantic_report_composite",
+        lambda report: report.derived_score,
+    )
+    acceptance = SimpleNamespace(advancement_allowed=True, checksum_sha256=HASH_E)
+    monkeypatch.setattr(pipeline, "evaluate_v03_acceptance", lambda _metrics: acceptance)
+    monkeypatch.setattr(pipeline, "_contract_artifact", lambda *_args, **_kwargs: _artifact("a"))
+    context = cast(StageContext, SimpleNamespace(source_commit=SOURCE_COMMIT))
+
+    outcome = runtime.v03_gate(context)
+    assert outcome.advancement_allowed is True
+
+    tampered_balanced = scores[0].model_copy(update={"semantic_composite": 0.9})
+    current_selection[0] = selection_report(
+        (tampered_balanced, scores[1]),
+        "balanced",
+        HASH_B,
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="candidate ranking differs"):
+        runtime.v03_gate(context)
+
+    current_selection[0] = selection_report(scores, "control", HASH_A)
+    results["control"].selected_step = 4
+    with pytest.raises(pipeline.PipelineExecutionError, match="candidate ranking differs"):
+        runtime.v03_gate(context)
+
+    results["control"].selected_step = 3
+    results["control"].validation_inventory_sha256 = HASH_C
+    with pytest.raises(pipeline.PipelineExecutionError, match="candidate ranking differs"):
+        runtime.v03_gate(context)
+
+    results["control"].validation_inventory_sha256 = validation_inventory_sha256
+    full_report.view_metrics.artifacts.dataset_manifest_sha256 = HASH_C
+    with pytest.raises(pipeline.PipelineExecutionError, match="full-IID evaluation differs"):
+        runtime.v03_gate(context)
+
+    full_report.view_metrics.artifacts.dataset_manifest_sha256 = HASH_B
+    checkpoints["control"].seed = 8
+    with pytest.raises(pipeline.PipelineExecutionError, match="candidate ranking differs"):
+        runtime.v03_gate(context)
+
+    checkpoints["control"].seed = 7
+    results["control"].selected_score = 0.3
+    with pytest.raises(pipeline.PipelineExecutionError, match="candidate ranking differs"):
+        runtime.v03_gate(context)
 
 
 def test_v04_evaluation_compares_control_and_variant_on_full_iid_and_all_shadows(
@@ -785,14 +1932,21 @@ def test_v04_evaluation_compares_control_and_variant_on_full_iid_and_all_shadows
         source_commit=SOURCE_COMMIT,
         inputs=cast(pipeline._ExecutionInputs, inputs),
     )
-    monkeypatch.setattr(runtime, "_start", lambda _context: None)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
     monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
     monkeypatch.setattr(pipeline, "config_sha256", lambda _config: HASH_A)
-    monkeypatch.setattr(
-        pipeline,
-        "_load_stage_dataset",
-        lambda _context, _config, stage, _name: iid if stage == "v03_data_audit" else shadow,
-    )
+    evaluation_dataset_loads: list[str] = []
+
+    def load_evaluation_dataset(
+        _context: object,
+        _config: object,
+        stage: str,
+        _name: str,
+    ) -> object:
+        evaluation_dataset_loads.append(stage)
+        return iid if stage == "v03_data_audit" else shadow
+
+    monkeypatch.setattr(pipeline, "_load_stage_dataset", load_evaluation_dataset)
     upstream_calls: list[str] = []
 
     def upstream(_context: object, _config: object, stage: str) -> Path:
@@ -837,7 +1991,11 @@ def test_v04_evaluation_compares_control_and_variant_on_full_iid_and_all_shadows
         score = 0.8 if model.config.context_length == 512 else 0.7
         checksum = hashlib.sha256(repr(evaluation_calls[-1]).encode()).hexdigest()
         return (
-            SimpleNamespace(checksum_sha256=checksum, view_metrics=SimpleNamespace()),
+            SimpleNamespace(
+                checksum_sha256=checksum,
+                view_metrics=SimpleNamespace(),
+                score=score,
+            ),
             None,
             (SimpleNamespace(score=score),),
             (),
@@ -846,8 +2004,8 @@ def test_v04_evaluation_compares_control_and_variant_on_full_iid_and_all_shadows
     monkeypatch.setattr(pipeline, "_evaluate_candidate_view", evaluate)
     monkeypatch.setattr(
         pipeline,
-        "semantic_composite_score",
-        lambda _examples, predictions: predictions[0].score,
+        "_semantic_report_composite",
+        lambda evaluation: evaluation.score,
     )
     iid_acceptances: list[object] = []
 
@@ -882,6 +2040,7 @@ def test_v04_evaluation_compares_control_and_variant_on_full_iid_and_all_shadows
     runtime.v04_shadow_evaluation(cast(StageContext, SimpleNamespace()))
 
     assert len(evaluation_calls) == 2 * (1 + len(SHADOW_VIEWS))
+    assert evaluation_dataset_loads == ["v03_data_audit", "v04_shadow_freeze"]
     for context_length in (512, 1024):
         candidate_calls = tuple(call for call in evaluation_calls if call[0] == context_length)
         assert candidate_calls[0] == (
@@ -919,6 +2078,48 @@ def _artifact(name: str) -> ArtifactReference:
     )
 
 
+def _structured_records_for_views(
+    *,
+    collision: tuple[RemediationView, RemediationView] | None = None,
+) -> tuple[TaskScopedStructuredFingerprint, ...]:
+    collision_fingerprint = hashlib.sha256(b"metamorphic-collision").hexdigest()
+    return tuple(
+        TaskScopedStructuredFingerprint(
+            example_id=f"different-id-{view.value}",
+            view=view,
+            task_name=TaskName.FAULT_FAMILY,
+            structured_fingerprint_sha256=(
+                collision_fingerprint
+                if collision is not None and view in collision
+                else hashlib.sha256(f"structured-{view.value}".encode()).hexdigest()
+            ),
+        )
+        for view in RemediationView
+    )
+
+
+def _metamorphic_dataset_pair() -> tuple[object, object]:
+    examples = tuple(
+        SimpleNamespace(
+            example_id=f"different-id-{view.value}",
+            view=view,
+            group_id=f"different-group-{view.value}",
+            checksum_sha256=hashlib.sha256(f"different-example-{view.value}".encode()).hexdigest(),
+            prompt_sha256=hashlib.sha256(f"different-prompt-{view.value}".encode()).hexdigest(),
+        )
+        for view in RemediationView
+    )
+    iid = SimpleNamespace(
+        examples=examples[:2],
+        manifest=SimpleNamespace(checksum_sha256=HASH_A),
+    )
+    shadow = SimpleNamespace(
+        examples=examples[2:],
+        manifest=SimpleNamespace(checksum_sha256=HASH_B),
+    )
+    return iid, shadow
+
+
 def _runtime_context(tmp_path: Path) -> StageContext:
     run = tmp_path / "work" / "runtime"
     attempt = run / "stages/01-preflight/attempt-0001"
@@ -930,8 +2131,394 @@ def _runtime_context(tmp_path: Path) -> StageContext:
             run_directory=run,
             attempt_directory=attempt,
             source_commit=SOURCE_COMMIT,
+            progress=_FakeProgress(),
+            stop_requested=lambda: False,
         ),
     )
+
+
+def test_task_scoped_structured_separation_allows_same_input_for_different_tasks() -> None:
+    fingerprint = hashlib.sha256(b"shared-structured-input").hexdigest()
+    records = (
+        TaskScopedStructuredFingerprint(
+            example_id="train-example",
+            view=RemediationView.IID_TRAIN,
+            task_name=TaskName.FAULT_FAMILY,
+            structured_fingerprint_sha256=fingerprint,
+        ),
+        TaskScopedStructuredFingerprint(
+            example_id="validation-example",
+            view=RemediationView.IID_VALIDATION,
+            task_name=TaskName.NEXT_ACTION,
+            structured_fingerprint_sha256=fingerprint,
+        ),
+    )
+
+    report = pipeline._task_scoped_structured_separation(
+        records,
+        views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
+    )
+    reordered = pipeline._task_scoped_structured_separation(
+        tuple(reversed(records)),
+        views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
+    )
+
+    assert report.passed
+    assert report.overlap_count == 0
+    assert report.checksum_sha256 == reordered.checksum_sha256
+
+
+@pytest.mark.parametrize(
+    "collision",
+    [
+        (RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
+        (RemediationView.IID_VALIDATION, RemediationView.SHADOW_RENDERER),
+    ],
+)
+def test_structured_gate_rejects_cross_view_match_despite_rendered_differences(
+    collision: tuple[RemediationView, RemediationView],
+) -> None:
+    """Different IDs/prompts/example checksums cannot hide structured reuse."""
+
+    iid, shadow = _metamorphic_dataset_pair()
+    structured = pipeline._task_scoped_structured_separation(
+        _structured_records_for_views(collision=collision),
+        views=tuple(RemediationView),
+    )
+    report = pipeline._development_separation_report(
+        cast(SafeDevelopmentDataset, iid),
+        cast(SafeDevelopmentDataset, shadow),
+        structured,
+    )
+
+    assert report.group_overlap_count == 0
+    assert report.example_checksum_overlap_count == 0
+    assert report.prompt_checksum_overlap_count == 0
+    assert report.structured_separation.overlap_count == 1
+    assert not report.passed
+    assert any(
+        item.first_view is collision[0]
+        and item.second_view is collision[1]
+        and item.overlap_count == 1
+        for item in report.structured_separation.pairwise_overlaps
+    )
+
+
+def test_structured_inventory_checksum_and_regenerated_iid_are_tamper_evident() -> None:
+    structured = pipeline._task_scoped_structured_separation(
+        _structured_records_for_views(),
+        views=tuple(RemediationView),
+    )
+    payload = structured.model_dump(mode="json", round_trip=True)
+    cast(list[dict[str, object]], payload["inventories"])[0]["inventory_sha256"] = HASH_E
+    with pytest.raises(ValidationError, match="structured separation checksum mismatch"):
+        pipeline.TaskScopedStructuredSeparationReport.model_validate_json(
+            canonical_json_bytes(payload), strict=True
+        )
+
+    committed = cast(SafeDevelopmentDataset, SimpleNamespace(identity="committed"))
+    pipeline._require_exact_regenerated_iid(committed, committed)
+    with pytest.raises(pipeline.PipelineExecutionError, match="regenerated IID material"):
+        pipeline._require_exact_regenerated_iid(
+            cast(SafeDevelopmentDataset, SimpleNamespace(identity="tampered")),
+            committed,
+        )
+
+
+def test_v03_cap_compatibility_bridge_binds_exact_counterfactual_evidence() -> None:
+    class CountedRows:
+        def __init__(self, rows: tuple[object, ...], reported_length: int) -> None:
+            self.rows = rows
+            self.reported_length = reported_length
+
+        def __iter__(self) -> Iterator[object]:
+            return iter(self.rows)
+
+        def __len__(self) -> int:
+            return self.reported_length
+
+    counterfactuals = tuple(
+        SimpleNamespace(
+            example_id=f"counterfactual-{index:03d}",
+            checksum_sha256=hashlib.sha256(f"cf-{index}".encode()).hexdigest(),
+            view=(RemediationView.IID_TRAIN if index < 40 else RemediationView.IID_VALIDATION),
+            task_name=TaskName.COUNTERFACTUAL_COMPARE,
+            prompt_sha256=hashlib.sha256(f"cf-prompt-{index}".encode()).hexdigest(),
+            canonical_target_json=f'{{"counterfactual":{index}}}',
+        )
+        for index in range(55)
+    )
+    retained = tuple(
+        SimpleNamespace(
+            example_id=f"retained-{index:03d}",
+            checksum_sha256=hashlib.sha256(f"retained-{index}".encode()).hexdigest(),
+            view=RemediationView.IID_TRAIN,
+            task_name=TaskName.FAULT_FAMILY,
+            prompt_sha256=hashlib.sha256(f"prompt-{index}".encode()).hexdigest(),
+            canonical_target_json="{}",
+        )
+        for index in range(24)
+    )
+    removed = tuple(
+        SimpleNamespace(
+            example_id=f"removed-{index:03d}",
+            checksum_sha256=hashlib.sha256(f"removed-{index}".encode()).hexdigest(),
+            view=RemediationView.IID_TRAIN,
+            task_name=TaskName.FAULT_FAMILY,
+            prompt_sha256=hashlib.sha256(f"prompt-{index}".encode()).hexdigest(),
+            canonical_target_json="{}",
+        )
+        for index in range(24)
+    )
+    raw_dataset = SimpleNamespace(
+        examples=CountedRows((*counterfactuals, *retained, *removed), 5_859),
+        manifest=SimpleNamespace(
+            checksum_sha256=HASH_A,
+            inventory_sha256=HASH_B,
+        ),
+    )
+    deduplicated_dataset = SimpleNamespace(
+        examples=CountedRows((*counterfactuals, *retained), 5_835),
+        manifest=SimpleNamespace(
+            checksum_sha256=HASH_C,
+            inventory_sha256=HASH_D,
+        ),
+    )
+    material = object.__new__(FrozenV03IIDMaterial)
+    object.__setattr__(material, "raw_dataset", raw_dataset)
+    object.__setattr__(material, "dataset", deduplicated_dataset)
+    object.__setattr__(material, "structured_fingerprints", ())
+    frozen = CounterfactualCapExtensionReport.model_construct(
+        dataset_manifest_sha256=HASH_A,
+        checksum_sha256=HASH_E,
+    )
+    deduplicated = CounterfactualCapExtensionReport.model_construct(
+        dataset_manifest_sha256=HASH_C,
+        checksum_sha256="f" * 64,
+    )
+
+    report = pipeline._v03_cap_compatibility_report(
+        material,
+        frozen_cap=frozen,
+        raw_cap=frozen,
+        deduplicated_cap=deduplicated,
+    )
+
+    assert report.passed
+    assert report.raw_example_count == 5_859
+    assert report.deduplicated_example_count == 5_835
+    assert report.removed_example_count == 24
+    assert len(report.removed_examples) == 24
+    assert tuple(item.removed_example_id for item in report.removed_examples) == tuple(
+        f"removed-{index:03d}" for index in range(24)
+    )
+    assert tuple(item.retained_example_id for item in report.removed_examples) == tuple(
+        f"retained-{index:03d}" for index in range(24)
+    )
+    assert report.counterfactual_train_count == 40
+    assert report.counterfactual_validation_count == 15
+    assert (
+        report.raw_counterfactual_inventory_sha256
+        == report.deduplicated_counterfactual_inventory_sha256
+    )
+    assert (
+        report.raw_counterfactual_evidence_sha256
+        == report.deduplicated_counterfactual_evidence_sha256
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="did not reproduce"):
+        pipeline._v03_cap_compatibility_report(
+            material,
+            frozen_cap=frozen,
+            raw_cap=deduplicated,
+            deduplicated_cap=deduplicated,
+        )
+    payload = report.model_dump(mode="python", round_trip=True)
+    payload["deduplicated_counterfactual_inventory_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="compatibility state"):
+        pipeline.V03CounterfactualCapCompatibilityReport.model_validate(payload)
+    payload = report.model_dump(mode="python", round_trip=True)
+    cast(list[dict[str, object]], payload["removed_examples"])[0]["retained_prompt_sha256"] = HASH_A
+    with pytest.raises(ValidationError, match="removed-row binding"):
+        pipeline.V03CounterfactualCapCompatibilityReport.model_validate(payload)
+
+
+def test_evidence_removal_deduplication_is_deterministic_and_conflict_safe() -> None:
+    first = cast(
+        RemediationExample,
+        SimpleNamespace(
+            example_id="example-a",
+            task_name=TaskName.NEXT_ACTION,
+            prompt_sha256=HASH_A,
+            canonical_target_json='{"action":"insufficient"}',
+        ),
+    )
+    duplicate = cast(
+        RemediationExample,
+        SimpleNamespace(
+            example_id="example-b",
+            task_name=TaskName.NEXT_ACTION,
+            prompt_sha256=HASH_A,
+            canonical_target_json='{"action":"insufficient"}',
+        ),
+    )
+    before = ((duplicate, HASH_B), (first, HASH_B))
+    after = remediation_data._deduplicate_evidence_removal_examples(before)
+
+    assert len(before) == 2
+    assert len(after) == 1
+    assert after[0][0].example_id == "example-a"
+    assert remediation_data._deduplicate_evidence_removal_examples(tuple(reversed(before))) == after
+
+    conflicting = cast(
+        RemediationExample,
+        SimpleNamespace(
+            example_id="example-c",
+            task_name=TaskName.NEXT_ACTION,
+            prompt_sha256=HASH_A,
+            canonical_target_json='{"action":"different"}',
+        ),
+    )
+    with pytest.raises(ValueError, match="conflicting compact targets"):
+        remediation_data._deduplicate_evidence_removal_examples(
+            ((first, HASH_B), (conflicting, HASH_B))
+        )
+
+
+def test_remediation_example_rejects_rebound_classification_label_tamper() -> None:
+    context = CompactTargetContext(
+        task_name=TaskName.NEXT_ACTION,
+        visible_fact_refs=("o-0000",),
+    )
+    example = remediation_data._make_example(
+        view=RemediationView.IID_TRAIN,
+        source_split=SplitName.IID_TRAIN,
+        source_record_ids=("projection:test",),
+        parent_record_sha256=HASH_A,
+        group_id="source:test:next_action",
+        prompt_text="Fictional observation o-0000.",
+        template_family=TemplateFamily.COMPACT_LOG,
+        alias_family=AliasFamily.CANONICAL,
+        context=context,
+        target=NextActionTarget(immediate_action=ActionLabel.CONTINUE_MONITORING),
+        augmentation="none",
+    )
+    assert example.classification_label == ActionLabel.CONTINUE_MONITORING.value
+
+    payload = example.model_dump(mode="python", exclude={"checksum_sha256"})
+    payload["classification_label"] = ActionLabel.INSUFFICIENT_EVIDENCE.value
+    payload["checksum_sha256"] = canonical_sha256(payload)
+    with pytest.raises(ValidationError, match="classification label differs"):
+        RemediationExample.model_validate(payload)
+
+
+def test_v02_development_selection_callback_uses_only_structural_iid_behavior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime_context(tmp_path)
+    train = SimpleNamespace(view=RemediationView.IID_TRAIN)
+    validation = SimpleNamespace(view=RemediationView.IID_VALIDATION)
+    dataset = SimpleNamespace(examples=(train, validation))
+    inputs = cast(
+        pipeline._ExecutionInputs,
+        SimpleNamespace(
+            v02=SimpleNamespace(model=object(), training=object()),
+            tokenizer=object(),
+            generation_caps={},
+        ),
+    )
+    runtime = pipeline._PipelineRuntime(
+        project_root=tmp_path,
+        config=_config("v02-structural-selection"),
+        source_commit=SOURCE_COMMIT,
+        inputs=inputs,
+    )
+    monkeypatch.setattr(runtime.guard, "stop_required", lambda _context: False)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
+    monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
+    monkeypatch.setattr(pipeline, "_load_stage_dataset", lambda *_args: dataset)
+    captured: dict[str, object] = {}
+
+    def run_training(*_args: object, **kwargs: object) -> tuple[object, tuple[object, ...]]:
+        captured.update(kwargs)
+        return SimpleNamespace(selected_validation_nll=9.0), ()
+
+    monkeypatch.setattr(pipeline, "_run_training", run_training)
+    runtime.v02_development_training(context)
+    assert captured["validation_examples"] == (validation,)
+    callback = cast(Callable[[TransformerLM, int, float], float], captured["evaluation_callback"])
+
+    good_path = SimpleNamespace(
+        compact_parse_success=True,
+        schema_valid=True,
+        generation_cap_exhausted=False,
+    )
+    bad_path = SimpleNamespace(
+        compact_parse_success=False,
+        schema_valid=False,
+        generation_cap_exhausted=True,
+    )
+    decode_results = [
+        (SimpleNamespace(constrained=bad_path, unconstrained=bad_path),),
+        (SimpleNamespace(constrained=good_path, unconstrained=good_path),),
+    ]
+
+    def decode(
+        _model: object,
+        _tokenizer: object,
+        examples: tuple[object, ...],
+        **_kwargs: object,
+    ) -> object:
+        assert examples == (validation,)
+        return decode_results.pop(0)
+
+    monkeypatch.setattr(pipeline, "_decode_examples", decode)
+    model = cast(TransformerLM, torch.nn.Linear(1, 1))
+    bad_score = callback(model, 1, 0.01)
+    good_score = callback(model, 2, 9.0)
+
+    assert bad_score == 1.0
+    assert good_score == 0.0
+    # The training contract selects (score, NLL, step), so structure outranks NLL.
+    assert min((bad_score, 0.01, 1), (good_score, 9.0, 2)) == (good_score, 9.0, 2)
+
+
+def test_each_stage_rechecks_source_before_loading_scientific_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _runtime_context(tmp_path)
+    runtime = pipeline._PipelineRuntime(
+        project_root=tmp_path,
+        config=_config("stage-source-recheck"),
+        source_commit=SOURCE_COMMIT,
+        inputs=cast(
+            pipeline._ExecutionInputs,
+            SimpleNamespace(v02_dataset_config=object(), frozen_data_source_commit=SOURCE_COMMIT),
+        ),
+    )
+    monkeypatch.setattr(runtime.guard, "enforce_start", lambda _context: None)
+    source_is_dirty = [False]
+
+    def verify(*_args: object, **_kwargs: object) -> str:
+        if source_is_dirty[0]:
+            raise pipeline.PipelineExecutionError(
+                "runner Git worktree contains uncommitted source changes"
+            )
+        return SOURCE_COMMIT
+
+    monkeypatch.setattr(pipeline, "_verify_runner_source", verify)
+    assert runtime._start(context) == SOURCE_COMMIT
+    source_is_dirty[0] = True
+    scientific_input_loaded = [False]
+
+    def forbidden_builder(*_args: object, **_kwargs: object) -> None:
+        scientific_input_loaded[0] = True
+
+    monkeypatch.setattr(pipeline, "build_safe_development_dataset", forbidden_builder)
+    with pytest.raises(pipeline.PipelineExecutionError, match="uncommitted source changes"):
+        runtime.v02_inventory_and_caps(context)
+    assert not scientific_input_loaded[0]
 
 
 def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
@@ -955,16 +2542,21 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
     counterfactual = SimpleNamespace(checksum_sha256=HASH_B)
     tokenizer = SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_C))
     train = SimpleNamespace(
+        example_id="train-example",
         view=RemediationView.IID_TRAIN,
+        task_name=TaskName.FAULT_FAMILY,
         group_id="train-group",
         checksum_sha256=HASH_A,
         prompt_sha256=HASH_B,
     )
     validation = SimpleNamespace(
+        example_id="validation-example",
         view=RemediationView.IID_VALIDATION,
+        task_name=TaskName.FAULT_FAMILY,
         group_id="validation-group",
         checksum_sha256=HASH_C,
         prompt_sha256=HASH_D,
+        canonical_target_json="{}",
     )
     iid = SimpleNamespace(
         examples=(train, validation),
@@ -972,7 +2564,9 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
     )
     shadow_examples = tuple(
         SimpleNamespace(
+            example_id=f"example-{view.value}",
             view=view,
+            task_name=TaskName.FAULT_FAMILY,
             group_id=f"shadow-{view.value}",
             checksum_sha256=hashlib.sha256(f"example-{view.value}".encode()).hexdigest(),
             prompt_sha256=hashlib.sha256(f"prompt-{view.value}".encode()).hexdigest(),
@@ -1015,7 +2609,8 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
         source_commit=SOURCE_COMMIT,
         inputs=inputs,
     )
-    monkeypatch.setattr(runtime, "_start", lambda _context: None)
+    monkeypatch.setattr(runtime.guard, "stop_required", lambda _context: False)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
     monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
     monkeypatch.setattr(pipeline, "config_sha256", lambda _value: HASH_E)
     monkeypatch.setattr(pipeline, "_verify_runner_source", lambda *_args, **_kwargs: SOURCE_COMMIT)
@@ -1038,6 +2633,44 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
 
     monkeypatch.setattr(pipeline, "build_safe_development_dataset", build_dataset)
 
+    def build_dataset_with_fingerprints(
+        *_args: object, **kwargs: object
+    ) -> tuple[object, tuple[TaskScopedStructuredFingerprint, ...]]:
+        dataset = build_dataset(*_args, **kwargs)
+        examples = cast(tuple[SimpleNamespace, ...], cast(SimpleNamespace, dataset).examples)
+        fingerprints = tuple(
+            TaskScopedStructuredFingerprint(
+                example_id=cast(str, item.example_id),
+                view=cast(RemediationView, item.view),
+                task_name=cast(TaskName, item.task_name),
+                structured_fingerprint_sha256=hashlib.sha256(
+                    f"structured-{item.view.value}".encode()
+                ).hexdigest(),
+            )
+            for item in examples
+        )
+        return dataset, fingerprints
+
+    monkeypatch.setattr(
+        pipeline,
+        "build_safe_development_dataset_with_structured_fingerprints",
+        build_dataset_with_fingerprints,
+    )
+    iid_with_fingerprints = build_dataset_with_fingerprints(
+        views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION)
+    )
+    frozen_iid_calls: list[str] = []
+
+    def build_frozen_iid(*_args: object, **_kwargs: object) -> object:
+        frozen_iid_calls.append("iid")
+        return SimpleNamespace(
+            raw_dataset=iid,
+            dataset=iid_with_fingerprints[0],
+            structured_fingerprints=iid_with_fingerprints[1],
+        )
+
+    monkeypatch.setattr(pipeline, "build_frozen_v03_iid_material", build_frozen_iid)
+
     def write_dataset(_dataset: object, directory: Path) -> None:
         directory.mkdir()
 
@@ -1052,6 +2685,11 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
         selected_step=2,
         checksum_sha256=HASH_D,
         checkpoint_manifest_sha256=HASH_E,
+        checkpoint_weights_sha256=HASH_A,
+        checkpoint_size_bytes=2048,
+        process_peak_rss_bytes=1024,
+        mps_peak_current_allocated_bytes=0,
+        mps_peak_driver_allocated_bytes=0,
     )
     training_calls: list[str] = []
 
@@ -1078,13 +2716,21 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
         compact_parse_success=True,
         schema_valid=True,
         generation_cap_exhausted=False,
+        canonical_target_json="{}",
+        elapsed_seconds=0.01,
     )
     unconstrained = SimpleNamespace(
         compact_parse_success=False,
         schema_valid=False,
         generation_cap_exhausted=False,
+        canonical_target_json=None,
+        elapsed_seconds=0.02,
     )
-    prediction = SimpleNamespace(constrained=constrained, unconstrained=unconstrained)
+    prediction = SimpleNamespace(
+        example_id="validation-example",
+        constrained=constrained,
+        unconstrained=unconstrained,
+    )
     monkeypatch.setattr(pipeline, "_decode_examples", lambda *_args, **_kwargs: (prediction,))
     monkeypatch.setattr(pipeline, "semantic_composite_score", lambda *_args, **_kwargs: 0.75)
     monkeypatch.setattr(
@@ -1103,6 +2749,11 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
         "measure_counterfactual_cap_extension",
         lambda *_args: counterfactual,
     )
+    monkeypatch.setattr(
+        pipeline,
+        "_v03_cap_compatibility_report",
+        lambda *_args, **_kwargs: SimpleNamespace(passed=True, removed_example_count=24),
+    )
     monkeypatch.setattr(pipeline, "build_semantic_selection_manifest", lambda *_args: selection)
     monkeypatch.setattr(pipeline, "load_safe_development_artifact", lambda _path: iid)
     monkeypatch.setattr(
@@ -1118,6 +2769,11 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
     monkeypatch.setattr(pipeline, "_with_training_seed", lambda training, _seed: training)
     acceptance = SimpleNamespace(advancement_allowed=True, checksum_sha256=HASH_A)
     monkeypatch.setattr(pipeline, "evaluate_v03_acceptance", lambda _metrics: acceptance)
+    monkeypatch.setattr(
+        runtime,
+        "v03_gate",
+        lambda _context: StageOutcome(summary="v0.3 gate covered by focused provenance tests."),
+    )
 
     outcomes = (
         runtime.preflight(context),
@@ -1140,21 +2796,39 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
         (RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
         SHADOW_VIEWS,
     ]
+    assert frozen_iid_calls == ["iid", "iid"]
     assert training_calls == ["v02-smoke", "v02-development", "v03-smoke", "control"]
 
 
-def test_v04_pilot_and_candidate_training_execute_both_source_paths(
+def test_v04_native_mps_candidate_training_uses_only_iid_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _runtime_context(tmp_path)
-    train = SimpleNamespace(view=RemediationView.IID_TRAIN)
-    validation = SimpleNamespace(view=RemediationView.IID_VALIDATION)
-    iid = SimpleNamespace(examples=(train, validation))
+    train_examples = tuple(
+        SimpleNamespace(
+            example_id=f"train-{task.value}",
+            view=RemediationView.IID_TRAIN,
+            task_name=task,
+            group_id=f"train-group-{task.value}",
+        )
+        for task in TaskName
+    )
+    validation_examples = tuple(
+        SimpleNamespace(
+            example_id=f"validation-{task.value}",
+            view=RemediationView.IID_VALIDATION,
+            task_name=task,
+            group_id=f"validation-group-{task.value}",
+        )
+        for task in TaskName
+    )
+    validation = validation_examples[0]
+    iid = SimpleNamespace(examples=(*train_examples, *validation_examples))
     shadow = SimpleNamespace(examples=tuple(SimpleNamespace(view=view) for view in SHADOW_VIEWS))
     base_training = SimpleNamespace(
         seed=1,
-        device="cpu",
+        device="mps",
         allow_cpu_fallback=True,
         steps=4,
         batch_size=4,
@@ -1169,7 +2843,7 @@ def test_v04_pilot_and_candidate_training_execute_both_source_paths(
             v03=object(),
             v04=SimpleNamespace(
                 variants=SimpleNamespace(material_prompt_truncation_rate=0.1),
-                pilot=SimpleNamespace(candidate_id="long", steps=2, batch_sizes=(1, 2, 4)),
+                pilot=SimpleNamespace(candidate_id="long", steps=10, batch_sizes=(1, 2, 4)),
                 training=base_training,
                 longer_context_model=SimpleNamespace(context_length=1024),
             ),
@@ -1188,21 +2862,61 @@ def test_v04_pilot_and_candidate_training_execute_both_source_paths(
         source_commit=SOURCE_COMMIT,
         inputs=inputs,
     )
-    monkeypatch.setattr(runtime, "_start", lambda _context: None)
+    monkeypatch.setattr(runtime.guard, "stop_required", lambda _context: False)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
     monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
     monkeypatch.setattr(pipeline, "_load_stage_dataset", lambda *_args: iid)
-    monkeypatch.setattr(
-        pipeline,
-        "_tokenize_examples",
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(prompt_truncated=True),
-            SimpleNamespace(prompt_truncated=False),
-        ),
+    truncate_prompts = [True]
+
+    def tokenize(
+        examples: tuple[SimpleNamespace, ...],
+        _tokenizer: object,
+        *,
+        context_length: int,
+        generation_caps: object,
+    ) -> tuple[CompactTokenizedExample, ...]:
+        del generation_caps
+        return tuple(
+            CompactTokenizedExample(
+                example_id=cast(str, example.example_id),
+                task_name=cast(TaskName, example.task_name),
+                group_id=cast(str, example.group_id),
+                token_ids=tuple(range(20 + index)),
+                target_mask=tuple(False for _ in range(20 + index)),
+                prompt_token_count=20 + index,
+                target_token_count=1,
+                prompt_tokens_retained=19 + index,
+                prompt_truncated=truncate_prompts[0] if context_length == 512 else False,
+            )
+            for index, example in enumerate(examples)
+        )
+
+    monkeypatch.setattr(pipeline, "_tokenize_examples", tokenize)
+    pilot_train_tokenized = tokenize(
+        train_examples,
+        object(),
+        context_length=1024,
+        generation_caps={},
     )
-    monkeypatch.setattr(pipeline, "_smoke_examples", lambda _dataset: ((train,), (validation,)))
+    pilot_validation_tokenized = tokenize(
+        validation_examples,
+        object(),
+        context_length=1024,
+        generation_caps={},
+    )
     result = SimpleNamespace(
         checksum_sha256=HASH_A,
         checkpoint_manifest_sha256=HASH_B,
+        training_config_sha256=HASH_C,
+        model_config_sha256=HASH_D,
+        tokenizer_manifest_sha256=HASH_E,
+        device=DeviceResolution(requested="mps", resolved="mps", fallback_used=False),
+        train_example_count=len(train_examples),
+        validation_example_count=len(validation_examples),
+        train_tokenized_sha256=pipeline._tokenized_inventory_sha256(pilot_train_tokenized),
+        validation_tokenized_sha256=pipeline._tokenized_inventory_sha256(
+            pilot_validation_tokenized
+        ),
         elapsed_seconds=1.0,
         process_peak_rss_bytes=1,
     )
@@ -1235,9 +2949,31 @@ def test_v04_pilot_and_candidate_training_execute_both_source_paths(
     pilot_outcome = runtime.v04_pilot(context)
     pilot = cast(pipeline.V04PilotReport, written["v04-pilot.json"])
     assert pilot.activated is True
+    assert pilot.requested_device == "mps"
+    assert pilot.mandatory_batch_resolved_device == "mps"
     assert tuple(item.batch_size for item in pilot.measurements) == (1, 2, 4)
     assert training_calls == [("long-b1", 1), ("long-b2", 2), ("long-b4", 4)]
     assert pilot_outcome.advancement_allowed is True
+
+    truncate_prompts[0] = False
+    inactive_outcome = runtime.v04_pilot(context)
+    inactive_pilot_report = cast(pipeline.V04PilotReport, written["v04-pilot.json"])
+    assert inactive_pilot_report.activated is False
+    assert inactive_pilot_report.measurements == ()
+    assert inactive_pilot_report.mandatory_batch_resolved_device is None
+    assert inactive_pilot_report.passed is True
+    assert inactive_outcome.advancement_allowed is True
+    assert training_calls == [("long-b1", 1), ("long-b2", 2), ("long-b4", 4)]
+
+    truncate_prompts[0] = True
+    result.device = DeviceResolution(requested="mps", resolved="cpu", fallback_used=True)
+    cpu_fallback_outcome = runtime.v04_pilot(context)
+    cpu_fallback_report = cast(pipeline.V04PilotReport, written["v04-pilot.json"])
+    assert cpu_fallback_report.requested_device == "mps"
+    assert cpu_fallback_report.mandatory_batch_resolved_device == "cpu"
+    assert cpu_fallback_report.passed is False
+    assert cpu_fallback_outcome.advancement_allowed is False
+    result.device = DeviceResolution(requested="mps", resolved="mps", fallback_used=False)
 
     monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
     selection = SimpleNamespace(selected_candidate_id="control")
@@ -1250,18 +2986,44 @@ def test_v04_pilot_and_candidate_training_execute_both_source_paths(
         return SimpleNamespace()
 
     monkeypatch.setattr(pipeline, "_read_contract", read)
-    monkeypatch.setattr(
-        pipeline,
-        "_load_stage_dataset",
-        lambda _context, _config, stage, _name: shadow if stage == "v04_shadow_freeze" else iid,
-    )
+    candidate_dataset_loads: list[str] = []
+
+    def load_candidate_dataset(
+        _context: object,
+        _config: object,
+        stage: str,
+        _name: str,
+    ) -> object:
+        candidate_dataset_loads.append(stage)
+        return shadow if stage == "v04_shadow_freeze" else iid
+
+    monkeypatch.setattr(pipeline, "_load_stage_dataset", load_candidate_dataset)
     monkeypatch.setattr(
         pipeline,
         "resolve_semantic_selection_examples",
         lambda *_args: (validation,),
     )
-    monkeypatch.setattr(pipeline, "_decode_examples", lambda *_args, **_kwargs: (object(),))
+    decoded_selection_views: list[tuple[RemediationView, ...]] = []
+
+    def decode_selection(
+        _model: object,
+        _tokenizer: object,
+        examples: tuple[object, ...],
+        **_kwargs: object,
+    ) -> tuple[object, ...]:
+        decoded_selection_views.append(
+            tuple(cast(RemediationView, cast(SimpleNamespace, item).view) for item in examples)
+        )
+        return (object(),)
+
+    monkeypatch.setattr(pipeline, "_decode_examples", decode_selection)
     monkeypatch.setattr(pipeline, "semantic_composite_score", lambda *_args, **_kwargs: 0.75)
+    verified_pilots: list[tuple[Path, object]] = []
+    monkeypatch.setattr(
+        pipeline,
+        "_verify_v04_pilot_training_evidence",
+        lambda attempt, report, _inputs, **_kwargs: verified_pilots.append((attempt, report)),
+    )
     training_calls.clear()
     active_outcome = runtime.v04_candidate_training(context)
     active_report = cast(
@@ -1271,7 +3033,10 @@ def test_v04_pilot_and_candidate_training_execute_both_source_paths(
     assert active_report.activated is True
     assert active_report.source_stage == "v04_candidate_training"
     assert training_calls == [("long", 4)]
+    assert candidate_dataset_loads == ["v03_data_audit"]
+    assert decoded_selection_views == [(RemediationView.IID_VALIDATION,)]
     assert active_outcome.advancement_allowed is True
+    assert verified_pilots == [(tmp_path, pilot)]
 
     inactive = SimpleNamespace(activated=False, measurements=())
 
@@ -1295,16 +3060,47 @@ def test_v04_gate_and_complete_review_publish_bound_development_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _runtime_context(tmp_path)
-    inputs = cast(pipeline._ExecutionInputs, SimpleNamespace())
+    inputs = cast(
+        pipeline._ExecutionInputs,
+        SimpleNamespace(
+            v04=object(),
+            tokenizer=SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_B)),
+            compact_contract_sha256=HASH_C,
+        ),
+    )
     runtime = pipeline._PipelineRuntime(
         project_root=tmp_path,
         config=_config("runtime"),
         source_commit=SOURCE_COMMIT,
         inputs=inputs,
     )
-    monkeypatch.setattr(runtime, "_start", lambda _context: None)
+    monkeypatch.setattr(runtime, "_start", lambda _context: SOURCE_COMMIT)
     monkeypatch.setattr(runtime, "_finish", lambda _context, outcome: outcome)
     monkeypatch.setattr(pipeline, "_upstream_attempt", lambda *_args: tmp_path)
+    iid_dataset = SimpleNamespace(
+        examples=(
+            SimpleNamespace(view=RemediationView.IID_TRAIN),
+            SimpleNamespace(view=RemediationView.IID_VALIDATION),
+        ),
+        manifest=SimpleNamespace(dataset_version="0.3.0"),
+    )
+    shadow_dataset = SimpleNamespace(
+        examples=tuple(SimpleNamespace(view=view) for view in SHADOW_VIEWS),
+        manifest=SimpleNamespace(dataset_version="0.4.0"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_load_stage_dataset",
+        lambda _context, _config, stage, _name: (
+            iid_dataset if stage == "v03_data_audit" else shadow_dataset
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_subset_dataset",
+        lambda *_args, **_kwargs: SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_D)),
+    )
+    monkeypatch.setattr(pipeline, "config_sha256", lambda _config: HASH_E)
     candidate = _candidate(
         "control",
         passed=True,
@@ -1323,17 +3119,91 @@ def test_v04_gate_and_complete_review_publish_bound_development_evidence(
         checksum_sha256="0" * 64,
     )
     index = pipeline._bound_model(index_draft, pipeline.V04EvaluationIndex)
-    acceptance = SimpleNamespace(
+    current_index = [index]
+    artifact_binding = SimpleNamespace(
+        checkpoint_sha256=candidate.checkpoint_manifest_sha256,
+    )
+    iid_metrics = SimpleNamespace(artifacts=artifact_binding)
+    iid_report = SimpleNamespace(
+        evaluation_view=RemediationView.IID_VALIDATION,
+        checksum_sha256=candidate.iid_report_sha256,
+        view_metrics=iid_metrics,
+    )
+    iid_acceptance = SimpleNamespace(
+        checksum_sha256=candidate.iid_acceptance_sha256,
+        advancement_allowed=True,
+        view_metrics=iid_metrics,
+    )
+    shadow_reports = {
+        view: SimpleNamespace(
+            evaluation_view=view,
+            checksum_sha256=checksum,
+            view_metrics=SimpleNamespace(artifacts=artifact_binding),
+        )
+        for view, checksum in candidate.shadow_reports
+    }
+    candidate_acceptance = SimpleNamespace(
         checksum_sha256=index.v04_acceptance_sha256,
         advancement_allowed=True,
+        v03_result=iid_acceptance,
+        shadow_view_metrics=tuple(shadow_reports[view].view_metrics for view in SHADOW_VIEWS),
     )
+    expected_iid_acceptance = [iid_acceptance]
+    expected_candidate_acceptance = [candidate_acceptance]
 
     def read_gate(path: Path, model_type: type[object], **_kwargs: object) -> object:
         if model_type is pipeline.V04EvaluationIndex:
-            return index
-        return acceptance
+            return current_index[0]
+        if model_type is SemanticEvaluationReport:
+            if "-iid-semantic-evaluation" in path.name:
+                return iid_report
+            return next(
+                report
+                for view, report in shadow_reports.items()
+                if f"-{view.value}-semantic-evaluation" in path.name
+            )
+        if model_type is V03AcceptanceResult:
+            return iid_acceptance
+        return candidate_acceptance
 
     monkeypatch.setattr(pipeline, "_read_contract", read_gate)
+    monkeypatch.setattr(
+        runtime,
+        "_verified_v04_candidate_inventory",
+        lambda _context: (
+            (
+                candidate.candidate_id,
+                candidate.context_length,
+                candidate.checkpoint_manifest_sha256,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_semantic_report_composite",
+        lambda report: (
+            0.8
+            if report is iid_report
+            else 0.7
+            if report is shadow_reports[SHADOW_VIEWS[0]]
+            else 0.8
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_require_semantic_report_scope",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "evaluate_v03_acceptance",
+        lambda _metrics: expected_iid_acceptance[0],
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "evaluate_v04_acceptance",
+        lambda _iid, _shadows: expected_candidate_acceptance[0],
+    )
     written: dict[str, object] = {}
 
     def contract(_context: object, filename: str, model: object) -> ArtifactReference:
@@ -1348,6 +3218,61 @@ def test_v04_gate_and_complete_review_publish_bound_development_evidence(
     )
     assert gate.advancement_allowed is True
     assert policy.status == "locked_pending_owner_reviewed_fresh_extension"
+
+    expected_candidate_acceptance[0] = SimpleNamespace(
+        checksum_sha256=HASH_B,
+        advancement_allowed=False,
+        v03_result=iid_acceptance,
+        shadow_view_metrics=tuple(shadow_reports[view].view_metrics for view in SHADOW_VIEWS),
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="immutable evaluation evidence"):
+        runtime.v04_gate_and_final_policy_freeze(context)
+    expected_candidate_acceptance[0] = candidate_acceptance
+
+    tampered_candidate = candidate.model_copy(
+        update={"worst_view_semantic_composite": 0.9, "iid_semantic_composite": 0.9}
+    )
+    tampered_index_draft = pipeline.V04EvaluationIndex.model_construct(
+        candidates=(tampered_candidate,),
+        selected_candidate_id=tampered_candidate.candidate_id,
+        checkpoint_manifest_sha256=tampered_candidate.checkpoint_manifest_sha256,
+        iid_report_sha256=tampered_candidate.iid_report_sha256,
+        shadow_reports=tampered_candidate.shadow_reports,
+        v04_acceptance_sha256=tampered_candidate.v04_acceptance_sha256,
+        checksum_sha256="0" * 64,
+    )
+    current_index[0] = pipeline._bound_model(
+        tampered_index_draft,
+        pipeline.V04EvaluationIndex,
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="immutable evaluation evidence"):
+        runtime.v04_gate_and_final_policy_freeze(context)
+    current_index[0] = index
+
+    relabelled = candidate.model_copy(update={"candidate_id": "relabelled", "context_length": 1024})
+    relabelled_draft = pipeline.V04EvaluationIndex.model_construct(
+        candidates=(relabelled,),
+        selected_candidate_id=relabelled.candidate_id,
+        checkpoint_manifest_sha256=relabelled.checkpoint_manifest_sha256,
+        iid_report_sha256=relabelled.iid_report_sha256,
+        shadow_reports=relabelled.shadow_reports,
+        v04_acceptance_sha256=relabelled.v04_acceptance_sha256,
+        checksum_sha256="0" * 64,
+    )
+    current_index[0] = pipeline._bound_model(relabelled_draft, pipeline.V04EvaluationIndex)
+    with pytest.raises(pipeline.PipelineExecutionError, match="candidate inventory"):
+        runtime.v04_gate_and_final_policy_freeze(context)
+    current_index[0] = index
+
+    original_shadow = shadow_reports[SHADOW_VIEWS[0]]
+    shadow_reports[SHADOW_VIEWS[0]] = SimpleNamespace(
+        evaluation_view=original_shadow.evaluation_view,
+        checksum_sha256=HASH_B,
+        view_metrics=original_shadow.view_metrics,
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="immutable evaluation evidence"):
+        runtime.v04_gate_and_final_policy_freeze(context)
+    shadow_reports[SHADOW_VIEWS[0]] = original_shadow
 
     records = tuple(
         SimpleNamespace(
@@ -1579,7 +3504,10 @@ def test_future_final_contracts_validate_data_only_without_accessing_payloads() 
         )
 
 
-def test_file_contract_path_and_stop_helpers_are_checksum_bound(tmp_path: Path) -> None:
+def test_file_contract_path_and_stop_helpers_are_checksum_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert pipeline._canonical_utc("2026-08-23T00:00:00+00:00").year == 2026
     for invalid in ("bad", "2026-08-23T00:00:00", "2026-08-23T00:00:00.123+00:00"):
         with pytest.raises(ValueError, match="timestamp"):
@@ -1599,11 +3527,53 @@ def test_file_contract_path_and_stop_helpers_are_checksum_bound(tmp_path: Path) 
     request = pipeline.request_pipeline_stop(stop_path)
     assert stop_requested() is True
     assert pipeline._read_contract(stop_path, pipeline.PipelineStopRequest) == request
+    real_open = os.open
+    real_fsync = os.fsync
+    opened_directories: dict[int, Path] = {}
+    fsynced_directories: list[Path] = []
+
+    def tracked_open(path: str | Path, flags: int, mode: int = 0o777) -> int:
+        descriptor = real_open(path, flags, mode)
+        candidate = Path(path)
+        if flags == os.O_RDONLY and candidate.is_dir():
+            opened_directories[descriptor] = candidate
+        return descriptor
+
+    def tracked_fsync(descriptor: int) -> None:
+        directory = opened_directories.get(descriptor)
+        if directory is not None:
+            fsynced_directories.append(directory)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "open", tracked_open)
+    monkeypatch.setattr(os, "fsync", tracked_fsync)
     archived = pipeline.archive_pipeline_stop(stop_path)
     assert archived is not None
     assert archived.is_file()
+    assert fsynced_directories[-2:] == [archived.parent, stop_path.parent]
     assert stop_requested() is False
     assert pipeline.archive_pipeline_stop(stop_path) is None
+
+    archived_payload = archived.read_bytes()
+    pipeline._write_bytes(stop_path, archived_payload)
+    fsynced_directories.clear()
+    assert pipeline.archive_pipeline_stop(stop_path) == archived
+    assert not stop_path.exists()
+    assert fsynced_directories == [stop_path.parent]
+
+    pipeline._write_bytes(stop_path, archived_payload)
+    conflicting_draft = pipeline.PipelineStopRequest.model_construct(
+        requested_at="2026-08-23T00:00:00+00:00",
+        process_id=1,
+        checksum_sha256="0" * 64,
+    )
+    conflicting = pipeline._bound_model(conflicting_draft, pipeline.PipelineStopRequest)
+    archived.write_bytes(
+        canonical_json_bytes(conflicting.model_dump(mode="json", round_trip=True)) + b"\n"
+    )
+    with pytest.raises(FileExistsError, match="conflicting"):
+        pipeline.archive_pipeline_stop(stop_path)
+    assert stop_path.is_file()
     with pytest.raises(FileExistsError, match="new regular file"):
         pipeline._write_bytes(archived, b"replacement")
 
@@ -1685,6 +3655,7 @@ def test_execution_input_loader_checks_every_frozen_provenance_edge(
     )
     v04 = SimpleNamespace(
         compact_contract_path=contract_path,
+        development_dataset_config_path=v03.paths.dataset_config_path,
         final_access=SimpleNamespace(
             automatically_run_final_evaluation=False,
             require_ready_marker=True,
@@ -1773,6 +3744,12 @@ def test_execution_input_loader_checks_every_frozen_provenance_edge(
     assert loaded.compact_contract_sha256 == HASH_A
     assert loaded.frozen_data_source_commit == SOURCE_COMMIT
 
+    different_v04_dataset_path = "configs/dataset-v04-different.toml"
+    fake_paths[different_v04_dataset_path] = tmp_path / "dataset-v04-different.toml"
+    v04.development_dataset_config_path = different_v04_dataset_path
+    with pytest.raises(pipeline.PipelineExecutionError, match="dataset recipe differs"):
+        pipeline._load_execution_inputs(project_root=tmp_path, config=config)
+
 
 def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
     tmp_path: Path,
@@ -1794,8 +3771,33 @@ def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
             progress=_FakeProgress(),
         ),
     )
+
+    def latest_state(root: Path, *, candidate_id: str) -> Path | None:
+        assert candidate_id == "control"
+        states = tuple(sorted(root.glob("state-step-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]")))
+        return None if not states else states[-1].resolve(strict=True)
+
+    def retire_states(
+        root: Path,
+        *,
+        candidate_id: str,
+        successor_directory: Path,
+    ) -> int:
+        assert candidate_id == "control"
+        assert successor_directory.is_dir()
+        states = tuple(root.glob("state-step-*"))
+        for state in states:
+            for child in state.iterdir():
+                child.unlink()
+            state.rmdir()
+        return len(states)
+
+    monkeypatch.setattr(pipeline, "latest_committed_training_state", latest_state)
+    monkeypatch.setattr(pipeline, "retire_superseded_training_states", retire_states)
     assert pipeline._latest_resume_source(context, "control") == prior
-    copied = pipeline._copy_resume_state(prior, attempt / "copied")
+    copied_root = attempt / "copied"
+    copied_root.mkdir()
+    copied = pipeline._copy_resume_state(prior, copied_root)
     assert (copied / "state.json").read_text(encoding="ascii") == "{}\n"
 
     train_example = RemediationExample.model_construct(
@@ -1859,7 +3861,22 @@ def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
         return result
 
     monkeypatch.setattr(pipeline, "train_compact_model", train_model)
-    guard = cast(pipeline._ResourceGuard, SimpleNamespace(stop_required=lambda _context: False))
+    projected_reservations: list[int] = []
+    guard_polls: list[str] = []
+
+    def stop_required(_context: object) -> bool:
+        guard_polls.append("poll")
+        return False
+
+    guard = cast(
+        pipeline._ResourceGuard,
+        SimpleNamespace(
+            stop_required=stop_required,
+            enforce_projected_write=lambda _context, *, reservation_bytes: (
+                projected_reservations.append(reservation_bytes)
+            ),
+        ),
+    )
 
     outcome, artifacts = pipeline._run_training(
         context,
@@ -1877,6 +3894,20 @@ def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
     assert outcome is result
     assert observed_resume
     assert observed_resume[0] is not None
+    assert len(projected_reservations) == 2
+    state_bound = durable_training_state_upper_bound_bytes(
+        model_config,
+        vocab_size=tokenizer.vocab_size,
+    )
+    checkpoint_bound = selected_checkpoint_upper_bound_bytes(
+        model_config,
+        vocab_size=tokenizer.vocab_size,
+    )
+    assert projected_reservations == [
+        state_bound,
+        2 * state_bound + checkpoint_bound,
+    ]
+    assert not prior.exists()
     assert {item.relative_path for item in artifacts} == {
         "stages/03-training/attempt-0002/checkpoint-control/model.safetensors",
         "stages/03-training/attempt-0002/training-control.json",
@@ -1888,7 +3919,16 @@ def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
     predictions = (SimpleNamespace(),)
     evaluation = SimpleNamespace(checksum_sha256=HASH_D)
     monkeypatch.setattr(pipeline, "_subset_dataset", lambda *_args, **_kwargs: scoped)
-    monkeypatch.setattr(pipeline, "run_remediation_baselines", lambda *_args, **_kwargs: baseline)
+    baseline_poll_counts: list[tuple[int, int]] = []
+
+    def run_baselines(*_args: object, **kwargs: object) -> object:
+        before = len(guard_polls)
+        callback = cast(Callable[[], bool], kwargs["stop_requested"])
+        assert callback() is False
+        baseline_poll_counts.append((before, len(guard_polls)))
+        return baseline
+
+    monkeypatch.setattr(pipeline, "run_remediation_baselines", run_baselines)
     monkeypatch.setattr(pipeline, "_decode_examples", lambda *_args, **_kwargs: predictions)
     monkeypatch.setattr(
         pipeline,
@@ -1915,6 +3955,7 @@ def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
     evaluated, observed_baseline, observed_predictions, observed_artifacts = (
         pipeline._evaluate_candidate_view(
             context,
+            guard=guard,
             inputs=cast(
                 pipeline._ExecutionInputs,
                 SimpleNamespace(
@@ -1945,6 +3986,181 @@ def test_training_and_evaluation_helpers_preserve_resume_and_artifact_bindings(
     assert len(observed_artifacts) == 4
     assert binding.tokenizer_manifest_sha256 == HASH_C
     assert binding.prediction_artifact_sha256 == HASH_C
+    assert baseline_poll_counts == [(1, 2)]
+    assert len(guard_polls) > baseline_poll_counts[0][1]
+    messages = tuple(item["message"] for item in cast(_FakeProgress, context.progress).reports)
+    assert "Baseline comparator evaluation started." in messages
+    assert "Baseline comparator evaluation completed." in messages
+
+
+def test_cross_attempt_resume_retention_is_globally_bounded_and_preserves_remnants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = tmp_path / "run"
+    stage = run / "stages/07-v03_candidate_training"
+    initial_root = stage / "attempt-0001/training-state/control"
+    initial_state = initial_root / "state-step-00000001"
+    initial_state.mkdir(parents=True)
+    (initial_state / "state.json").write_text("{}\n", encoding="ascii")
+
+    def latest_state(root: Path, *, candidate_id: str) -> Path | None:
+        assert candidate_id == "control"
+        states = tuple(
+            sorted(
+                path
+                for path in root.iterdir()
+                if re.fullmatch(r"state-step-[0-9]{8}", path.name) is not None
+            )
+        )
+        return None if not states else states[-1].resolve(strict=True)
+
+    def retire_states(
+        root: Path,
+        *,
+        candidate_id: str,
+        successor_directory: Path,
+    ) -> int:
+        assert candidate_id == "control"
+        assert successor_directory.is_dir()
+        states = tuple(
+            path
+            for path in root.iterdir()
+            if re.fullmatch(r"state-step-[0-9]{8}", path.name) is not None
+        )
+        for state in states:
+            for child in state.iterdir():
+                child.unlink()
+            state.rmdir()
+        return len(states)
+
+    monkeypatch.setattr(pipeline, "latest_committed_training_state", latest_state)
+    monkeypatch.setattr(pipeline, "retire_superseded_training_states", retire_states)
+    guard = cast(
+        pipeline._ResourceGuard,
+        SimpleNamespace(enforce_projected_write=lambda *_args, **_kwargs: None),
+    )
+
+    for attempt_number in range(2, 13):
+        attempt = stage / f"attempt-{attempt_number:04d}"
+        destination_root = attempt / "training-state/control"
+        destination_root.mkdir(parents=True)
+        progress = _FakeProgress()
+        context = cast(
+            StageContext,
+            SimpleNamespace(
+                run_directory=run,
+                attempt_directory=attempt,
+                progress=progress,
+            ),
+        )
+
+        copied = pipeline._prepare_resume_state(
+            context,
+            guard=guard,
+            candidate_id="control",
+            destination_root=destination_root,
+            state_upper_bound_bytes=1024,
+        )
+
+        assert copied is not None
+        assert copied.is_dir()
+        assert len(progress.checkpoints) == 1
+        committed = tuple(stage.glob("attempt-*/training-state/control/state-step-*"))
+        assert committed == (copied,)
+        (destination_root / f".state-step-{attempt_number:08d}.lock").write_text(
+            "forensic\n", encoding="ascii"
+        )
+        (destination_root / f".state-step-{attempt_number:08d}.tmp-resume").mkdir()
+
+    remnants = tuple(stage.glob("attempt-*/training-state/control/.state-step-*"))
+    assert len(remnants) == 22
+    assert all(path.exists() for path in remnants)
+
+
+def test_resume_copy_and_retirement_failures_leave_a_successor_or_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = tmp_path / "run"
+    stage = run / "stages/07-v03_candidate_training"
+    source_root = stage / "attempt-0001/training-state/control"
+    source = source_root / "state-step-00000003"
+    source.mkdir(parents=True)
+    (source / "state.json").write_text("{}\n", encoding="ascii")
+    attempt = stage / "attempt-0002"
+    destination_root = attempt / "training-state/control"
+    destination_root.mkdir(parents=True)
+    progress = _FakeProgress()
+    context = cast(
+        StageContext,
+        SimpleNamespace(
+            run_directory=run,
+            attempt_directory=attempt,
+            progress=progress,
+        ),
+    )
+
+    def latest_state(root: Path, *, candidate_id: str) -> Path | None:
+        assert candidate_id == "control"
+        candidate = root / "state-step-00000003"
+        return candidate.resolve(strict=True) if candidate.is_dir() else None
+
+    guard = cast(
+        pipeline._ResourceGuard,
+        SimpleNamespace(enforce_projected_write=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(pipeline, "latest_committed_training_state", latest_state)
+    monkeypatch.setattr(
+        shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("simulated copy failure")),
+    )
+    with pytest.raises(OSError, match="simulated copy failure"):
+        pipeline._prepare_resume_state(
+            context,
+            guard=guard,
+            candidate_id="control",
+            destination_root=destination_root,
+            state_upper_bound_bytes=1024,
+        )
+    assert source.is_dir()
+    assert (destination_root / ".state-step-00000003.tmp-resume").is_dir()
+    assert not progress.checkpoints
+
+    # A fresh non-overwriting attempt can copy successfully. If retirement then
+    # fails, both the checkpointed successor and its source remain available.
+    monkeypatch.undo()
+    attempt = stage / "attempt-0003"
+    destination_root = attempt / "training-state/control"
+    destination_root.mkdir(parents=True)
+    progress = _FakeProgress()
+    context = cast(
+        StageContext,
+        SimpleNamespace(
+            run_directory=run,
+            attempt_directory=attempt,
+            progress=progress,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "latest_committed_training_state", latest_state)
+    monkeypatch.setattr(
+        pipeline,
+        "retire_superseded_training_states",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("simulated retirement failure")),
+    )
+    with pytest.raises(OSError, match="simulated retirement failure"):
+        pipeline._prepare_resume_state(
+            context,
+            guard=guard,
+            candidate_id="control",
+            destination_root=destination_root,
+            state_upper_bound_bytes=1024,
+        )
+    successor = destination_root / source.name
+    assert source.is_dir()
+    assert successor.is_dir()
+    assert cast(str, progress.checkpoints[0]["checkpoint"]).endswith(source.name)
 
 
 def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
@@ -2029,16 +4245,71 @@ def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
         )
 
     monkeypatch.setattr(pipeline, "decode_compact_examples", decode)
-    many_examples = (train_example,) * (MAX_DECODE_BATCH_SIZE + 1)
+    many_examples = tuple(
+        train_example.model_copy(update={"example_id": f"decode-{index}"}) for index in range(5)
+    )
+    decode_progress: list[tuple[int, int]] = []
     decoded = pipeline._decode_examples(
         cast(TransformerLM, object()),
         cast(ProjectTokenizer, SimpleNamespace()),
         many_examples,
         generation_caps={},
         device=torch.device("cpu"),
+        progress_callback=lambda completed, total: decode_progress.append((completed, total)),
     )
     assert len(decoded) == len(many_examples)
-    assert decode_calls == [MAX_DECODE_BATCH_SIZE, 1]
+    assert decode_calls == [1, 1, 1, 1, 1]
+    assert decode_progress == [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]
+    assert (
+        pipeline._decode_examples(
+            cast(TransformerLM, object()),
+            cast(ProjectTokenizer, SimpleNamespace()),
+            (),
+            generation_caps={},
+            device=torch.device("cpu"),
+        )
+        == ()
+    )
+    calls_before_duplicate = tuple(decode_calls)
+    with pytest.raises(ValueError, match="globally unique"):
+        pipeline._decode_examples(
+            cast(TransformerLM, object()),
+            cast(ProjectTokenizer, SimpleNamespace()),
+            (train_example, train_example),
+            generation_caps={},
+            device=torch.device("cpu"),
+        )
+    assert tuple(decode_calls) == calls_before_duplicate
+
+    durable_progress = _FakeProgress()
+    guarded_context = cast(
+        StageContext,
+        SimpleNamespace(progress=durable_progress),
+    )
+    guarded = pipeline._guarded_decode_examples(
+        guarded_context,
+        guard=cast(
+            pipeline._ResourceGuard,
+            SimpleNamespace(stop_required=lambda _context: False),
+        ),
+        model=cast(TransformerLM, object()),
+        tokenizer=cast(ProjectTokenizer, SimpleNamespace()),
+        examples=tuple(
+            train_example.model_copy(update={"example_id": f"guarded-{index}"})
+            for index in range(35)
+        ),
+        generation_caps={},
+        device=torch.device("cpu"),
+        progress_message="Bounded decoding progress.",
+    )
+    assert len(guarded) == 35
+    assert [item["completed_units"] for item in durable_progress.reports] == [
+        0,
+        16,
+        32,
+        35,
+    ]
+    assert all(item["total_units"] == 35 for item in durable_progress.reports)
 
     smoke_train, smoke_validation = pipeline._smoke_examples(subset)
     assert smoke_train == (train_example,)
@@ -2107,6 +4378,191 @@ def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
     assert observed_checkpoint[0]["expected_tokenizer_sha256"] == HASH_C
 
 
+def test_view_evaluation_stops_after_one_of_1024_examples_without_partial_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt = tmp_path / "run/stages/evaluation/attempt-0001"
+    attempt.mkdir(parents=True)
+    progress = _FakeProgress()
+    context = cast(
+        StageContext,
+        SimpleNamespace(
+            run_directory=tmp_path / "run",
+            attempt_directory=attempt,
+            source_commit=SOURCE_COMMIT,
+            progress=progress,
+        ),
+    )
+    train = RemediationExample.model_construct(
+        example_id="train",
+        view=RemediationView.IID_TRAIN,
+        checksum_sha256=HASH_A,
+    )
+    validation = RemediationExample.model_construct(
+        example_id="validation",
+        view=RemediationView.IID_VALIDATION,
+        checksum_sha256=HASH_B,
+    )
+    tokenizer = cast(
+        ProjectTokenizer,
+        SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_C)),
+    )
+    inputs = cast(
+        pipeline._ExecutionInputs,
+        SimpleNamespace(
+            tokenizer=tokenizer,
+            generation_caps={},
+            baseline_config=object(),
+            compact_contract_sha256=HASH_D,
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_subset_dataset",
+        lambda *_args, **_kwargs: SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_A)),
+    )
+    monkeypatch.setattr(pipeline, "_tokenize_examples", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        pipeline,
+        "run_remediation_baselines",
+        lambda *_args, **_kwargs: SimpleNamespace(checksum_sha256=HASH_B),
+    )
+    decode_calls: list[int] = []
+
+    def decode(
+        _model: object,
+        _tokenizer: object,
+        examples: tuple[object, ...],
+        **_kwargs: object,
+    ) -> tuple[DualPathCompactPrediction, ...]:
+        decode_calls.append(len(examples))
+        return cast(
+            tuple[DualPathCompactPrediction, ...],
+            (SimpleNamespace(example_id="validation"),),
+        )
+
+    monkeypatch.setattr(pipeline, "decode_compact_examples", decode)
+    monkeypatch.setattr(
+        pipeline,
+        "_contract_artifact",
+        lambda *_args, **_kwargs: pytest.fail("partial contract artifact was written"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_write_predictions",
+        lambda *_args, **_kwargs: pytest.fail("partial predictions were written"),
+    )
+
+    def stop_required(_context: object) -> bool:
+        return bool(decode_calls)
+
+    guard = cast(
+        pipeline._ResourceGuard,
+        SimpleNamespace(stop_required=stop_required),
+    )
+    model = cast(
+        TransformerLM,
+        SimpleNamespace(config=SimpleNamespace(context_length=512)),
+    )
+    checkpoint = cast(
+        CheckpointManifest,
+        SimpleNamespace(checksum_sha256=HASH_E),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        pipeline._evaluate_candidate_view(
+            context,
+            guard=guard,
+            inputs=inputs,
+            config_sha256_value=HASH_A,
+            dataset=cast(
+                SafeDevelopmentDataset,
+                SimpleNamespace(manifest=SimpleNamespace(dataset_version="0.3.0")),
+            ),
+            train_examples=(train,),
+            evaluation_examples=tuple(
+                validation.model_copy(update={"example_id": f"validation-{index:04d}"})
+                for index in range(1024)
+            ),
+            view=RemediationView.IID_VALIDATION,
+            model=model,
+            checkpoint_manifest=checkpoint,
+            device=torch.device("cpu"),
+            stem="stopped-view",
+        )
+
+    assert decode_calls == [1]
+    decode_reports = tuple(
+        item
+        for item in progress.reports
+        if item.get("message") == "Model evaluation decoding in progress."
+    )
+    assert [item["completed_units"] for item in decode_reports] == [0]
+    assert all(item["total_units"] == 1024 for item in decode_reports)
+    assert tuple(attempt.iterdir()) == ()
+
+
+def test_v04_pilot_selects_and_exercises_the_longest_row_per_task() -> None:
+    raw_examples: list[RemediationExample] = []
+    tokenized_examples: list[CompactTokenizedExample] = []
+    for task_index, task_name in enumerate(TaskName):
+        for variant, length in (("short", 12 + task_index), ("long", 80 + task_index)):
+            example_id = f"{variant}-{task_name.value}"
+            group_id = f"group-{variant}-{task_name.value}"
+            raw_examples.append(
+                cast(
+                    RemediationExample,
+                    SimpleNamespace(
+                        example_id=example_id,
+                        task_name=task_name,
+                        group_id=group_id,
+                    ),
+                )
+            )
+            tokenized_examples.append(
+                CompactTokenizedExample(
+                    example_id=example_id,
+                    task_name=task_name,
+                    group_id=group_id,
+                    token_ids=tuple(range(length)),
+                    target_mask=tuple(False for _ in range(length)),
+                    prompt_token_count=length - 1,
+                    target_token_count=1,
+                    prompt_tokens_retained=length - 1,
+                    prompt_truncated=False,
+                )
+            )
+
+    raw = tuple(raw_examples)
+    tokenized = tuple(tokenized_examples)
+    selected_raw, selected_tokenized = pipeline._longest_pilot_examples_per_task(
+        raw,
+        tokenized,
+    )
+    assert tuple(item.example_id for item in selected_raw) == tuple(
+        f"long-{task_name.value}" for task_name in TaskName
+    )
+    assert max(len(item.token_ids) for item in selected_tokenized) == max(
+        len(item.token_ids) for item in tokenized
+    )
+    assert pipeline._sequence_length_inventory_sha256(tokenized) == (
+        pipeline._sequence_length_inventory_sha256(tuple(reversed(tokenized)))
+    )
+    assert all(
+        pipeline._pilot_exercises_global_maximum(
+            selected_tokenized,
+            batch_size=batch_size,
+            seed=6401,
+            steps=10,
+        )
+        for batch_size in (1, 2, 4)
+    )
+
+    with pytest.raises(ValueError, match="align"):
+        pipeline._longest_pilot_examples_per_task(raw, tokenized[:-1])
+
+
 def test_source_control_and_resource_boundaries_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2160,23 +4616,52 @@ def test_source_control_and_resource_boundaries_fail_closed(
 
     config = _config("resource")
     guard = pipeline._ResourceGuard(config)
-    state = SimpleNamespace(created_at="2026-08-23T00:00:00+00:00")
+    monkeypatch.setattr(pipeline, "_process_peak_rss_bytes", lambda: 1)
     monkeypatch.setattr(
         pipeline,
         "PipelineStore",
-        lambda *_args, **_kwargs: SimpleNamespace(load_state=lambda: state),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resource guard must not use wall-clock pipeline creation")
+        ),
     )
-    monkeypatch.setattr(pipeline, "_process_peak_rss_bytes", lambda: 1)
+    active_elapsed = [1.0]
+
+    def progress_snapshot() -> ProgressSnapshot:
+        return ProgressSnapshot(
+            sequence=1,
+            event_kind=ProgressEventKind.RESUMED,
+            state=ProgressState.RUNNING,
+            timestamp_utc=datetime(2000, 1, 1, tzinfo=UTC),
+            stage="v04_candidate_training",
+            elapsed_seconds=active_elapsed[0],
+            message="progress reporting resumed",
+        )
+
     context = cast(
         StageContext,
         SimpleNamespace(
             run_directory=run,
             stop_requested=lambda: False,
+            progress=SimpleNamespace(snapshot=progress_snapshot),
         ),
     )
-    assert guard._elapsed_seconds(context) >= 0.0
-    assert guard.resource_stop_required(context, force=True) is True
+    # A decades-old wall timestamp does not consume active execution budget.
+    assert guard._elapsed_seconds(context) == 1.0
+    assert guard.resource_stop_required(context, force=True) is False
     assert guard.resource_stop_required(context, force=False) is False
+    guard.enforce_projected_write(
+        context,
+        reservation_bytes=config.maximum_run_bytes - 7,
+    )
+    with pytest.raises(pipeline.PipelineResourceLimitError, match="lacks capacity"):
+        guard.enforce_projected_write(
+            context,
+            reservation_bytes=config.maximum_run_bytes - 6,
+        )
+    with pytest.raises(TypeError, match="positive integer"):
+        guard.enforce_projected_write(context, reservation_bytes=0)
+    active_elapsed[0] = float(config.maximum_pipeline_seconds)
+    assert guard.resource_stop_required(context, force=True) is True
     with pytest.raises(KeyboardInterrupt):
         guard.enforce_start(context)
     with pytest.raises(pipeline.PipelineResourceLimitError, match="resource boundary"):
@@ -2240,6 +4725,10 @@ def test_contract_validators_reject_semantic_and_checksum_drift(tmp_path: Path) 
     prediction = pipeline._bound_model(prediction_draft, pipeline.PredictionArtifactManifest)
     reject(prediction, pipeline.PredictionArtifactManifest, "checksum", checksum_sha256=HASH_A)
 
+    structured_separation = pipeline._task_scoped_structured_separation(
+        _structured_records_for_views(),
+        views=tuple(RemediationView),
+    )
     separation_draft = pipeline.DevelopmentSeparationReport.model_construct(
         iid_dataset_manifest_sha256=HASH_A,
         shadow_dataset_manifest_sha256=HASH_B,
@@ -2248,6 +4737,7 @@ def test_contract_validators_reject_semantic_and_checksum_drift(tmp_path: Path) 
         group_overlap_count=0,
         example_checksum_overlap_count=0,
         prompt_checksum_overlap_count=0,
+        structured_separation=structured_separation,
         passed=True,
         checksum_sha256="0" * 64,
     )
@@ -2296,6 +4786,26 @@ def test_contract_validators_reject_semantic_and_checksum_drift(tmp_path: Path) 
         pilot, pipeline.V04PilotReport, "batches 1, 2, and 4", measurements=pilot.measurements[:2]
     )
     reject(pilot, pipeline.V04PilotReport, "checksum", checksum_sha256=HASH_A)
+    inactive_pilot_draft = pipeline.V04PilotReport.model_construct(
+        candidate_id="v04-context-1024",
+        requested_device="mps",
+        required_resolved_device="mps",
+        mandatory_batch_resolved_device=None,
+        prompt_truncation_rate=668 / 882,
+        v03_train_prompt_truncation_rate=0.05,
+        material_truncation_threshold=0.1,
+        activated=False,
+        measurements=(),
+        passed=True,
+        checksum_sha256="0" * 64,
+    )
+    inactive_pilot = pipeline._bound_model(inactive_pilot_draft, pipeline.V04PilotReport)
+    reject(
+        inactive_pilot,
+        pipeline.V04PilotReport,
+        "two measured conditions",
+        activated=True,
+    )
 
     training_draft = pipeline.V04CandidateTrainingReport.model_construct(
         activated=True,
@@ -2408,6 +4918,11 @@ def test_runtime_binding_and_v04_checkpoint_reconciliation(
     context = cast(
         StageContext,
         SimpleNamespace(project_root=tmp_path, source_commit=SOURCE_COMMIT),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_verify_runner_source",
+        lambda *_args, **_kwargs: SOURCE_COMMIT,
     )
     runtime._start(context)
     outcome = StageOutcome(summary="bound")
@@ -2532,6 +5047,21 @@ def test_low_level_path_and_resume_rejection_boundaries(
     current.mkdir(parents=True)
     empty_context = cast(StageContext, SimpleNamespace(attempt_directory=current))
     assert pipeline._latest_resume_source(empty_context, "control") is None
+    prior_root = empty_stage / "attempt-0000/training-state/control"
+    prior_root.mkdir(parents=True)
+    (prior_root / ".state-step-00000001.lock").write_text("forensic\n", encoding="ascii")
+    (prior_root / ".state-step-00000001.tmp-resume").mkdir()
+    assert pipeline._latest_resume_source(empty_context, "control") is None
+    unknown = prior_root / "unexpected.bin"
+    unknown.write_bytes(b"unsafe")
+    with pytest.raises(ValueError, match="unexpected entry"):
+        pipeline._latest_resume_source(empty_context, "control")
+    unknown.unlink()
+    unsafe_state = prior_root / "state-step-00000002"
+    unsafe_state.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink or non-directory"):
+        pipeline._latest_resume_source(empty_context, "control")
+    unsafe_state.unlink()
     with pytest.raises(ValueError, match="regular state directory"):
         pipeline._copy_resume_state(tmp_path / "missing-state", tmp_path / "destination")
 

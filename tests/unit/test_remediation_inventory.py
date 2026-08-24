@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
@@ -441,6 +441,7 @@ def test_measurement_freezes_observed_per_task_caps_and_accounts_for_prompt_rete
         assert measurement.reachability_rate == measurement.task_footer_retained_rate == 1.0
 
 
+@settings(deadline=None)
 @given(
     margin=st.integers(min_value=1, max_value=64),
     minimum_cap=st.integers(min_value=8, max_value=32),

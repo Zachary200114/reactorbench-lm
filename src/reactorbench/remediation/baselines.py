@@ -2,17 +2,30 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
+import numpy as np
+import torch
+from numpy.typing import NDArray
 from pydantic import Field, model_validator
+from torch import Tensor
 
 from reactorbench.evaluation.baselines import (
     BaselineResult,
     _bow_logistic,
+    _bow_matrix,
     _gru_result,
+    _GruClassifier,
     _labels,
     _majority_label,
+    _majority_results,
+    _next_event_ngram,
+    _prompt_token_rows,
     _result,
     _rule_results,
     _token_ngram_language_model,
+    _words,
     run_preregistered_baselines,
 )
 from reactorbench.evaluation.config import BaselineConfig
@@ -21,11 +34,25 @@ from reactorbench.evaluation.metrics import classification_metrics
 from reactorbench.evaluation.serialization import TokenizedExample
 from reactorbench.schemas.base import ContractModel, canonical_sha256
 from reactorbench.schemas.enums import SplitName, TaskName
-from reactorbench.tokenizer import ProjectTokenizer
+from reactorbench.tokenizer import PAD_ID, ProjectTokenizer
 
 from .config import RemediationView
 from .data import RemediationExample, SafeDevelopmentDataset
 from .serialization import CompactTokenizedExample
+
+StopCallback = Callable[[], bool]
+
+
+def _poll_stop(stop_requested: StopCallback | None) -> None:
+    """Raise cooperatively while rejecting ambiguous callback values."""
+
+    if stop_requested is None:
+        return
+    requested = stop_requested()
+    if type(requested) is not bool:
+        raise TypeError("baseline stop callback must return an exact boolean")
+    if requested:
+        raise KeyboardInterrupt
 
 
 class RemediationBaselineReport(ContractModel):
@@ -93,6 +120,192 @@ def _legacy_tokens(example: CompactTokenizedExample) -> TokenizedExample:
     )
 
 
+def _cooperative_bow_logistic(
+    data: ExperimentData,
+    config: BaselineConfig,
+    *,
+    stop_requested: StopCallback,
+) -> BaselineResult:
+    """Run the frozen BOW comparator with one stop boundary per optimizer step."""
+
+    _poll_stop(stop_requested)
+    task = TaskName.FAULT_FAMILY
+    train = examples_for_task(data.train, task)
+    validation = examples_for_task(data.validation, task)
+    frequencies: dict[str, int] = {}
+    for record in train:
+        for word in set(_words(record.prompt_text)):
+            frequencies[word] = frequencies.get(word, 0) + 1
+    chosen = sorted(frequencies, key=lambda word: (-frequencies[word], word))[
+        : config.bow_max_features
+    ]
+    vocabulary = {word: index for index, word in enumerate(chosen)}
+    labels = tuple(sorted(set(_labels(train))))
+    label_index = {label: index for index, label in enumerate(labels)}
+    x_train = _bow_matrix(train, vocabulary)
+    x_validation = _bow_matrix(validation, vocabulary)
+    y = np.array([label_index[label] for label in _labels(train)], dtype=np.int64)
+    weights = np.zeros((x_train.shape[1], len(labels)), dtype=np.float64)
+    started = time.perf_counter()
+    for _ in range(config.bow_steps):
+        _poll_stop(stop_requested)
+        logits = x_train @ weights
+        logits -= logits.max(axis=1, keepdims=True)
+        probabilities = np.exp(logits)
+        probabilities /= probabilities.sum(axis=1, keepdims=True)
+        probabilities[np.arange(len(train)), y] -= 1.0
+        gradient = x_train.T @ probabilities / len(train)
+        gradient[:-1] += config.bow_l2 * weights[:-1]
+        weights -= config.bow_learning_rate * gradient
+    _poll_stop(stop_requested)
+    predictions = tuple(labels[index] for index in np.argmax(x_validation @ weights, axis=1))
+    metrics = classification_metrics(task, _labels(validation), predictions)
+    return _result(
+        name="bag_of_words_logistic_regression",
+        task_name=task.value,
+        parameter_count=weights.size,
+        elapsed_seconds=time.perf_counter() - started,
+        classification=metrics,
+    )
+
+
+def _cooperative_gru_result(
+    data: ExperimentData,
+    tokenizer: ProjectTokenizer,
+    config: BaselineConfig,
+    task: TaskName,
+    *,
+    seed: int,
+    stop_requested: StopCallback,
+) -> BaselineResult:
+    """Run the frozen GRU comparator with stop boundaries at every batch."""
+
+    _poll_stop(stop_requested)
+    train = examples_for_task(data.train, task)
+    validation = examples_for_task(data.validation, task)
+    labels = tuple(sorted(set(_labels(train))))
+    label_index = {label: index for index, label in enumerate(labels)}
+    train_rows = _prompt_token_rows(train, tokenizer, config.gru_max_tokens)
+    validation_rows = _prompt_token_rows(validation, tokenizer, config.gru_max_tokens)
+    _poll_stop(stop_requested)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        model = _GruClassifier(
+            tokenizer.vocab_size,
+            config.gru_embedding_width,
+            config.gru_hidden_width,
+            len(labels),
+        )
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.gru_learning_rate)
+    rng = np.random.default_rng(seed)
+
+    def batch(
+        rows: tuple[tuple[int, ...], ...], indices: NDArray[np.int64]
+    ) -> tuple[Tensor, Tensor]:
+        width = max(len(rows[int(index)]) for index in indices)
+        tokens = torch.full((len(indices), width), PAD_ID, dtype=torch.long)
+        lengths = torch.empty(len(indices), dtype=torch.long)
+        for position, index in enumerate(indices):
+            row = rows[int(index)]
+            tokens[position, : len(row)] = torch.tensor(row, dtype=torch.long)
+            lengths[position] = len(row)
+        return tokens, lengths
+
+    started = time.perf_counter()
+    model.train()
+    for _ in range(config.gru_epochs):
+        order = rng.permutation(len(train)).astype(np.int64)
+        for start in range(0, len(order), config.gru_batch_size):
+            _poll_stop(stop_requested)
+            indices = order[start : start + config.gru_batch_size]
+            tokens, lengths = batch(train_rows, indices)
+            targets = torch.tensor(
+                [label_index[str(train[int(index)].classification_label)] for index in indices],
+                dtype=torch.long,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss = torch.nn.functional.cross_entropy(model(tokens, lengths), targets)
+            torch.autograd.backward(loss)
+            optimizer.step()
+    model.eval()
+    predicted: list[str] = []
+    with torch.no_grad():
+        for start in range(0, len(validation), config.gru_batch_size):
+            _poll_stop(stop_requested)
+            indices = np.arange(
+                start, min(start + config.gru_batch_size, len(validation)), dtype=np.int64
+            )
+            tokens, lengths = batch(validation_rows, indices)
+            predicted.extend(
+                labels[index] for index in model(tokens, lengths).argmax(dim=1).tolist()
+            )
+    _poll_stop(stop_requested)
+    metrics = classification_metrics(task, _labels(validation), tuple(predicted))
+    return _result(
+        name="gru_sequence_classifier",
+        task_name=task.value,
+        parameter_count=sum(parameter.numel() for parameter in model.parameters()),
+        elapsed_seconds=time.perf_counter() - started,
+        classification=metrics,
+    )
+
+
+def _cooperative_full_matrix(
+    data: ExperimentData,
+    tokenizer: ProjectTokenizer,
+    config: BaselineConfig,
+    *,
+    tokenized_train: tuple[TokenizedExample, ...],
+    tokenized_validation: tuple[TokenizedExample, ...],
+    stop_requested: StopCallback,
+) -> tuple[BaselineResult, ...]:
+    """Execute the existing comparator matrix with boundaries between fits."""
+
+    results: list[BaselineResult] = []
+    _poll_stop(stop_requested)
+    results.extend(_majority_results(data))
+    _poll_stop(stop_requested)
+    results.extend(_rule_results(data))
+    _poll_stop(stop_requested)
+    results.append(_next_event_ngram(data, config.ngram_order))
+    _poll_stop(stop_requested)
+    results.append(
+        _token_ngram_language_model(
+            tokenized_train,
+            tokenized_validation,
+            order=config.ngram_order,
+            alpha=config.ngram_additive_smoothing,
+            vocab_size=tokenizer.vocab_size,
+        )
+    )
+    _poll_stop(stop_requested)
+    results.append(_cooperative_bow_logistic(data, config, stop_requested=stop_requested))
+    _poll_stop(stop_requested)
+    results.append(
+        _cooperative_gru_result(
+            data,
+            tokenizer,
+            config,
+            TaskName.FAULT_FAMILY,
+            seed=5511,
+            stop_requested=stop_requested,
+        )
+    )
+    _poll_stop(stop_requested)
+    results.append(
+        _cooperative_gru_result(
+            data,
+            tokenizer,
+            config,
+            TaskName.CONTINUE_LOG,
+            seed=5512,
+            stop_requested=stop_requested,
+        )
+    )
+    _poll_stop(stop_requested)
+    return tuple(results)
+
+
 def _baselines_with_optional_continuation(
     data: ExperimentData,
     tokenizer: ProjectTokenizer,
@@ -100,6 +313,7 @@ def _baselines_with_optional_continuation(
     *,
     tokenized_train: tuple[TokenizedExample, ...],
     tokenized_validation: tuple[TokenizedExample, ...],
+    stop_requested: StopCallback | None = None,
 ) -> tuple[BaselineResult, ...]:
     """Preserve the matrix while marking an absent continuation task as N/A."""
 
@@ -110,6 +324,15 @@ def _baselines_with_optional_continuation(
         TaskName.CONTINUE_LOG,
     }
     if required.issubset(validation_tasks):
+        if stop_requested is not None:
+            return _cooperative_full_matrix(
+                data,
+                tokenizer,
+                config,
+                tokenized_train=tokenized_train,
+                tokenized_validation=tokenized_validation,
+                stop_requested=stop_requested,
+            )
         return run_preregistered_baselines(
             data,
             tokenizer,
@@ -121,6 +344,7 @@ def _baselines_with_optional_continuation(
         raise ValueError("evaluation view lacks a required diagnosis or action comparator task")
     results: list[BaselineResult] = []
     for task in (TaskName.FAULT_FAMILY, TaskName.NEXT_ACTION):
+        _poll_stop(stop_requested)
         train = examples_for_task(data.train, task)
         validation = examples_for_task(data.validation, task)
         prediction = _majority_label(train)
@@ -138,7 +362,10 @@ def _baselines_with_optional_continuation(
                 classification=metrics,
             )
         )
+        _poll_stop(stop_requested)
+    _poll_stop(stop_requested)
     results.extend(_rule_results(data))
+    _poll_stop(stop_requested)
     results.append(
         _token_ngram_language_model(
             tokenized_train,
@@ -148,8 +375,26 @@ def _baselines_with_optional_continuation(
             vocab_size=tokenizer.vocab_size,
         )
     )
-    results.append(_bow_logistic(data, config))
-    results.append(_gru_result(data, tokenizer, config, TaskName.FAULT_FAMILY, seed=5511))
+    _poll_stop(stop_requested)
+    results.append(
+        _bow_logistic(data, config)
+        if stop_requested is None
+        else _cooperative_bow_logistic(data, config, stop_requested=stop_requested)
+    )
+    _poll_stop(stop_requested)
+    results.append(
+        _gru_result(data, tokenizer, config, TaskName.FAULT_FAMILY, seed=5511)
+        if stop_requested is None
+        else _cooperative_gru_result(
+            data,
+            tokenizer,
+            config,
+            TaskName.FAULT_FAMILY,
+            seed=5511,
+            stop_requested=stop_requested,
+        )
+    )
+    _poll_stop(stop_requested)
     return tuple(results)
 
 
@@ -161,6 +406,7 @@ def run_remediation_baselines(
     tokenized_train: tuple[CompactTokenizedExample, ...],
     tokenized_validation: tuple[CompactTokenizedExample, ...],
     evaluation_view: RemediationView = RemediationView.IID_VALIDATION,
+    stop_requested: StopCallback | None = None,
 ) -> RemediationBaselineReport:
     """Run the existing majority/rule/N-gram/BOW/GRU comparator matrix."""
 
@@ -201,6 +447,7 @@ def run_remediation_baselines(
         baseline_config,
         tokenized_train=legacy_train,
         tokenized_validation=legacy_validation,
+        stop_requested=stop_requested,
     )
     fault = tuple(
         result.classification.macro_f1

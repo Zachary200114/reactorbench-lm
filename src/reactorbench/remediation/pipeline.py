@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -37,12 +38,19 @@ from reactorbench.evaluation.compact import compact_output_contract
 from reactorbench.evaluation.config import BaselineConfig, load_phase5_config
 from reactorbench.model import TransformerConfig, TransformerLM
 from reactorbench.model.checkpoint import CheckpointManifest, load_checkpoint
-from reactorbench.schemas.base import ContractModel, canonical_json_bytes, canonical_sha256
+from reactorbench.schemas.base import (
+    ContractId,
+    ContractModel,
+    canonical_json_bytes,
+    canonical_sha256,
+)
 from reactorbench.schemas.enums import TaskName
 from reactorbench.tokenizer import ProjectTokenizer
 
 from .acceptance import (
     DevelopmentArtifactBinding,
+    DevelopmentView,
+    V03AcceptanceResult,
     V04AcceptanceResult,
     evaluate_v03_acceptance,
     evaluate_v04_acceptance,
@@ -64,15 +72,18 @@ from .config import (
     load_v04_config,
 )
 from .data import (
+    FrozenV03IIDMaterial,
     RemediationExample,
     SafeDevelopmentDataset,
     SafeDevelopmentManifest,
+    TaskScopedStructuredFingerprint,
+    build_frozen_v03_iid_material,
     build_safe_development_dataset,
+    build_safe_development_dataset_with_structured_fingerprints,
     load_safe_development_artifact,
     write_safe_development_artifact,
 )
 from .decoding import (
-    MAX_DECODE_BATCH_SIZE,
     DualPathCompactPrediction,
     decode_compact_examples,
 )
@@ -100,7 +111,8 @@ from .orchestration import (
     StageOutcome,
     StageStatus,
 )
-from .progress import PROGRESS_EVENT_LOG_FILENAME, ProgressMetric
+from .progress import PROGRESS_EVENT_LOG_FILENAME, ProgressMetric, ProgressSnapshot
+from .sampling import task_balanced_batch_indices
 from .selection import (
     SemanticSelectionManifest,
     build_semantic_selection_manifest,
@@ -111,8 +123,13 @@ from .training import (
     CompactTrainingOutcome,
     CompactTrainingResult,
     CompactTrainingStopped,
+    DeviceResolution,
     EvaluationCallback,
     TrainingProgress,
+    durable_training_state_upper_bound_bytes,
+    latest_committed_training_state,
+    retire_superseded_training_states,
+    selected_checkpoint_upper_bound_bytes,
     train_compact_model,
 )
 
@@ -125,6 +142,9 @@ FRESH_EXTENSION_MANIFEST_FILENAME = "FRESH_EXTENSION_MANIFEST.json"
 MAX_PIPELINE_JSON_BYTES = 64 * 1024 * 1024
 MAX_PREDICTION_ROW_BYTES = 256 * 1024
 MAX_RUN_FILES = 200_000
+MAX_TRANSIENT_DURABLE_STATES = 3
+COOPERATIVE_DECODE_CHUNK_SIZE: Literal[1] = 1
+DECODE_PROGRESS_REPORT_INTERVAL: Literal[16] = 16
 SMOKE_STEPS = 2
 SMOKE_EXAMPLES_PER_VIEW = 24
 V02_MAXIMUM_CAP_EXHAUSTION_RATE = 0.01
@@ -138,6 +158,18 @@ TERMINAL_REVIEW_DIRECTORY = "terminal-reviews"
 TERMINAL_REVIEW_MANIFEST_FILENAME = "terminal-review-bundle.json"
 TERMINAL_REVIEW_SUMMARY_FILENAME = "TERMINAL_REVIEW.md"
 TRUSTED_GIT = "/usr/bin/git"
+
+_DEVELOPMENT_VIEW_BY_REMEDIATION: Mapping[RemediationView, DevelopmentView] = MappingProxyType(
+    {
+        RemediationView.IID_VALIDATION: DevelopmentView.IID_VALIDATION,
+        RemediationView.SHADOW_RENDERER: DevelopmentView.RENDERER_SHADOW,
+        RemediationView.SHADOW_COMPONENT: DevelopmentView.COMPONENT_ROLE_SHADOW,
+        RemediationView.SHADOW_SEVERITY: DevelopmentView.SEVERITY_SHADOW,
+        RemediationView.SHADOW_COMPOSITION: DevelopmentView.COMPOSITION_SHADOW,
+        RemediationView.SHADOW_COUNTERFACTUAL: DevelopmentView.COUNTERFACTUAL_SHADOW,
+        RemediationView.SHADOW_NOISE: DevelopmentView.NOISE_SHADOW,
+    }
+)
 
 Sha256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 GitCommit = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{7,64}$")]
@@ -224,12 +256,23 @@ class V02DevelopmentGateReport(ContractModel):
     report_version: Literal["0.2.0"] = "0.2.0"
     inventory_report_sha256: Sha256
     prediction_manifest_sha256: Sha256
+    training_result_sha256: Sha256
+    checkpoint_manifest_sha256: Sha256
+    checkpoint_weights_sha256: Sha256
     example_count: StrictInt = Field(ge=1)
     constrained_parse_rate: Probability
     constrained_schema_validity_rate: Probability
+    constrained_exact_semantic_match_rate: Probability
+    constrained_mean_latency_seconds: StrictFloat = Field(ge=0.0, allow_inf_nan=False)
     unconstrained_parse_rate: Probability
     unconstrained_schema_validity_rate: Probability
+    unconstrained_exact_semantic_match_rate: Probability
+    unconstrained_mean_latency_seconds: StrictFloat = Field(ge=0.0, allow_inf_nan=False)
     generation_cap_exhaustion_rate: Probability
+    process_peak_rss_bytes: StrictInt = Field(ge=1)
+    mps_peak_current_allocated_bytes: StrictInt = Field(ge=0)
+    mps_peak_driver_allocated_bytes: StrictInt = Field(ge=0)
+    checkpoint_size_bytes: StrictInt = Field(ge=1)
     inventory_example_count: StrictInt = Field(ge=1)
     prompt_truncation_count: StrictInt = Field(ge=0)
     prompt_truncation_rate: Probability
@@ -277,6 +320,171 @@ class V02DevelopmentGateReport(ContractModel):
         return self
 
 
+class StructuredFingerprintViewInventory(ContractModel):
+    view: RemediationView
+    example_count: StrictInt = Field(ge=1)
+    distinct_task_scoped_fingerprint_count: StrictInt = Field(ge=1)
+    inventory_sha256: Sha256
+
+    @model_validator(mode="after")
+    def counts_are_possible(self) -> StructuredFingerprintViewInventory:
+        if self.distinct_task_scoped_fingerprint_count > self.example_count:
+            raise ValueError("distinct structured fingerprints exceed the view inventory")
+        return self
+
+
+class StructuredFingerprintViewOverlap(ContractModel):
+    first_view: RemediationView
+    second_view: RemediationView
+    overlap_count: StrictInt = Field(ge=0)
+
+
+class TaskScopedStructuredSeparationReport(ContractModel):
+    report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
+    views: tuple[RemediationView, ...] = Field(min_length=2, max_length=len(RemediationView))
+    inventories: tuple[StructuredFingerprintViewInventory, ...] = Field(min_length=2)
+    pairwise_overlaps: tuple[StructuredFingerprintViewOverlap, ...] = Field(min_length=1)
+    overlap_count: StrictInt = Field(ge=0)
+    passed: StrictBool
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def inventory_pairing_and_checksum_match(self) -> TaskScopedStructuredSeparationReport:
+        canonical_views = tuple(view for view in RemediationView if view in set(self.views))
+        if self.views != canonical_views:
+            raise ValueError("structured separation views must be unique and canonical")
+        if tuple(item.view for item in self.inventories) != self.views:
+            raise ValueError("structured fingerprint inventories differ from declared views")
+        expected_pairs = tuple(
+            (first, second)
+            for first_index, first in enumerate(self.views)
+            for second in self.views[first_index + 1 :]
+        )
+        if (
+            tuple((item.first_view, item.second_view) for item in self.pairwise_overlaps)
+            != expected_pairs
+        ):
+            raise ValueError("structured overlap pairs are incomplete or noncanonical")
+        expected_overlap = sum(item.overlap_count for item in self.pairwise_overlaps)
+        if self.overlap_count != expected_overlap or self.passed is not (expected_overlap == 0):
+            raise ValueError("structured separation result differs from pairwise findings")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("structured separation checksum mismatch")
+        return self
+
+
+class V03RemovedDuplicateBinding(ContractModel):
+    """One removed raw row and the exact retained row that supersedes it."""
+
+    binding_version: Literal["0.3.0"] = "0.3.0"
+    removed_example_id: ContractId
+    removed_example_sha256: Sha256
+    task_name: TaskName
+    view: RemediationView
+    prompt_sha256: Sha256
+    canonical_target_sha256: Sha256
+    retained_example_id: ContractId
+    retained_example_sha256: Sha256
+    retained_task_name: TaskName
+    retained_view: RemediationView
+    retained_prompt_sha256: Sha256
+    retained_canonical_target_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def exact_duplicate_and_checksum_match(self) -> V03RemovedDuplicateBinding:
+        if (
+            self.view is not RemediationView.IID_TRAIN
+            or self.retained_view is not RemediationView.IID_TRAIN
+            or self.removed_example_id == self.retained_example_id
+            or self.removed_example_sha256 == self.retained_example_sha256
+            or self.task_name is TaskName.COUNTERFACTUAL_COMPARE
+            or self.retained_task_name is not self.task_name
+            or self.retained_prompt_sha256 != self.prompt_sha256
+            or self.retained_canonical_target_sha256 != self.canonical_target_sha256
+        ):
+            raise ValueError("v0.3 removed-row binding is not an IID duplicate pair")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("v0.3 removed-row binding checksum mismatch")
+        return self
+
+
+class V03CounterfactualCapCompatibilityReport(ContractModel):
+    """Exact bridge from the historical raw cap material to deduplicated IID data."""
+
+    report_version: Literal["0.3.0"] = "0.3.0"
+    frozen_cap_report_sha256: Sha256
+    raw_cap_report_sha256: Sha256
+    deduplicated_cap_report_sha256: Sha256
+    frozen_cap_dataset_manifest_sha256: Sha256
+    raw_dataset_manifest_sha256: Sha256
+    deduplicated_dataset_manifest_sha256: Sha256
+    raw_example_inventory_sha256: Sha256
+    deduplicated_example_inventory_sha256: Sha256
+    removed_example_inventory_sha256: Sha256
+    removed_examples: tuple[V03RemovedDuplicateBinding, ...] = Field(
+        min_length=24,
+        max_length=24,
+    )
+    raw_counterfactual_inventory_sha256: Sha256
+    deduplicated_counterfactual_inventory_sha256: Sha256
+    raw_counterfactual_evidence_sha256: Sha256
+    deduplicated_counterfactual_evidence_sha256: Sha256
+    raw_example_count: Literal[5859]
+    deduplicated_example_count: Literal[5835]
+    removed_example_count: Literal[24]
+    counterfactual_train_count: Literal[40]
+    counterfactual_validation_count: Literal[15]
+    retained_rows_bit_exact: Literal[True]
+    removed_rows_verified: Literal[True]
+    frozen_cap_reproduced: Literal[True]
+    passed: StrictBool
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def bridge_and_checksum_match(self) -> V03CounterfactualCapCompatibilityReport:
+        removed_ids = tuple(item.removed_example_id for item in self.removed_examples)
+        if (
+            removed_ids != tuple(sorted(removed_ids))
+            or len(removed_ids) != len(set(removed_ids))
+            or len(self.removed_examples) != self.removed_example_count
+            or self.removed_example_inventory_sha256
+            != canonical_sha256(
+                tuple(
+                    item.model_dump(mode="json", round_trip=True) for item in self.removed_examples
+                )
+            )
+        ):
+            raise ValueError("v0.3 removed-row inventory is incomplete or noncanonical")
+        expected_pass = (
+            self.frozen_cap_report_sha256 == self.raw_cap_report_sha256
+            and self.frozen_cap_dataset_manifest_sha256 == self.raw_dataset_manifest_sha256
+            and self.raw_example_count - self.deduplicated_example_count
+            == self.removed_example_count
+            and self.raw_counterfactual_inventory_sha256
+            == self.deduplicated_counterfactual_inventory_sha256
+            and self.raw_counterfactual_evidence_sha256
+            == self.deduplicated_counterfactual_evidence_sha256
+            and self.retained_rows_bit_exact
+            and self.removed_rows_verified
+            and self.frozen_cap_reproduced
+        )
+        if self.passed is not expected_pass:
+            raise ValueError("v0.3 cap compatibility state differs from its exact bridge")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("v0.3 cap compatibility checksum mismatch")
+        return self
+
+
 class DevelopmentSeparationReport(ContractModel):
     report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
     iid_dataset_manifest_sha256: Sha256
@@ -286,16 +494,20 @@ class DevelopmentSeparationReport(ContractModel):
     group_overlap_count: StrictInt = Field(ge=0)
     example_checksum_overlap_count: StrictInt = Field(ge=0)
     prompt_checksum_overlap_count: StrictInt = Field(ge=0)
+    structured_separation: TaskScopedStructuredSeparationReport
     passed: StrictBool
     checksum_sha256: Sha256
 
     @model_validator(mode="after")
     def result_and_checksum_match(self) -> DevelopmentSeparationReport:
+        if self.structured_separation.views != tuple(RemediationView):
+            raise ValueError("development separation must cover every development view")
         expected_pass = (
             self.group_overlap_count
             + self.example_checksum_overlap_count
             + self.prompt_checksum_overlap_count
             == 0
+            and self.structured_separation.passed
         )
         if self.passed is not expected_pass:
             raise ValueError("development separation pass state differs from findings")
@@ -354,15 +566,45 @@ class CandidateSelectionReport(ContractModel):
 class V04PilotMeasurement(ContractModel):
     batch_size: StrictInt = Field(ge=1, le=128)
     training_result_sha256: Sha256
+    training_config_sha256: Sha256
+    model_config_sha256: Sha256
+    train_tokenized_sha256: Sha256
+    validation_tokenized_sha256: Sha256
+    tokenizer_manifest_sha256: Sha256
+    checkpoint_manifest_sha256: Sha256
+    device: DeviceResolution
+    train_example_count: StrictInt = Field(ge=1)
+    validation_example_count: StrictInt = Field(ge=1)
+    pilot_train_example_count: StrictInt = Field(ge=1)
+    pilot_validation_example_count: StrictInt = Field(ge=1)
+    train_length_inventory_sha256: Sha256
+    validation_length_inventory_sha256: Sha256
+    maximum_train_sequence_tokens: StrictInt = Field(ge=1, le=1024)
+    maximum_validation_sequence_tokens: StrictInt = Field(ge=1, le=1024)
+    mean_train_sequence_tokens: StrictFloat = Field(gt=0.0, le=1024.0, allow_inf_nan=False)
+    mean_validation_sequence_tokens: StrictFloat = Field(gt=0.0, le=1024.0, allow_inf_nan=False)
+    maximum_train_sequence_exercised: Literal[True]
     finite_loss: Literal[True]
     checkpoint_reloaded: Literal[True]
     elapsed_seconds: StrictFloat = Field(gt=0.0, allow_inf_nan=False)
     process_peak_rss_bytes: StrictInt = Field(ge=1)
 
+    @model_validator(mode="after")
+    def length_evidence_is_possible(self) -> V04PilotMeasurement:
+        if (
+            self.mean_train_sequence_tokens > self.maximum_train_sequence_tokens
+            or self.mean_validation_sequence_tokens > self.maximum_validation_sequence_tokens
+        ):
+            raise ValueError("v0.4 pilot mean sequence length exceeds its maximum")
+        return self
+
 
 class V04PilotReport(ContractModel):
     report_version: Literal["0.4.0"] = PIPELINE_EXECUTION_VERSION
     candidate_id: str
+    requested_device: Literal["mps"]
+    required_resolved_device: Literal["mps"]
+    mandatory_batch_resolved_device: Literal["cpu", "mps"] | None
     frozen_v02_prompt_truncation_count: Literal[668] = V02_FROZEN_PROMPT_TRUNCATION_COUNT
     frozen_v02_example_count: Literal[882] = V01_PROMPT_TRUNCATION_EXAMPLE_COUNT
     prompt_truncation_rate: Probability
@@ -378,17 +620,61 @@ class V04PilotReport(ContractModel):
         frozen_rate = self.frozen_v02_prompt_truncation_count / self.frozen_v02_example_count
         if self.prompt_truncation_rate != frozen_rate:
             raise ValueError("v0.4 pilot does not reproduce the D-073 truncation rate")
-        expected_activation = frozen_rate >= self.material_truncation_threshold
+        expected_activation = (
+            frozen_rate >= self.material_truncation_threshold
+            and self.v03_train_prompt_truncation_rate >= self.material_truncation_threshold
+        )
         if self.activated is not expected_activation:
-            raise ValueError("v0.4 pilot activation differs from measured truncation")
+            raise ValueError("v0.4 pilot activation differs from its two measured conditions")
         if self.activated:
             if tuple(item.batch_size for item in self.measurements) != (1, 2, 4):
                 raise ValueError("activated v0.4 pilot must cover batches 1, 2, and 4")
-            if self.passed is not all(
-                item.finite_loss and item.checkpoint_reloaded for item in self.measurements
+            if any(item.device.requested != self.requested_device for item in self.measurements):
+                raise ValueError("activated v0.4 pilot requested-device evidence differs")
+            profile = self.measurements[0]
+            profile_fields = (
+                "train_example_count",
+                "validation_example_count",
+                "pilot_train_example_count",
+                "pilot_validation_example_count",
+                "model_config_sha256",
+                "train_tokenized_sha256",
+                "validation_tokenized_sha256",
+                "tokenizer_manifest_sha256",
+                "train_length_inventory_sha256",
+                "validation_length_inventory_sha256",
+                "maximum_train_sequence_tokens",
+                "maximum_validation_sequence_tokens",
+                "mean_train_sequence_tokens",
+                "mean_validation_sequence_tokens",
+            )
+            if any(
+                getattr(item, field) != getattr(profile, field)
+                for item in self.measurements[1:]
+                for field in profile_fields
             ):
-                raise ValueError("activated v0.4 pilot lacks passing measurements")
-        elif self.measurements or not self.passed:
+                raise ValueError("v0.4 pilot measurements use different length profiles")
+            mandatory_measurement = self.measurements[-1]
+            if self.mandatory_batch_resolved_device != mandatory_measurement.device.resolved:
+                raise ValueError("v0.4 pilot mandatory resolved-device evidence differs")
+            expected_pass = (
+                all(
+                    item.finite_loss
+                    and item.checkpoint_reloaded
+                    and item.device.resolved == self.required_resolved_device
+                    and not item.device.fallback_used
+                    and item.maximum_train_sequence_exercised
+                    for item in self.measurements
+                )
+                and mandatory_measurement.batch_size == 4
+                and mandatory_measurement.device.resolved == self.required_resolved_device
+                and not mandatory_measurement.device.fallback_used
+            )
+            if self.passed is not expected_pass:
+                raise ValueError("activated v0.4 pilot pass state differs from native-MPS evidence")
+        elif (
+            self.measurements or self.mandatory_batch_resolved_device is not None or not self.passed
+        ):
             raise ValueError("non-activated v0.4 pilot must be a passing no-op")
         expected = canonical_sha256(
             self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
@@ -834,6 +1120,237 @@ def _bound_model[ModelT: ContractModel](draft: ModelT, model_type: type[ModelT])
     return model_type.model_validate_json(canonical_json_bytes(payload), strict=True)
 
 
+def _task_scoped_structured_separation(
+    records: tuple[TaskScopedStructuredFingerprint, ...],
+    *,
+    views: tuple[RemediationView, ...],
+) -> TaskScopedStructuredSeparationReport:
+    """Checksum-bind every view and reject truth-independent structure reuse."""
+
+    canonical_views = tuple(view for view in RemediationView if view in set(views))
+    if (
+        type(records) is not tuple
+        or any(type(item) is not TaskScopedStructuredFingerprint for item in records)
+        or type(views) is not tuple
+        or views != canonical_views
+        or len(views) < 2
+        or any(item.view not in set(views) for item in records)
+    ):
+        raise TypeError("structured separation requires canonical in-memory inventories")
+    records_by_view = {view: tuple(item for item in records if item.view is view) for view in views}
+    if any(not items for items in records_by_view.values()):
+        raise ValueError("every separated development view must have fingerprint records")
+    inventories = tuple(
+        StructuredFingerprintViewInventory(
+            view=view,
+            example_count=len(records_by_view[view]),
+            distinct_task_scoped_fingerprint_count=len(
+                {item.separation_key for item in records_by_view[view]}
+            ),
+            inventory_sha256=canonical_sha256(
+                tuple(
+                    sorted(
+                        (
+                            item.example_id,
+                            item.task_name.value,
+                            item.structured_fingerprint_sha256,
+                        )
+                        for item in records_by_view[view]
+                    )
+                )
+            ),
+        )
+        for view in views
+    )
+    keys_by_view = {view: {item.separation_key for item in records_by_view[view]} for view in views}
+    overlaps = tuple(
+        StructuredFingerprintViewOverlap(
+            first_view=first,
+            second_view=second,
+            overlap_count=len(keys_by_view[first] & keys_by_view[second]),
+        )
+        for first_index, first in enumerate(views)
+        for second in views[first_index + 1 :]
+    )
+    overlap_count = sum(item.overlap_count for item in overlaps)
+    draft = TaskScopedStructuredSeparationReport.model_construct(
+        views=views,
+        inventories=inventories,
+        pairwise_overlaps=overlaps,
+        overlap_count=overlap_count,
+        passed=overlap_count == 0,
+        checksum_sha256="0" * 64,
+    )
+    return _bound_model(draft, TaskScopedStructuredSeparationReport)
+
+
+def _counterfactual_inventory_sha256(dataset: SafeDevelopmentDataset) -> str:
+    return canonical_sha256(
+        tuple(
+            (item.example_id, item.checksum_sha256, item.view.value)
+            for item in dataset.examples
+            if item.task_name is TaskName.COUNTERFACTUAL_COMPARE
+        )
+    )
+
+
+def _counterfactual_cap_evidence_sha256(report: CounterfactualCapExtensionReport) -> str:
+    if type(report) is not CounterfactualCapExtensionReport:
+        raise TypeError("counterfactual cap evidence requires an exact report")
+    return canonical_sha256(
+        report.model_dump(
+            mode="json",
+            round_trip=True,
+            exclude={"dataset_manifest_sha256", "checksum_sha256"},
+        )
+    )
+
+
+def _v03_cap_compatibility_report(
+    material: FrozenV03IIDMaterial,
+    *,
+    frozen_cap: CounterfactualCapExtensionReport,
+    raw_cap: CounterfactualCapExtensionReport,
+    deduplicated_cap: CounterfactualCapExtensionReport,
+) -> V03CounterfactualCapCompatibilityReport:
+    """Bind exact frozen-cap reproduction to the row-safe deduplication proof."""
+
+    if type(material) is not FrozenV03IIDMaterial or any(
+        type(report) is not CounterfactualCapExtensionReport
+        for report in (frozen_cap, raw_cap, deduplicated_cap)
+    ):
+        raise TypeError("v0.3 cap bridge requires exact material and cap reports")
+    if raw_cap != frozen_cap:
+        raise PipelineExecutionError("v0.3 raw cap material did not reproduce its frozen report")
+    raw_counterfactual = _counterfactual_inventory_sha256(material.raw_dataset)
+    deduplicated_counterfactual = _counterfactual_inventory_sha256(material.dataset)
+    raw_evidence = _counterfactual_cap_evidence_sha256(raw_cap)
+    deduplicated_evidence = _counterfactual_cap_evidence_sha256(deduplicated_cap)
+    retained_by_signature: dict[
+        tuple[TaskName, str, str],
+        list[RemediationExample],
+    ] = {}
+    for retained in material.dataset.examples:
+        retained_by_signature.setdefault(
+            (retained.task_name, retained.prompt_sha256, retained.canonical_target_json),
+            [],
+        ).append(retained)
+    removed_bindings: list[V03RemovedDuplicateBinding] = []
+    for removed in sorted(material.removed_examples, key=lambda item: item.example_id):
+        counterparts = retained_by_signature.get(
+            (removed.task_name, removed.prompt_sha256, removed.canonical_target_json),
+            [],
+        )
+        if len(counterparts) != 1:
+            raise PipelineExecutionError(
+                "v0.3 removed row does not bind exactly one retained counterpart"
+            )
+        retained = counterparts[0]
+        binding_draft = V03RemovedDuplicateBinding.model_construct(
+            removed_example_id=removed.example_id,
+            removed_example_sha256=removed.checksum_sha256,
+            task_name=removed.task_name,
+            view=removed.view,
+            prompt_sha256=removed.prompt_sha256,
+            canonical_target_sha256=canonical_sha256(removed.canonical_target_json),
+            retained_example_id=retained.example_id,
+            retained_example_sha256=retained.checksum_sha256,
+            retained_task_name=retained.task_name,
+            retained_view=retained.view,
+            retained_prompt_sha256=retained.prompt_sha256,
+            retained_canonical_target_sha256=canonical_sha256(retained.canonical_target_json),
+            checksum_sha256="0" * 64,
+        )
+        removed_bindings.append(_bound_model(binding_draft, V03RemovedDuplicateBinding))
+    removed_examples = tuple(removed_bindings)
+    removed_inventory = canonical_sha256(
+        tuple(item.model_dump(mode="json", round_trip=True) for item in removed_examples)
+    )
+    draft = V03CounterfactualCapCompatibilityReport.model_construct(
+        frozen_cap_report_sha256=frozen_cap.checksum_sha256,
+        raw_cap_report_sha256=raw_cap.checksum_sha256,
+        deduplicated_cap_report_sha256=deduplicated_cap.checksum_sha256,
+        frozen_cap_dataset_manifest_sha256=frozen_cap.dataset_manifest_sha256,
+        raw_dataset_manifest_sha256=material.raw_dataset.manifest.checksum_sha256,
+        deduplicated_dataset_manifest_sha256=material.dataset.manifest.checksum_sha256,
+        raw_example_inventory_sha256=material.raw_dataset.manifest.inventory_sha256,
+        deduplicated_example_inventory_sha256=material.dataset.manifest.inventory_sha256,
+        removed_example_inventory_sha256=removed_inventory,
+        removed_examples=removed_examples,
+        raw_counterfactual_inventory_sha256=raw_counterfactual,
+        deduplicated_counterfactual_inventory_sha256=deduplicated_counterfactual,
+        raw_counterfactual_evidence_sha256=raw_evidence,
+        deduplicated_counterfactual_evidence_sha256=deduplicated_evidence,
+        raw_example_count=len(material.raw_dataset.examples),
+        deduplicated_example_count=len(material.dataset.examples),
+        removed_example_count=len(material.removed_examples),
+        counterfactual_train_count=sum(
+            item.task_name is TaskName.COUNTERFACTUAL_COMPARE
+            and item.view is RemediationView.IID_TRAIN
+            for item in material.dataset.examples
+        ),
+        counterfactual_validation_count=sum(
+            item.task_name is TaskName.COUNTERFACTUAL_COMPARE
+            and item.view is RemediationView.IID_VALIDATION
+            for item in material.dataset.examples
+        ),
+        retained_rows_bit_exact=True,
+        removed_rows_verified=True,
+        frozen_cap_reproduced=True,
+        passed=(
+            raw_counterfactual == deduplicated_counterfactual
+            and raw_evidence == deduplicated_evidence
+        ),
+        checksum_sha256="0" * 64,
+    )
+    return _bound_model(draft, V03CounterfactualCapCompatibilityReport)
+
+
+def _development_separation_report(
+    iid: SafeDevelopmentDataset,
+    shadow: SafeDevelopmentDataset,
+    structured_separation: TaskScopedStructuredSeparationReport,
+) -> DevelopmentSeparationReport:
+    """Bind legacy rendered checks and the stronger cross-view structured gate."""
+
+    iid_groups = {item.group_id for item in iid.examples}
+    shadow_groups = {item.group_id for item in shadow.examples}
+    iid_checksums = {item.checksum_sha256 for item in iid.examples}
+    shadow_checksums = {item.checksum_sha256 for item in shadow.examples}
+    iid_prompts = {item.prompt_sha256 for item in iid.examples}
+    shadow_prompts = {item.prompt_sha256 for item in shadow.examples}
+    draft = DevelopmentSeparationReport.model_construct(
+        iid_dataset_manifest_sha256=iid.manifest.checksum_sha256,
+        shadow_dataset_manifest_sha256=shadow.manifest.checksum_sha256,
+        iid_example_count=len(iid.examples),
+        shadow_example_count=len(shadow.examples),
+        group_overlap_count=len(iid_groups & shadow_groups),
+        example_checksum_overlap_count=len(iid_checksums & shadow_checksums),
+        prompt_checksum_overlap_count=len(iid_prompts & shadow_prompts),
+        structured_separation=structured_separation,
+        passed=not (
+            iid_groups & shadow_groups
+            or iid_checksums & shadow_checksums
+            or iid_prompts & shadow_prompts
+        )
+        and structured_separation.passed,
+        checksum_sha256="0" * 64,
+    )
+    return _bound_model(draft, DevelopmentSeparationReport)
+
+
+def _require_exact_regenerated_iid(
+    regenerated: SafeDevelopmentDataset,
+    committed: SafeDevelopmentDataset,
+) -> None:
+    """Fail closed unless v0.4 reproduced the exact committed v0.3 material."""
+
+    if regenerated != committed:
+        raise PipelineExecutionError(
+            "regenerated IID material differs from the committed v0.3 stage artifact"
+        )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -1038,6 +1555,14 @@ def request_pipeline_stop(path: Path) -> PipelineStopRequest:
     return request
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def archive_pipeline_stop(path: Path) -> Path | None:
     if not isinstance(path, Path) or path.name != STOP_REQUEST_FILENAME:
         raise TypeError("pipeline stop archive requires the canonical marker Path")
@@ -1050,13 +1575,22 @@ def archive_pipeline_stop(path: Path) -> Path | None:
         raise ValueError("pipeline stop archive directory is unsafe")
     destination = archive_root / f"stop-{request.checksum_sha256}.json"
     if destination.exists() or destination.is_symlink():
-        raise FileExistsError("pipeline stop request was already archived")
+        try:
+            archived_request = _read_contract(
+                destination,
+                PipelineStopRequest,
+                maximum_bytes=16 * 1024,
+            )
+        except (TypeError, ValueError) as error:
+            raise FileExistsError("conflicting pipeline stop archive already exists") from error
+        if archived_request != request:
+            raise FileExistsError("conflicting pipeline stop archive already exists")
+        path.unlink()
+        _fsync_directory(path.parent)
+        return destination
     os.replace(path, destination)
-    directory_descriptor = os.open(archive_root, os.O_RDONLY)
-    try:
-        os.fsync(directory_descriptor)
-    finally:
-        os.close(directory_descriptor)
+    _fsync_directory(archive_root)
+    _fsync_directory(path.parent)
     return destination
 
 
@@ -1257,6 +1791,15 @@ def _load_execution_inputs(
     compact_contract_sha256 = _verify_compact_contract(compact_contract)
     v02_dataset_path = _safe_input_path(project_root, v02.paths.dataset_config_path, kind="file")
     v03_dataset_path = _safe_input_path(project_root, v03.paths.dataset_config_path, kind="file")
+    v04_dataset_path = _safe_input_path(
+        project_root,
+        v04.development_dataset_config_path,
+        kind="file",
+    )
+    if v04_dataset_path != v03_dataset_path:
+        raise PipelineExecutionError(
+            "v0.4 development dataset recipe differs from the frozen v0.3 input"
+        )
     v02_dataset_config = load_development_dataset_config(v02_dataset_path)
     v03_dataset_config = load_development_dataset_config(v03_dataset_path)
     if v03_dataset_config.dataset.dataset_version != "0.3.0":
@@ -1340,13 +1883,10 @@ class _ResourceGuard:
         self._last_resource_poll = 0.0
 
     def _elapsed_seconds(self, context: StageContext) -> float:
-        store = PipelineStore(
-            context.run_directory,
-            maximum_state_bytes=self.config.maximum_status_bytes,
-        )
-        state = store.load_state()
-        created = _canonical_utc(state.created_at)
-        return max(0.0, (datetime.now(tz=UTC) - created).total_seconds())
+        snapshot = context.progress.snapshot()
+        if type(snapshot) is not ProgressSnapshot:
+            raise PipelineExecutionError("pipeline active-runtime evidence is invalid")
+        return float(snapshot.elapsed_seconds)
 
     def resource_stop_required(self, context: StageContext, *, force: bool) -> bool:
         now = time.monotonic()
@@ -1371,6 +1911,22 @@ class _ResourceGuard:
     def enforce_start(self, context: StageContext) -> None:
         if self.stop_required(context, force_resources=True):
             raise KeyboardInterrupt
+
+    def enforce_projected_write(
+        self,
+        context: StageContext,
+        *,
+        reservation_bytes: int,
+    ) -> None:
+        """Refuse before bounded scientific writes could reach the run ceiling."""
+
+        if type(reservation_bytes) is not int or reservation_bytes < 1:
+            raise TypeError("projected-write reservation must be a positive integer")
+        observed = _run_size_bytes(context.run_directory)
+        if observed >= self.config.maximum_run_bytes - reservation_bytes:
+            raise PipelineResourceLimitError(
+                "pipeline lacks capacity for the bounded scientific write"
+            )
 
     def enforce_end(self, context: StageContext) -> None:
         if self.resource_stop_required(context, force=True):
@@ -1591,19 +2147,201 @@ def _decode_examples(
     *,
     generation_caps: Mapping[TaskName, int],
     device: torch.device,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[DualPathCompactPrediction, ...]:
+    """Decode at per-example atomic boundaries with optional cooperative progress."""
+
+    if type(examples) is not tuple:
+        raise TypeError("decode examples must be an exact tuple")
+    if progress_callback is not None and not callable(progress_callback):
+        raise TypeError("decode progress callback must be callable")
+    example_ids = tuple(getattr(item, "example_id", None) for item in examples)
+    if any(type(example_id) is not str or not example_id for example_id in example_ids) or len(
+        example_ids
+    ) != len(set(example_ids)):
+        raise ValueError("decode example IDs must be non-empty and globally unique")
     results: list[DualPathCompactPrediction] = []
-    for start in range(0, len(examples), MAX_DECODE_BATCH_SIZE):
+    total = len(examples)
+    for start in range(0, total, COOPERATIVE_DECODE_CHUNK_SIZE):
         results.extend(
             decode_compact_examples(
                 model,
                 tokenizer,
-                examples[start : start + MAX_DECODE_BATCH_SIZE],
+                examples[start : start + COOPERATIVE_DECODE_CHUNK_SIZE],
                 generation_caps=generation_caps,
                 device=device,
             )
         )
+        if progress_callback is not None:
+            progress_callback(
+                min(start + COOPERATIVE_DECODE_CHUNK_SIZE, total),
+                total,
+            )
     return tuple(results)
+
+
+def _raise_if_stop(context: StageContext, guard: _ResourceGuard) -> None:
+    if guard.stop_required(context):
+        raise KeyboardInterrupt
+
+
+def _guarded_decode_examples(
+    context: StageContext,
+    *,
+    guard: _ResourceGuard,
+    model: TransformerLM,
+    tokenizer: ProjectTokenizer,
+    examples: tuple[RemediationExample, ...],
+    generation_caps: Mapping[TaskName, int],
+    device: torch.device,
+    progress_message: str,
+) -> tuple[DualPathCompactPrediction, ...]:
+    """Decode one complete view while polling after every atomic example."""
+
+    if not examples:
+        raise PipelineExecutionError("guarded decoding requires at least one example")
+    _raise_if_stop(context, guard)
+    context.progress.report(
+        message=progress_message,
+        completed_units=0,
+        total_units=len(examples),
+    )
+
+    def progress(completed_units: int, total_units: int) -> None:
+        if completed_units % DECODE_PROGRESS_REPORT_INTERVAL == 0 or completed_units == total_units:
+            context.progress.report(
+                message=progress_message,
+                completed_units=completed_units,
+                total_units=total_units,
+            )
+        _raise_if_stop(context, guard)
+
+    predictions = _decode_examples(
+        model,
+        tokenizer,
+        examples,
+        generation_caps=generation_caps,
+        device=device,
+        progress_callback=progress,
+    )
+    _raise_if_stop(context, guard)
+    return predictions
+
+
+def _semantic_report_composite(report: SemanticEvaluationReport) -> float:
+    """Recompute the frozen ranking score from immutable semantic report fields."""
+
+    if type(report) is not SemanticEvaluationReport:
+        raise TypeError("semantic report composite requires an exact report")
+    metrics = report.view_metrics.metrics
+    if report.constrained.schema_validity_rate != metrics.constrained_schema_validity_rate.estimate:
+        raise ValueError("semantic report schema-validity fields disagree")
+    if report.constrained.schema_validity_rate != 1.0:
+        return 0.0
+    values = [report.constrained.exact_match_rate]
+    supported_quality = (
+        metrics.fault_family_macro_f1,
+        metrics.next_action_macro_f1,
+        metrics.continuation_macro_f1,
+        metrics.evidence_f1,
+        metrics.required_abstention_accuracy,
+    )
+    values.extend(item.estimate for item in supported_quality if item.support > 0)
+    if metrics.no_fault_false_positive_rate.support > 0:
+        values.append(1.0 - metrics.no_fault_false_positive_rate.estimate)
+    values.extend(
+        (
+            1.0 - metrics.expected_calibration_error.estimate,
+            1.0 - metrics.selective_risk_at_80_percent_coverage.estimate,
+        )
+    )
+    score = sum(values) / len(values)
+    if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+        raise PipelineExecutionError("semantic report composite is outside its bound")
+    return score
+
+
+def _require_semantic_report_scope(
+    report: SemanticEvaluationReport,
+    *,
+    view: RemediationView,
+    example_count: int,
+    dataset_manifest_sha256: str,
+    source_commit: str,
+    config_sha256_value: str,
+    tokenizer_manifest_sha256: str,
+    output_contract_sha256: str,
+    checkpoint_manifest_sha256: str,
+) -> None:
+    """Require one semantic report to cover an exact frozen development view."""
+
+    if type(report) is not SemanticEvaluationReport:
+        raise TypeError("semantic scope verification requires an exact report")
+    artifacts = report.view_metrics.artifacts
+    if (
+        report.evaluation_view is not view
+        or report.view_metrics.view is not _DEVELOPMENT_VIEW_BY_REMEDIATION[view]
+        or report.example_count != example_count
+        or report.view_metrics.sample_count != example_count
+        or artifacts.source_commit != source_commit
+        or artifacts.config_sha256 != config_sha256_value
+        or artifacts.dataset_manifest_sha256 != dataset_manifest_sha256
+        or artifacts.tokenizer_manifest_sha256 != tokenizer_manifest_sha256
+        or artifacts.output_contract_sha256 != output_contract_sha256
+        or artifacts.checkpoint_sha256 != checkpoint_manifest_sha256
+        or report.predictions_sha256 != artifacts.prediction_artifact_sha256
+        or report.baseline_report_sha256 != artifacts.comparator_artifact_sha256
+    ):
+        raise PipelineExecutionError(
+            "semantic evaluation report differs from its exact frozen development scope"
+        )
+
+
+def _free_running_structural_failure_score(
+    predictions: tuple[DualPathCompactPrediction, ...],
+) -> float:
+    """Mean of six truth-independent binary failures for v0.2 selection.
+
+    Each example contributes constrained parse/schema/cap failures followed by the
+    same three unconstrained failures.  Lower is better; the training core then uses
+    validation NLL and earlier step only as deterministic tie-breakers.
+    """
+
+    if not predictions:
+        raise ValueError("structural checkpoint selection requires predictions")
+    failures = sum(
+        int(not prediction.constrained.compact_parse_success)
+        + int(not prediction.constrained.schema_valid)
+        + int(prediction.constrained.generation_cap_exhausted)
+        + int(not prediction.unconstrained.compact_parse_success)
+        + int(not prediction.unconstrained.schema_valid)
+        + int(prediction.unconstrained.generation_cap_exhausted)
+        for prediction in predictions
+    )
+    return float(failures / (6 * len(predictions)))
+
+
+def _exact_semantic_rate_and_mean_latency(
+    examples: tuple[RemediationExample, ...],
+    predictions: tuple[DualPathCompactPrediction, ...],
+    *,
+    path_name: Literal["constrained", "unconstrained"],
+) -> tuple[float, float]:
+    """Measure exact canonical output and raw decoder latency for one path."""
+
+    examples_by_id = {item.example_id: item for item in examples}
+    if (
+        not predictions
+        or len(predictions) != len(examples_by_id)
+        or {item.example_id for item in predictions} != set(examples_by_id)
+    ):
+        raise PipelineExecutionError("v0.2 behavioral report inventory differs from examples")
+    paths = tuple(getattr(item, path_name) for item in predictions)
+    exact_count = sum(
+        path.canonical_target_json == examples_by_id[prediction.example_id].canonical_target_json
+        for prediction, path in zip(predictions, paths, strict=True)
+    )
+    return exact_count / len(paths), sum(path.elapsed_seconds for path in paths) / len(paths)
 
 
 def _smoke_examples(
@@ -1616,6 +2354,99 @@ def _smoke_examples(
     if not train or not validation:
         raise ValueError("smoke training requires IID train and validation support")
     return train[:SMOKE_EXAMPLES_PER_VIEW], validation[:SMOKE_EXAMPLES_PER_VIEW]
+
+
+def _sequence_length_inventory_sha256(
+    examples: tuple[CompactTokenizedExample, ...],
+) -> str:
+    """Bind the exact token length used to select a pilot row for every example."""
+
+    if not examples or len({item.example_id for item in examples}) != len(examples):
+        raise ValueError("pilot length inventory must be non-empty and unique")
+    return canonical_sha256(
+        tuple(
+            sorted(
+                (
+                    item.example_id,
+                    item.task_name.value,
+                    item.group_id,
+                    len(item.token_ids),
+                )
+                for item in examples
+            )
+        )
+    )
+
+
+def _longest_pilot_examples_per_task(
+    examples: tuple[RemediationExample, ...],
+    tokenized: tuple[CompactTokenizedExample, ...],
+) -> tuple[tuple[RemediationExample, ...], tuple[CompactTokenizedExample, ...]]:
+    """Choose one deterministic longest sequence per task for the MPS pilot.
+
+    The complete view is profiled first.  Selecting the longest row for every task
+    retains task coverage while guaranteeing that at least one globally longest row
+    is part of the bounded pilot rather than relying on the first dataset rows.
+    """
+
+    if not examples or not tokenized or len(examples) != len(tokenized):
+        raise ValueError("pilot examples and tokenized inventory must align")
+    examples_by_id = {item.example_id: item for item in examples}
+    tokenized_by_id = {item.example_id: item for item in tokenized}
+    if (
+        len(examples_by_id) != len(examples)
+        or len(tokenized_by_id) != len(tokenized)
+        or set(examples_by_id) != set(tokenized_by_id)
+    ):
+        raise ValueError("pilot examples and tokenized identifiers must match uniquely")
+    for example_id, example in examples_by_id.items():
+        encoded = tokenized_by_id[example_id]
+        if encoded.task_name is not example.task_name or encoded.group_id != example.group_id:
+            raise ValueError("pilot tokenized lineage differs from its source example")
+
+    selected_examples: list[RemediationExample] = []
+    selected_tokenized: list[CompactTokenizedExample] = []
+    for task_name in TaskName:
+        candidates = tuple(item for item in tokenized if item.task_name is task_name)
+        if not candidates:
+            raise ValueError("pilot inventory must contain every compact-output task")
+        selected = min(candidates, key=lambda item: (-len(item.token_ids), item.example_id))
+        selected_examples.append(examples_by_id[selected.example_id])
+        selected_tokenized.append(selected)
+
+    if max(len(item.token_ids) for item in selected_tokenized) != max(
+        len(item.token_ids) for item in tokenized
+    ):
+        raise PipelineExecutionError("pilot selection omitted the globally longest sequence")
+    return tuple(selected_examples), tuple(selected_tokenized)
+
+
+def _pilot_exercises_global_maximum(
+    examples: tuple[CompactTokenizedExample, ...],
+    *,
+    batch_size: int,
+    seed: int,
+    steps: int,
+) -> bool:
+    """Prove the configured task-balanced pilot actually draws a maximum row."""
+
+    if not examples:
+        raise ValueError("pilot sampling proof requires examples")
+    maximum_length = max(len(item.token_ids) for item in examples)
+    maximum_indices = {
+        index for index, item in enumerate(examples) if len(item.token_ids) == maximum_length
+    }
+    return any(
+        maximum_indices.intersection(
+            task_balanced_batch_indices(
+                examples,
+                batch_size=batch_size,
+                seed=seed,
+                step=step,
+            )
+        )
+        for step in range(steps)
+    )
 
 
 def _smoke_model_config(base: TransformerConfig) -> TransformerConfig:
@@ -1651,34 +2482,97 @@ def _latest_resume_source(
     context: StageContext,
     candidate_id: str,
 ) -> Path | None:
+    return _latest_resume_from_roots(_prior_training_state_roots(context, candidate_id))
+
+
+@dataclass(frozen=True, slots=True)
+class _PriorTrainingStateRoot:
+    attempt_number: int
+    root: Path
+    latest_step: int | None
+    latest_state: Path | None
+
+
+def _latest_resume_from_roots(
+    roots: tuple[_PriorTrainingStateRoot, ...],
+) -> Path | None:
+    committed = tuple(
+        (item.attempt_number, item.latest_step, item.latest_state)
+        for item in roots
+        if item.latest_state is not None and item.latest_step is not None
+    )
+    if not committed:
+        return None
+    return max(committed, key=lambda item: (item[1], item[0]))[2]
+
+
+def _prior_training_state_roots(
+    context: StageContext,
+    candidate_id: str,
+) -> tuple[_PriorTrainingStateRoot, ...]:
+    """Verify every earlier candidate root and inventory its newest durable state."""
+
+    if (
+        type(candidate_id) is not str
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}", candidate_id) is None
+    ):
+        raise ValueError("training candidate identifier is invalid")
     stage_root = context.attempt_directory.parent
+    if (
+        stage_root.is_symlink()
+        or not stage_root.is_dir()
+        or context.attempt_directory.is_symlink()
+        or not context.attempt_directory.is_dir()
+    ):
+        raise ValueError("current training stage attempt is unsafe")
     current_match = re.fullmatch(r"attempt-([0-9]{4})", context.attempt_directory.name)
     if current_match is None:
         raise ValueError("current stage attempt name is invalid")
     current = int(current_match.group(1))
-    candidates: list[tuple[int, int, Path]] = []
-    for attempt in stage_root.iterdir():
+    roots: list[_PriorTrainingStateRoot] = []
+    for attempt in sorted(stage_root.iterdir(), key=lambda path: path.name):
         match = re.fullmatch(r"attempt-([0-9]{4})", attempt.name)
-        if match is None or attempt.is_symlink() or not attempt.is_dir():
-            if attempt.name != "completed.json":
+        if match is None:
+            if attempt.name != "completed.json" or attempt.is_symlink() or not attempt.is_file():
                 raise ValueError("training stage contains an unsafe attempt entry")
             continue
+        if attempt.is_symlink() or not attempt.is_dir():
+            raise ValueError("training stage contains an unsafe attempt entry")
         attempt_number = int(match.group(1))
         if attempt_number >= current:
             continue
         state_root = attempt / "training-state" / candidate_id
+        state_parent = state_root.parent
+        if (
+            state_parent.is_symlink()
+            or (state_parent.exists() and not state_parent.is_dir())
+            or state_root.is_symlink()
+        ):
+            raise ValueError("previous durable training root traverses a symlink")
         if not state_root.exists():
             continue
-        if state_root.is_symlink() or not state_root.is_dir():
+        if not state_root.is_dir():
             raise ValueError("previous durable training root is unsafe")
-        for state in state_root.iterdir():
-            state_match = re.fullmatch(r"state-step-([0-9]{8})", state.name)
-            if state_match is None or state.is_symlink() or not state.is_dir():
-                raise ValueError("previous durable training root has an unexpected entry")
-            candidates.append((attempt_number, int(state_match.group(1)), state))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: (item[1], item[0]))[2]
+        resolved_attempt = attempt.resolve(strict=True)
+        resolved_root = state_root.resolve(strict=True)
+        if not resolved_root.is_relative_to(resolved_attempt):
+            raise ValueError("previous durable training root escapes its attempt")
+        latest = latest_committed_training_state(state_root, candidate_id=candidate_id)
+        latest_step: int | None = None
+        if latest is not None:
+            step_match = re.fullmatch(r"state-step-([0-9]{8})", latest.name)
+            if step_match is None or latest.parent != resolved_root:
+                raise PipelineExecutionError("verified resume state identity is invalid")
+            latest_step = int(step_match.group(1))
+        roots.append(
+            _PriorTrainingStateRoot(
+                attempt_number=attempt_number,
+                root=resolved_root,
+                latest_step=latest_step,
+                latest_state=latest,
+            )
+        )
+    return tuple(roots)
 
 
 def _copy_resume_state(source: Path, destination_root: Path) -> Path:
@@ -1687,23 +2581,101 @@ def _copy_resume_state(source: Path, destination_root: Path) -> Path:
     for path in source.rglob("*"):
         if path.is_symlink() or (not path.is_file() and not path.is_dir()):
             raise ValueError("resume state contains an unsafe entry")
+    if destination_root.is_symlink() or not destination_root.is_dir():
+        raise ValueError("resume destination root must be a regular directory")
     destination = destination_root / source.name
     if destination.exists() or destination.is_symlink():
         raise FileExistsError("resume state destination already exists")
-    shutil.copytree(source, destination, copy_function=shutil.copy2)
-    for path in sorted(destination.rglob("*"), reverse=True):
+    temporary = destination_root / f".{source.name}.tmp-resume"
+    if temporary.exists() or temporary.is_symlink():
+        raise FileExistsError("resume temporary destination already exists")
+    temporary.mkdir(mode=0o750)
+    shutil.copytree(source, temporary, copy_function=shutil.copy2, dirs_exist_ok=True)
+    for path in sorted(temporary.rglob("*"), reverse=True):
         if path.is_file():
             descriptor = os.open(path, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-    directory_descriptor = os.open(destination, os.O_RDONLY)
+    directory_descriptor = os.open(temporary, os.O_RDONLY)
     try:
         os.fsync(directory_descriptor)
     finally:
         os.close(directory_descriptor)
+    os.rename(temporary, destination)
+    parent_descriptor = os.open(destination_root, os.O_RDONLY)
+    try:
+        os.fsync(parent_descriptor)
+    finally:
+        os.close(parent_descriptor)
     return destination
+
+
+def _prepare_resume_state(
+    context: StageContext,
+    *,
+    guard: _ResourceGuard,
+    candidate_id: str,
+    destination_root: Path,
+    state_upper_bound_bytes: int,
+) -> Path | None:
+    """Consolidate, copy, checkpoint, then retire cross-attempt durable states."""
+
+    if destination_root.is_symlink() or not destination_root.is_dir():
+        raise ValueError("resume destination root is unsafe")
+    try:
+        destination_relative = destination_root.relative_to(context.attempt_directory)
+    except ValueError as error:
+        raise ValueError("resume destination escapes its current stage attempt") from error
+    cursor = context.attempt_directory
+    for part in destination_relative.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError("resume destination traverses a symlink")
+    resolved_attempt = context.attempt_directory.resolve(strict=True)
+    resolved_destination = destination_root.resolve(strict=True)
+    if not resolved_destination.is_relative_to(resolved_attempt):
+        raise ValueError("resume destination escapes its current stage attempt")
+
+    prior_roots = _prior_training_state_roots(context, candidate_id)
+    source = _latest_resume_from_roots(prior_roots)
+    if source is None:
+        return None
+    source_root = source.parent
+    # Reduce older attempts first, but never remove the selected source before a
+    # durable successor exists. Every root was fully verified during inventory.
+    for item in prior_roots:
+        if item.root != source_root and item.latest_state is not None:
+            retire_superseded_training_states(
+                item.root,
+                candidate_id=candidate_id,
+                successor_directory=source,
+            )
+    if latest_committed_training_state(source_root, candidate_id=candidate_id) != source:
+        raise PipelineExecutionError("selected resume state changed during consolidation")
+
+    guard.enforce_projected_write(
+        context,
+        reservation_bytes=state_upper_bound_bytes,
+    )
+    copied = _copy_resume_state(source, destination_root)
+    verified_copy = latest_committed_training_state(
+        destination_root,
+        candidate_id=candidate_id,
+    )
+    if verified_copy != copied.resolve(strict=True):
+        raise PipelineExecutionError("copied resume state failed durable verification")
+    context.progress.checkpoint(
+        checkpoint=copied.relative_to(context.run_directory).as_posix(),
+        message=f"Candidate {candidate_id} cross-attempt resume state committed.",
+    )
+    retire_superseded_training_states(
+        source_root,
+        candidate_id=candidate_id,
+        successor_directory=copied,
+    )
+    return copied
 
 
 def _training_progress_callback(
@@ -1773,8 +2745,29 @@ def _run_training(
     state_root.mkdir(parents=True, mode=0o750)
     if state_root.is_symlink() or not state_root.is_dir():
         raise ValueError("durable training root is unsafe")
-    resume_source = _latest_resume_source(context, candidate_id)
-    resume_state = None if resume_source is None else _copy_resume_state(resume_source, state_root)
+    state_upper_bound = durable_training_state_upper_bound_bytes(
+        model_config,
+        vocab_size=inputs.tokenizer.vocab_size,
+    )
+    checkpoint_upper_bound = selected_checkpoint_upper_bound_bytes(
+        model_config,
+        vocab_size=inputs.tokenizer.vocab_size,
+    )
+    resume_state = _prepare_resume_state(
+        context,
+        guard=guard,
+        candidate_id=candidate_id,
+        destination_root=state_root,
+        state_upper_bound_bytes=state_upper_bound,
+    )
+    existing_state_count = 0 if resume_state is None else 1
+    guard.enforce_projected_write(
+        context,
+        reservation_bytes=(
+            (MAX_TRANSIENT_DURABLE_STATES - existing_state_count) * state_upper_bound
+            + checkpoint_upper_bound
+        ),
+    )
     checkpoint_directory = context.attempt_directory / f"checkpoint-{candidate_id}"
 
     def stop_requested(_step: int) -> bool:
@@ -1842,6 +2835,40 @@ def _load_candidate_checkpoint(
     return model, manifest, device
 
 
+def _training_checkpoint_matches_result(
+    result: CompactTrainingResult,
+    checkpoint: CheckpointManifest,
+    *,
+    model_config: TransformerConfig,
+    training: RemediationTraining,
+    tokenizer_manifest_sha256: str,
+    source_commit: str,
+) -> bool:
+    """Cross-bind one selected checkpoint to its exact training result and policy."""
+
+    expected_model_sha256 = canonical_sha256(model_config.model_dump(mode="json", round_trip=True))
+    expected_training_sha256 = canonical_sha256(training.model_dump(mode="json", round_trip=True))
+    return (
+        result.source_commit == source_commit
+        and result.training_steps == training.steps
+        and result.training_config_sha256 == expected_training_sha256
+        and result.model_config_sha256 == expected_model_sha256
+        and result.tokenizer_manifest_sha256 == tokenizer_manifest_sha256
+        and checkpoint.checksum_sha256 == result.checkpoint_manifest_sha256
+        and checkpoint.transformer_config == model_config
+        and checkpoint.vocab_size == result.vocab_size
+        and checkpoint.parameter_count == result.parameter_count
+        and checkpoint.tokenizer_manifest_sha256 == tokenizer_manifest_sha256
+        and checkpoint.source_commit == source_commit
+        and checkpoint.seed == training.seed
+        and checkpoint.training_steps == result.selected_step
+        and checkpoint.initial_loss == result.initial_validation_nll
+        and checkpoint.final_loss == result.selected_validation_nll
+        and checkpoint.weights_sha256 == result.checkpoint_weights_sha256
+        and checkpoint.weights_size_bytes == result.checkpoint_size_bytes
+    )
+
+
 def _load_stage_dataset(
     context: StageContext,
     config: PipelineConfig,
@@ -1859,9 +2886,191 @@ def _with_training_seed(training: RemediationTraining, seed: int) -> Remediation
     return RemediationTraining.model_validate(payload)
 
 
+def _v04_pilot_training_config(
+    inputs: _ExecutionInputs,
+    *,
+    batch_size: int,
+) -> RemediationTraining:
+    return RemediationTraining(
+        seed=inputs.v04.training.seed,
+        device=inputs.v04.training.device,
+        allow_cpu_fallback=inputs.v04.training.allow_cpu_fallback,
+        steps=inputs.v04.pilot.steps,
+        batch_size=batch_size,
+        learning_rate=inputs.v04.training.learning_rate,
+        weight_decay=inputs.v04.training.weight_decay,
+        gradient_clip_norm=inputs.v04.training.gradient_clip_norm,
+        evaluation_interval=inputs.v04.pilot.steps,
+        durable_checkpoint_interval=inputs.v04.pilot.steps,
+    )
+
+
+def _verify_v04_pilot_training_evidence(
+    pilot_attempt: Path,
+    pilot: V04PilotReport,
+    inputs: _ExecutionInputs,
+    *,
+    source_commit: str,
+) -> None:
+    """Reopen and bind every passing pilot result before main training."""
+
+    if (
+        pilot.candidate_id != inputs.v04.pilot.candidate_id
+        or inputs.v04.longer_context_model.context_length != 1024
+        or pilot.material_truncation_threshold
+        != inputs.v04.variants.material_prompt_truncation_rate
+    ):
+        raise PipelineExecutionError("v0.4 pilot inventory differs from its frozen configuration")
+    augmentation = inputs.v03.augmentation
+    material = build_frozen_v03_iid_material(
+        inputs.v03_dataset_config,
+        source_commit=inputs.frozen_data_source_commit,
+        train_template_families=tuple(augmentation.train_template_families),
+        train_alias_families=tuple(augmentation.train_alias_families),
+        renderer_variants_per_projection=augmentation.renderer_variants_per_projection,
+        include_insufficient_evidence_views=augmentation.include_insufficient_evidence_views,
+    )
+    train_examples = tuple(
+        item for item in material.dataset.examples if item.view is RemediationView.IID_TRAIN
+    )
+    validation_examples = tuple(
+        item for item in material.dataset.examples if item.view is RemediationView.IID_VALIDATION
+    )
+    control_train = _tokenize_examples(
+        train_examples,
+        inputs.tokenizer,
+        context_length=inputs.v02.model.context_length,
+        generation_caps=inputs.generation_caps,
+    )
+    measured_truncation_rate = sum(item.prompt_truncated for item in control_train) / len(
+        control_train
+    )
+    expected_activation = (
+        pilot.prompt_truncation_rate >= pilot.material_truncation_threshold
+        and measured_truncation_rate >= pilot.material_truncation_threshold
+    )
+    if (
+        pilot.v03_train_prompt_truncation_rate != measured_truncation_rate
+        or pilot.activated is not expected_activation
+    ):
+        raise PipelineExecutionError(
+            "v0.4 pilot activation differs from recomputed frozen IID truncation evidence"
+        )
+    if not pilot.activated:
+        return
+    if tuple(item.batch_size for item in pilot.measurements) != tuple(inputs.v04.pilot.batch_sizes):
+        raise PipelineExecutionError("v0.4 pilot batch inventory differs from configuration")
+    longer_train = _tokenize_examples(
+        train_examples,
+        inputs.tokenizer,
+        context_length=1024,
+        generation_caps=inputs.generation_caps,
+    )
+    longer_validation = _tokenize_examples(
+        validation_examples,
+        inputs.tokenizer,
+        context_length=1024,
+        generation_caps=inputs.generation_caps,
+    )
+    pilot_train, pilot_train_tokenized = _longest_pilot_examples_per_task(
+        train_examples,
+        longer_train,
+    )
+    pilot_validation, pilot_validation_tokenized = _longest_pilot_examples_per_task(
+        validation_examples,
+        longer_validation,
+    )
+    expected_train_tokenized_sha256 = _tokenized_inventory_sha256(pilot_train_tokenized)
+    expected_validation_tokenized_sha256 = _tokenized_inventory_sha256(pilot_validation_tokenized)
+    expected_train_inventory_sha256 = canonical_sha256(
+        tuple((item.example_id, item.checksum_sha256) for item in pilot_train)
+    )
+    expected_validation_inventory_sha256 = canonical_sha256(
+        tuple((item.example_id, item.checksum_sha256) for item in pilot_validation)
+    )
+    train_lengths = tuple(len(item.token_ids) for item in longer_train)
+    validation_lengths = tuple(len(item.token_ids) for item in longer_validation)
+    expected_profile = {
+        "train_example_count": len(train_examples),
+        "validation_example_count": len(validation_examples),
+        "pilot_train_example_count": len(pilot_train),
+        "pilot_validation_example_count": len(pilot_validation),
+        "train_length_inventory_sha256": _sequence_length_inventory_sha256(longer_train),
+        "validation_length_inventory_sha256": _sequence_length_inventory_sha256(longer_validation),
+        "maximum_train_sequence_tokens": max(train_lengths),
+        "maximum_validation_sequence_tokens": max(validation_lengths),
+        "mean_train_sequence_tokens": sum(train_lengths) / len(train_lengths),
+        "mean_validation_sequence_tokens": sum(validation_lengths) / len(validation_lengths),
+    }
+    expected_model_sha256 = canonical_sha256(
+        inputs.v04.longer_context_model.model_dump(mode="json", round_trip=True)
+    )
+    for measurement in pilot.measurements:
+        candidate_id = f"{pilot.candidate_id}-b{measurement.batch_size}"
+        result = _load_training_result(pilot_attempt, candidate_id)
+        checkpoint = _read_contract(
+            pilot_attempt / f"checkpoint-{candidate_id}" / "manifest.json",
+            CheckpointManifest,
+            maximum_bytes=1024 * 1024,
+        )
+        expected_training = _v04_pilot_training_config(
+            inputs,
+            batch_size=measurement.batch_size,
+        )
+        expected_training_sha256 = canonical_sha256(
+            expected_training.model_dump(mode="json", round_trip=True)
+        )
+        if (
+            result.candidate_id != candidate_id
+            or result.sampling_strategy != "task_balanced"
+            or result.training_steps != inputs.v04.pilot.steps
+            or result.checksum_sha256 != measurement.training_result_sha256
+            or result.training_config_sha256 != measurement.training_config_sha256
+            or result.training_config_sha256 != expected_training_sha256
+            or result.model_config_sha256 != measurement.model_config_sha256
+            or result.model_config_sha256 != expected_model_sha256
+            or result.source_commit != source_commit
+            or result.train_inventory_sha256 != expected_train_inventory_sha256
+            or result.validation_inventory_sha256 != expected_validation_inventory_sha256
+            or result.train_tokenized_sha256 != measurement.train_tokenized_sha256
+            or result.validation_tokenized_sha256 != measurement.validation_tokenized_sha256
+            or result.train_tokenized_sha256 != expected_train_tokenized_sha256
+            or result.validation_tokenized_sha256 != expected_validation_tokenized_sha256
+            or result.tokenizer_manifest_sha256 != measurement.tokenizer_manifest_sha256
+            or result.tokenizer_manifest_sha256 != inputs.tokenizer.manifest.checksum_sha256
+            or result.checkpoint_manifest_sha256 != measurement.checkpoint_manifest_sha256
+            or checkpoint.checksum_sha256 != result.checkpoint_manifest_sha256
+            or checkpoint.transformer_config != inputs.v04.longer_context_model
+            or checkpoint.tokenizer_manifest_sha256 != result.tokenizer_manifest_sha256
+            or checkpoint.source_commit != result.source_commit
+            or checkpoint.training_steps != result.selected_step
+            or checkpoint.weights_sha256 != result.checkpoint_weights_sha256
+            or checkpoint.weights_size_bytes != result.checkpoint_size_bytes
+            or result.device != measurement.device
+            or result.train_example_count != measurement.pilot_train_example_count
+            or result.validation_example_count != measurement.pilot_validation_example_count
+            or measurement.elapsed_seconds != result.elapsed_seconds
+            or measurement.process_peak_rss_bytes != result.process_peak_rss_bytes
+            or any(
+                getattr(measurement, field) != expected
+                for field, expected in expected_profile.items()
+            )
+            or not _pilot_exercises_global_maximum(
+                pilot_train_tokenized,
+                batch_size=measurement.batch_size,
+                seed=expected_training.seed,
+                steps=expected_training.steps,
+            )
+        ):
+            raise PipelineExecutionError(
+                "v0.4 pilot training evidence differs from its independently reopened result"
+            )
+
+
 def _evaluate_candidate_view(
     context: StageContext,
     *,
+    guard: _ResourceGuard,
     inputs: _ExecutionInputs,
     config_sha256_value: str,
     dataset: SafeDevelopmentDataset,
@@ -1895,6 +3104,12 @@ def _evaluate_candidate_view(
         context_length=model.config.context_length,
         generation_caps=inputs.generation_caps,
     )
+    _raise_if_stop(context, guard)
+    context.progress.report(
+        message="Baseline comparator evaluation started.",
+        completed_units=0,
+        total_units=1,
+    )
     baseline = run_remediation_baselines(
         scoped,
         inputs.tokenizer,
@@ -1902,15 +3117,28 @@ def _evaluate_candidate_view(
         tokenized_train=tokenized_train,
         tokenized_validation=tokenized_evaluation,
         evaluation_view=view,
+        stop_requested=lambda: guard.stop_required(context),
     )
-    baseline_artifact = _contract_artifact(context, f"{stem}-baselines.json", baseline)
-    predictions = _decode_examples(
-        model,
-        inputs.tokenizer,
-        evaluation_examples,
+    context.progress.report(
+        message="Baseline comparator evaluation completed.",
+        completed_units=1,
+        total_units=1,
+    )
+    _raise_if_stop(context, guard)
+    predictions = _guarded_decode_examples(
+        context,
+        guard=guard,
+        model=model,
+        tokenizer=inputs.tokenizer,
+        examples=evaluation_examples,
         generation_caps=inputs.generation_caps,
         device=device,
+        progress_message="Model evaluation decoding in progress.",
     )
+    # No scientific view artifact is written until every baseline and model
+    # prediction for the view has completed and the final stop boundary passes.
+    _raise_if_stop(context, guard)
+    baseline_artifact = _contract_artifact(context, f"{stem}-baselines.json", baseline)
     prediction_manifest, prediction_artifacts = _write_predictions(
         context,
         stem=f"{stem}-predictions",
@@ -1977,24 +3205,25 @@ class _PipelineRuntime:
         self.inputs = inputs
         self.guard = _ResourceGuard(config)
 
-    def _start(self, context: StageContext) -> None:
+    def _start(self, context: StageContext) -> str:
         if context.project_root.resolve(strict=True) != self.project_root:
             raise PipelineExecutionError("stage project root differs from its frozen runtime")
         if context.source_commit != self.source_commit:
             raise PipelineExecutionError("stage source commit differs from its frozen runtime")
+        runner_commit = _verify_runner_source(
+            self.project_root,
+            source_commit=self.source_commit,
+            run_root=self.config.run_root,
+        )
         self.guard.enforce_start(context)
+        return runner_commit
 
     def _finish(self, context: StageContext, outcome: StageOutcome) -> StageOutcome:
         self.guard.enforce_end(context)
         return outcome
 
     def preflight(self, context: StageContext) -> StageOutcome:
-        self._start(context)
-        runner_commit = _verify_runner_source(
-            self.project_root,
-            source_commit=self.source_commit,
-            run_root=self.config.run_root,
-        )
+        runner_commit = self._start(context)
         draft = ExecutionPreflightReport.model_construct(
             runner_source_commit=runner_commit,
             runner_worktree_clean=True,
@@ -2101,6 +3330,20 @@ class _PipelineRuntime:
         validation = tuple(
             item for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
         )
+
+        def evaluation_callback(model: TransformerLM, _step: int, _nll: float) -> float:
+            predictions = _guarded_decode_examples(
+                context,
+                guard=self.guard,
+                model=model,
+                tokenizer=self.inputs.tokenizer,
+                examples=validation,
+                generation_caps=self.inputs.generation_caps,
+                device=next(model.parameters()).device,
+                progress_message="v0.2 checkpoint-selection decoding in progress.",
+            )
+            return _free_running_structural_failure_score(predictions)
+
         result, artifacts = _run_training(
             context,
             guard=self.guard,
@@ -2111,7 +3354,7 @@ class _PipelineRuntime:
             training=self.inputs.v02.training,
             train_examples=train,
             validation_examples=validation,
-            evaluation_callback=None,
+            evaluation_callback=evaluation_callback,
         )
         return self._finish(
             context,
@@ -2133,7 +3376,7 @@ class _PipelineRuntime:
         dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
         training_attempt = _upstream_attempt(context, self.config, "v02_development_training")
         result = _load_training_result(training_attempt, "v02-development")
-        model, _manifest, device = _load_candidate_checkpoint(
+        model, checkpoint_manifest, device = _load_candidate_checkpoint(
             training_attempt,
             "v02-development",
             result,
@@ -2142,12 +3385,15 @@ class _PipelineRuntime:
         examples = tuple(
             item for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
         )
-        predictions = _decode_examples(
-            model,
-            self.inputs.tokenizer,
-            examples,
+        predictions = _guarded_decode_examples(
+            context,
+            guard=self.guard,
+            model=model,
+            tokenizer=self.inputs.tokenizer,
+            examples=examples,
             generation_caps=self.inputs.generation_caps,
             device=device,
+            progress_message="v0.2 behavioral evaluation decoding in progress.",
         )
         prediction_manifest, prediction_artifacts = _write_predictions(
             context,
@@ -2159,20 +3405,41 @@ class _PipelineRuntime:
         constrained = tuple(item.constrained for item in predictions)
         unconstrained = tuple(item.unconstrained for item in predictions)
         count = len(predictions)
+        constrained_exact, constrained_latency = _exact_semantic_rate_and_mean_latency(
+            examples,
+            predictions,
+            path_name="constrained",
+        )
+        unconstrained_exact, unconstrained_latency = _exact_semantic_rate_and_mean_latency(
+            examples,
+            predictions,
+            path_name="unconstrained",
+        )
         inventory = self.inputs.frozen_v02_inventory
         draft = V02DevelopmentGateReport.model_construct(
             inventory_report_sha256=inventory.checksum_sha256,
             prediction_manifest_sha256=prediction_manifest.checksum_sha256,
+            training_result_sha256=result.checksum_sha256,
+            checkpoint_manifest_sha256=checkpoint_manifest.checksum_sha256,
+            checkpoint_weights_sha256=result.checkpoint_weights_sha256,
             example_count=count,
             constrained_parse_rate=sum(item.compact_parse_success for item in constrained) / count,
             constrained_schema_validity_rate=sum(item.schema_valid for item in constrained) / count,
+            constrained_exact_semantic_match_rate=constrained_exact,
+            constrained_mean_latency_seconds=constrained_latency,
             unconstrained_parse_rate=sum(item.compact_parse_success for item in unconstrained)
             / count,
             unconstrained_schema_validity_rate=sum(item.schema_valid for item in unconstrained)
             / count,
+            unconstrained_exact_semantic_match_rate=unconstrained_exact,
+            unconstrained_mean_latency_seconds=unconstrained_latency,
             generation_cap_exhaustion_rate=(
                 sum(item.generation_cap_exhausted for item in constrained) / count
             ),
+            process_peak_rss_bytes=result.process_peak_rss_bytes,
+            mps_peak_current_allocated_bytes=result.mps_peak_current_allocated_bytes,
+            mps_peak_driver_allocated_bytes=result.mps_peak_driver_allocated_bytes,
+            checkpoint_size_bytes=result.checkpoint_size_bytes,
             inventory_example_count=inventory.example_count,
             prompt_truncation_count=inventory.prompt_truncation_count,
             prompt_truncation_rate=inventory.prompt_truncation_rate,
@@ -2200,7 +3467,7 @@ class _PipelineRuntime:
         artifact = _contract_artifact(context, "v02-development-gate.json", report)
         warning = (
             "D-073 records the 689/882 to 668/882 truncation change as modest; "
-            "the mandatory v0.4 context pilot remains active."
+            "the v0.4 context pilot remains eligible pending the v0.3 materiality check."
             if report.advancement_allowed
             else "The v0.2 structural or exact D-073 reproduction gate did not pass."
         )
@@ -2217,33 +3484,61 @@ class _PipelineRuntime:
     def v03_data_audit(self, context: StageContext) -> StageOutcome:
         self._start(context)
         augmentation = self.inputs.v03.augmentation
-        dataset = build_safe_development_dataset(
+        material = build_frozen_v03_iid_material(
             self.inputs.v03_dataset_config,
             source_commit=self.inputs.frozen_data_source_commit,
-            views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
             train_template_families=tuple(augmentation.train_template_families),
             train_alias_families=tuple(augmentation.train_alias_families),
             renderer_variants_per_projection=augmentation.renderer_variants_per_projection,
             include_insufficient_evidence_views=augmentation.include_insufficient_evidence_views,
         )
+        dataset = material.dataset
+        structured_fingerprints = material.structured_fingerprints
+        iid_structured_separation = _task_scoped_structured_separation(
+            structured_fingerprints,
+            views=(RemediationView.IID_TRAIN, RemediationView.IID_VALIDATION),
+        )
         dataset_directory = context.attempt_directory / "dataset-v03"
         write_safe_development_artifact(dataset, dataset_directory)
         audit = audit_safe_development_dataset(dataset)
-        cap = measure_counterfactual_cap_extension(
+        raw_cap = measure_counterfactual_cap_extension(
+            material.raw_dataset,
+            self.inputs.tokenizer,
+            self.inputs.v02.inventory,
+            self.inputs.frozen_v02_inventory,
+        )
+        deduplicated_cap = measure_counterfactual_cap_extension(
             dataset,
             self.inputs.tokenizer,
             self.inputs.v02.inventory,
             self.inputs.frozen_v02_inventory,
         )
-        if cap != self.inputs.frozen_v03_counterfactual_cap:
-            raise PipelineExecutionError(
-                "v0.3 counterfactual cap did not reproduce its frozen report"
-            )
+        cap_compatibility = _v03_cap_compatibility_report(
+            material,
+            frozen_cap=self.inputs.frozen_v03_counterfactual_cap,
+            raw_cap=raw_cap,
+            deduplicated_cap=deduplicated_cap,
+        )
         selection = build_semantic_selection_manifest(dataset, self.inputs.v03)
         artifacts = (
             *_directory_artifacts(dataset_directory, run_directory=context.run_directory),
             _contract_artifact(context, "v03-development-audit.json", audit),
-            _contract_artifact(context, "v03-counterfactual-cap.json", cap),
+            _contract_artifact(
+                context,
+                "v03-iid-structured-separation.json",
+                iid_structured_separation,
+            ),
+            _contract_artifact(context, "v03-counterfactual-cap.json", raw_cap),
+            _contract_artifact(
+                context,
+                "v03-deduplicated-counterfactual-cap.json",
+                deduplicated_cap,
+            ),
+            _contract_artifact(
+                context,
+                "v03-counterfactual-cap-compatibility.json",
+                cap_compatibility,
+            ),
             _contract_artifact(context, "v03-semantic-selection.json", selection),
         )
         return self._finish(
@@ -2251,12 +3546,19 @@ class _PipelineRuntime:
             _stage_outcome(
                 "v0.3 IID data, augmentation audit, cap extension, and fixed "
                 "48-row selection froze.",
-                advancement_allowed=bool(audit.passed),
+                advancement_allowed=bool(
+                    audit.passed and iid_structured_separation.passed and cap_compatibility.passed
+                ),
                 artifacts=artifacts,
                 metrics=(
                     StageMetric(
                         name="semantic_selection_examples",
                         value=float(selection.selected_example_count),
+                        unit="examples",
+                    ),
+                    StageMetric(
+                        name="deduplicated_exact_prompt_rows",
+                        value=float(cap_compatibility.removed_example_count),
                         unit="examples",
                     ),
                 ),
@@ -2321,12 +3623,15 @@ class _PipelineRuntime:
                 selected: tuple[RemediationExample, ...] = selected_examples,
             ) -> float:
                 device = next(model.parameters()).device
-                predictions = _decode_examples(
-                    model,
-                    self.inputs.tokenizer,
-                    selected,
+                predictions = _guarded_decode_examples(
+                    context,
+                    guard=self.guard,
+                    model=model,
+                    tokenizer=self.inputs.tokenizer,
+                    examples=selected,
                     generation_caps=self.inputs.generation_caps,
                     device=device,
+                    progress_message="v0.3 checkpoint-selection decoding in progress.",
                 )
                 return 1.0 - semantic_composite_score(selected, predictions)
 
@@ -2385,8 +3690,9 @@ class _PipelineRuntime:
                 result,
                 self.inputs.tokenizer,
             )
-            evaluation, _baseline, predictions, evaluation_artifacts = _evaluate_candidate_view(
+            evaluation, _baseline, _predictions, evaluation_artifacts = _evaluate_candidate_view(
                 context,
+                guard=self.guard,
                 inputs=self.inputs,
                 config_sha256_value=config_sha256(self.inputs.v03),
                 dataset=dataset,
@@ -2403,7 +3709,7 @@ class _PipelineRuntime:
                 CandidateScore(
                     candidate_id=candidate.candidate_id,
                     checkpoint_manifest_sha256=manifest.checksum_sha256,
-                    semantic_composite=semantic_composite_score(selected_examples, predictions),
+                    semantic_composite=_semantic_report_composite(evaluation),
                     selected_validation_nll=float(result.selected_validation_nll),
                     selected_step=result.selected_step,
                     evaluation_report_sha256=evaluation.checksum_sha256,
@@ -2446,6 +3752,7 @@ class _PipelineRuntime:
         _full_evaluation, _full_baseline, _full_predictions, full_artifacts = (
             _evaluate_candidate_view(
                 context,
+                guard=self.guard,
                 inputs=self.inputs,
                 config_sha256_value=config_sha256(self.inputs.v03),
                 dataset=dataset,
@@ -2481,11 +3788,178 @@ class _PipelineRuntime:
 
     def v03_gate(self, context: StageContext) -> StageOutcome:
         self._start(context)
+        iid_dataset = _load_stage_dataset(
+            context,
+            self.config,
+            "v03_data_audit",
+            "dataset-v03",
+        )
+        full_iid_validation_count = sum(
+            item.view is RemediationView.IID_VALIDATION for item in iid_dataset.examples
+        )
+        if full_iid_validation_count < 1:
+            raise PipelineExecutionError("v0.3 full-IID validation inventory is empty")
+        audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+        frozen_selection = _read_contract(
+            audit_attempt / "v03-semantic-selection.json",
+            SemanticSelectionManifest,
+        )
+        selected_examples = resolve_semantic_selection_examples(
+            iid_dataset,
+            frozen_selection,
+            self.inputs.v03,
+        )
+        train_examples = tuple(
+            item for item in iid_dataset.examples if item.view is RemediationView.IID_TRAIN
+        )
+        selection_dataset = _subset_dataset(
+            iid_dataset,
+            (*train_examples, *selected_examples),
+            dataset_version=iid_dataset.manifest.dataset_version,
+        )
+        tokenized_train = _tokenize_examples(
+            train_examples,
+            self.inputs.tokenizer,
+            context_length=self.inputs.v02.model.context_length,
+            generation_caps=self.inputs.generation_caps,
+        )
+        tokenized_selection = _tokenize_examples(
+            selected_examples,
+            self.inputs.tokenizer,
+            context_length=self.inputs.v02.model.context_length,
+            generation_caps=self.inputs.generation_caps,
+        )
+        expected_train_inventory_sha256 = canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in train_examples)
+        )
+        expected_selection_inventory_sha256 = canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in selected_examples)
+        )
+        expected_train_tokenized_sha256 = _tokenized_inventory_sha256(tokenized_train)
+        expected_selection_tokenized_sha256 = _tokenized_inventory_sha256(tokenized_selection)
+        expected_model_sha256 = canonical_sha256(
+            self.inputs.v02.model.model_dump(mode="json", round_trip=True)
+        )
+        expected_config_sha256 = config_sha256(self.inputs.v03)
         evaluation_attempt = _upstream_attempt(context, self.config, "v03_development_evaluation")
+        training_attempt = _upstream_attempt(context, self.config, "v03_candidate_training")
+        selection = _read_contract(
+            evaluation_attempt / "v03-candidate-selection.json",
+            CandidateSelectionReport,
+        )
+        candidate_policies = {item.candidate_id: item for item in self.inputs.v03.candidates}
+        if selection.selection_manifest_sha256 != frozen_selection.checksum_sha256 or tuple(
+            item.candidate_id for item in selection.candidates
+        ) != tuple(sorted(candidate_policies)):
+            raise PipelineExecutionError(
+                "v0.3 candidate selection differs from its frozen manifest/configuration"
+            )
+        for score in selection.candidates:
+            policy = candidate_policies[score.candidate_id]
+            result = _load_training_result(training_attempt, score.candidate_id)
+            checkpoint = _read_contract(
+                training_attempt / f"checkpoint-{score.candidate_id}" / "manifest.json",
+                CheckpointManifest,
+                maximum_bytes=1024 * 1024,
+            )
+            selection_evaluation = _read_contract(
+                evaluation_attempt / f"{score.candidate_id}-semantic-evaluation.json",
+                SemanticEvaluationReport,
+            )
+            expected_training = _with_training_seed(self.inputs.v03.training, policy.seed)
+            expected_training_sha256 = canonical_sha256(
+                expected_training.model_dump(mode="json", round_trip=True)
+            )
+            selection_artifacts = selection_evaluation.view_metrics.artifacts
+            selection_composite = _semantic_report_composite(selection_evaluation)
+            if (
+                result.candidate_id != score.candidate_id
+                or result.sampling_strategy != policy.sampling
+                or result.source_commit != context.source_commit
+                or result.checkpoint_manifest_sha256 != score.checkpoint_manifest_sha256
+                or checkpoint.checksum_sha256 != score.checkpoint_manifest_sha256
+                or result.training_config_sha256 != expected_training_sha256
+                or result.model_config_sha256 != expected_model_sha256
+                or result.tokenizer_manifest_sha256
+                != self.inputs.tokenizer.manifest.checksum_sha256
+                or result.train_example_count != len(train_examples)
+                or result.validation_example_count != len(selected_examples)
+                or result.train_inventory_sha256 != expected_train_inventory_sha256
+                or result.validation_inventory_sha256 != expected_selection_inventory_sha256
+                or result.train_tokenized_sha256 != expected_train_tokenized_sha256
+                or result.validation_tokenized_sha256 != expected_selection_tokenized_sha256
+                or result.selected_validation_nll != score.selected_validation_nll
+                or result.selected_step != score.selected_step
+                or result.selected_score != 1.0 - selection_composite
+                or not _training_checkpoint_matches_result(
+                    result,
+                    checkpoint,
+                    model_config=self.inputs.v02.model,
+                    training=expected_training,
+                    tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
+                    source_commit=context.source_commit,
+                )
+                or selection_evaluation.evaluation_view is not RemediationView.IID_VALIDATION
+                or selection_evaluation.view_metrics.view is not DevelopmentView.IID_VALIDATION
+                or selection_evaluation.example_count != len(selected_examples)
+                or selection_evaluation.view_metrics.sample_count != len(selected_examples)
+                or selection_evaluation.checksum_sha256 != score.evaluation_report_sha256
+                or selection_artifacts.source_commit != context.source_commit
+                or selection_artifacts.config_sha256 != expected_config_sha256
+                or selection_artifacts.dataset_manifest_sha256
+                != selection_dataset.manifest.checksum_sha256
+                or selection_artifacts.tokenizer_manifest_sha256
+                != self.inputs.tokenizer.manifest.checksum_sha256
+                or selection_artifacts.output_contract_sha256 != self.inputs.compact_contract_sha256
+                or selection_artifacts.checkpoint_sha256 != score.checkpoint_manifest_sha256
+                or selection_evaluation.predictions_sha256
+                != selection_artifacts.prediction_artifact_sha256
+                or selection_evaluation.baseline_report_sha256
+                != selection_artifacts.comparator_artifact_sha256
+                or selection_composite != score.semantic_composite
+            ):
+                raise PipelineExecutionError(
+                    "v0.3 candidate ranking differs from immutable training/evaluation evidence"
+                )
+        verified_selected = min(
+            selection.candidates,
+            key=lambda item: (
+                -item.semantic_composite,
+                item.selected_validation_nll,
+                item.selected_step,
+                item.candidate_id,
+            ),
+        )
+        if (
+            verified_selected.candidate_id != selection.selected_candidate_id
+            or verified_selected.checkpoint_manifest_sha256
+            != selection.selected_checkpoint_manifest_sha256
+        ):
+            raise PipelineExecutionError("v0.3 candidate ranking changed during gate verification")
         evaluation = _read_contract(
             evaluation_attempt / "v03-selected-full-iid-semantic-evaluation.json",
             SemanticEvaluationReport,
         )
+        full_artifacts = evaluation.view_metrics.artifacts
+        if (
+            evaluation.evaluation_view is not RemediationView.IID_VALIDATION
+            or evaluation.view_metrics.view is not DevelopmentView.IID_VALIDATION
+            or evaluation.example_count != full_iid_validation_count
+            or evaluation.view_metrics.sample_count != full_iid_validation_count
+            or evaluation.view_metrics.artifacts.dataset_manifest_sha256
+            != iid_dataset.manifest.checksum_sha256
+            or full_artifacts.source_commit != context.source_commit
+            or full_artifacts.config_sha256 != expected_config_sha256
+            or full_artifacts.tokenizer_manifest_sha256
+            != self.inputs.tokenizer.manifest.checksum_sha256
+            or full_artifacts.output_contract_sha256 != self.inputs.compact_contract_sha256
+            or full_artifacts.checkpoint_sha256 != selection.selected_checkpoint_manifest_sha256
+            or evaluation.predictions_sha256 != full_artifacts.prediction_artifact_sha256
+            or evaluation.baseline_report_sha256 != full_artifacts.comparator_artifact_sha256
+        ):
+            raise PipelineExecutionError(
+                "v0.3 full-IID evaluation differs from the selected checkpoint"
+            )
         acceptance = evaluate_v03_acceptance(evaluation.view_metrics)
         artifact = _contract_artifact(context, "v03-acceptance.json", acceptance)
         return self._finish(
@@ -2499,37 +3973,34 @@ class _PipelineRuntime:
 
     def v04_shadow_freeze(self, context: StageContext) -> StageOutcome:
         self._start(context)
-        shadow = build_safe_development_dataset(
+        augmentation = self.inputs.v03.augmentation
+        regenerated_material = build_frozen_v03_iid_material(
             self.inputs.v03_dataset_config,
             source_commit=self.inputs.frozen_data_source_commit,
-            views=SHADOW_VIEWS,
+            train_template_families=tuple(augmentation.train_template_families),
+            train_alias_families=tuple(augmentation.train_alias_families),
+            renderer_variants_per_projection=augmentation.renderer_variants_per_projection,
+            include_insufficient_evidence_views=augmentation.include_insufficient_evidence_views,
+        )
+        regenerated_iid = regenerated_material.dataset
+        iid_structured_fingerprints = regenerated_material.structured_fingerprints
+        shadow, shadow_structured_fingerprints = (
+            build_safe_development_dataset_with_structured_fingerprints(
+                self.inputs.v03_dataset_config,
+                source_commit=self.inputs.frozen_data_source_commit,
+                views=SHADOW_VIEWS,
+            )
         )
         shadow_directory = context.attempt_directory / "dataset-v04-shadow"
         write_safe_development_artifact(shadow, shadow_directory)
         shadow_audit = audit_safe_development_dataset(shadow)
         iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
-        iid_groups = {item.group_id for item in iid.examples}
-        shadow_groups = {item.group_id for item in shadow.examples}
-        iid_checksums = {item.checksum_sha256 for item in iid.examples}
-        shadow_checksums = {item.checksum_sha256 for item in shadow.examples}
-        iid_prompts = {item.prompt_sha256 for item in iid.examples}
-        shadow_prompts = {item.prompt_sha256 for item in shadow.examples}
-        draft = DevelopmentSeparationReport.model_construct(
-            iid_dataset_manifest_sha256=iid.manifest.checksum_sha256,
-            shadow_dataset_manifest_sha256=shadow.manifest.checksum_sha256,
-            iid_example_count=len(iid.examples),
-            shadow_example_count=len(shadow.examples),
-            group_overlap_count=len(iid_groups & shadow_groups),
-            example_checksum_overlap_count=len(iid_checksums & shadow_checksums),
-            prompt_checksum_overlap_count=len(iid_prompts & shadow_prompts),
-            passed=not (
-                iid_groups & shadow_groups
-                or iid_checksums & shadow_checksums
-                or iid_prompts & shadow_prompts
-            ),
-            checksum_sha256="0" * 64,
+        _require_exact_regenerated_iid(regenerated_iid, iid)
+        structured_separation = _task_scoped_structured_separation(
+            (*iid_structured_fingerprints, *shadow_structured_fingerprints),
+            views=tuple(RemediationView),
         )
-        separation = _bound_model(draft, DevelopmentSeparationReport)
+        separation = _development_separation_report(iid, shadow, structured_separation)
         artifacts = (
             *_directory_artifacts(shadow_directory, run_directory=context.run_directory),
             _contract_artifact(context, "v04-shadow-audit.json", shadow_audit),
@@ -2558,6 +4029,9 @@ class _PipelineRuntime:
         train_examples = tuple(
             item for item in iid.examples if item.view is RemediationView.IID_TRAIN
         )
+        validation_examples = tuple(
+            item for item in iid.examples if item.view is RemediationView.IID_VALIDATION
+        )
         tokenized = _tokenize_examples(
             train_examples,
             self.inputs.tokenizer,
@@ -2578,25 +4052,64 @@ class _PipelineRuntime:
         ):
             raise PipelineExecutionError("v0.4 pilot cannot reproduce the D-073 activation")
         threshold = self.inputs.v04.variants.material_prompt_truncation_rate
-        activated = frozen_truncation_rate >= threshold
-        if not activated:
-            raise PipelineExecutionError("D-073 mandatory context pilot was deactivated")
+        activated = frozen_truncation_rate >= threshold and v03_train_truncation_rate >= threshold
+        if self.inputs.v04.training.device != "mps":
+            raise PipelineExecutionError("v0.4 mandatory context pilot must request MPS")
         measurements: list[V04PilotMeasurement] = []
         artifacts: list[ArtifactReference] = []
         if activated:
-            smoke_train, smoke_validation = _smoke_examples(iid)
+            longer_train = _tokenize_examples(
+                train_examples,
+                self.inputs.tokenizer,
+                context_length=self.inputs.v04.longer_context_model.context_length,
+                generation_caps=self.inputs.generation_caps,
+            )
+            longer_validation = _tokenize_examples(
+                validation_examples,
+                self.inputs.tokenizer,
+                context_length=self.inputs.v04.longer_context_model.context_length,
+                generation_caps=self.inputs.generation_caps,
+            )
+            pilot_train, pilot_train_tokenized = _longest_pilot_examples_per_task(
+                train_examples,
+                longer_train,
+            )
+            pilot_validation, pilot_validation_tokenized = _longest_pilot_examples_per_task(
+                validation_examples,
+                longer_validation,
+            )
+            train_length_inventory_sha256 = _sequence_length_inventory_sha256(longer_train)
+            validation_length_inventory_sha256 = _sequence_length_inventory_sha256(
+                longer_validation
+            )
+            maximum_train_sequence_tokens = max(len(item.token_ids) for item in longer_train)
+            maximum_validation_sequence_tokens = max(
+                len(item.token_ids) for item in longer_validation
+            )
+            mean_train_sequence_tokens = sum(len(item.token_ids) for item in longer_train) / len(
+                longer_train
+            )
+            mean_validation_sequence_tokens = sum(
+                len(item.token_ids) for item in longer_validation
+            ) / len(longer_validation)
+            expected_pilot_train_sha256 = _tokenized_inventory_sha256(pilot_train_tokenized)
+            expected_pilot_validation_sha256 = _tokenized_inventory_sha256(
+                pilot_validation_tokenized
+            )
             for batch_size in self.inputs.v04.pilot.batch_sizes:
-                training = RemediationTraining(
-                    seed=self.inputs.v04.training.seed,
-                    device=self.inputs.v04.training.device,
-                    allow_cpu_fallback=self.inputs.v04.training.allow_cpu_fallback,
-                    steps=self.inputs.v04.pilot.steps,
+                maximum_train_sequence_exercised = _pilot_exercises_global_maximum(
+                    pilot_train_tokenized,
                     batch_size=batch_size,
-                    learning_rate=self.inputs.v04.training.learning_rate,
-                    weight_decay=self.inputs.v04.training.weight_decay,
-                    gradient_clip_norm=self.inputs.v04.training.gradient_clip_norm,
-                    evaluation_interval=self.inputs.v04.pilot.steps,
-                    durable_checkpoint_interval=self.inputs.v04.pilot.steps,
+                    seed=self.inputs.v04.training.seed,
+                    steps=self.inputs.v04.pilot.steps,
+                )
+                if not maximum_train_sequence_exercised:
+                    raise PipelineExecutionError(
+                        "v0.4 pilot schedule does not exercise its maximum training sequence"
+                    )
+                training = _v04_pilot_training_config(
+                    self.inputs,
+                    batch_size=batch_size,
                 )
                 candidate_id = f"{self.inputs.v04.pilot.candidate_id}-b{batch_size}"
                 result, result_artifacts = _run_training(
@@ -2607,10 +4120,19 @@ class _PipelineRuntime:
                     sampling_strategy="task_balanced",
                     model_config=self.inputs.v04.longer_context_model,
                     training=training,
-                    train_examples=smoke_train,
-                    validation_examples=smoke_validation,
+                    train_examples=pilot_train,
+                    validation_examples=pilot_validation,
                     evaluation_callback=None,
                 )
+                if (
+                    result.train_example_count != len(pilot_train)
+                    or result.validation_example_count != len(pilot_validation)
+                    or result.train_tokenized_sha256 != expected_pilot_train_sha256
+                    or result.validation_tokenized_sha256 != expected_pilot_validation_sha256
+                ):
+                    raise PipelineExecutionError(
+                        "v0.4 pilot result differs from its longest-sequence inventory"
+                    )
                 _load_candidate_checkpoint(
                     context.attempt_directory,
                     candidate_id,
@@ -2622,6 +4144,24 @@ class _PipelineRuntime:
                     V04PilotMeasurement(
                         batch_size=batch_size,
                         training_result_sha256=result.checksum_sha256,
+                        training_config_sha256=result.training_config_sha256,
+                        model_config_sha256=result.model_config_sha256,
+                        train_tokenized_sha256=result.train_tokenized_sha256,
+                        validation_tokenized_sha256=result.validation_tokenized_sha256,
+                        tokenizer_manifest_sha256=result.tokenizer_manifest_sha256,
+                        checkpoint_manifest_sha256=result.checkpoint_manifest_sha256,
+                        device=result.device,
+                        train_example_count=len(longer_train),
+                        validation_example_count=len(longer_validation),
+                        pilot_train_example_count=result.train_example_count,
+                        pilot_validation_example_count=result.validation_example_count,
+                        train_length_inventory_sha256=train_length_inventory_sha256,
+                        validation_length_inventory_sha256=(validation_length_inventory_sha256),
+                        maximum_train_sequence_tokens=maximum_train_sequence_tokens,
+                        maximum_validation_sequence_tokens=maximum_validation_sequence_tokens,
+                        mean_train_sequence_tokens=float(mean_train_sequence_tokens),
+                        mean_validation_sequence_tokens=float(mean_validation_sequence_tokens),
+                        maximum_train_sequence_exercised=True,
                         finite_loss=True,
                         checkpoint_reloaded=True,
                         elapsed_seconds=float(result.elapsed_seconds),
@@ -2630,12 +4170,29 @@ class _PipelineRuntime:
                 )
         draft = V04PilotReport.model_construct(
             candidate_id=self.inputs.v04.pilot.candidate_id,
+            requested_device="mps",
+            required_resolved_device="mps",
+            mandatory_batch_resolved_device=(
+                measurements[-1].device.resolved if measurements else None
+            ),
             prompt_truncation_rate=frozen_truncation_rate,
             v03_train_prompt_truncation_rate=v03_train_truncation_rate,
             material_truncation_threshold=threshold,
             activated=activated,
             measurements=tuple(measurements),
-            passed=True,
+            passed=bool(
+                not activated
+                or (
+                    measurements
+                    and measurements[-1].batch_size == 4
+                    and all(
+                        item.device.requested == "mps"
+                        and item.device.resolved == "mps"
+                        and not item.device.fallback_used
+                        for item in measurements
+                    )
+                )
+            ),
             checksum_sha256="0" * 64,
         )
         report = _bound_model(draft, V04PilotReport)
@@ -2643,7 +4200,12 @@ class _PipelineRuntime:
         return self._finish(
             context,
             _stage_outcome(
-                "D-073 mandatory v0.4 context pilot completed with v0.3 truncation reported.",
+                (
+                    "Eligible v0.4 context pilot completed with native-MPS evidence."
+                    if report.activated
+                    else "Longer-context pilot was not activated because v0.3 prompt "
+                    "truncation was below the frozen materiality threshold."
+                ),
                 advancement_allowed=bool(report.passed),
                 artifacts=tuple(artifacts),
                 metrics=(
@@ -2665,6 +4227,12 @@ class _PipelineRuntime:
         self._start(context)
         pilot_attempt = _upstream_attempt(context, self.config, "v04_pilot")
         pilot = _read_contract(pilot_attempt / "v04-pilot.json", V04PilotReport)
+        _verify_v04_pilot_training_evidence(
+            pilot_attempt,
+            pilot,
+            self.inputs,
+            source_commit=context.source_commit,
+        )
         selection_attempt = _upstream_attempt(context, self.config, "v03_development_evaluation")
         selection = _read_contract(
             selection_attempt / "v03-candidate-selection.json",
@@ -2698,15 +4266,23 @@ class _PipelineRuntime:
         passed_pilot_batches = {
             item.batch_size
             for item in pilot.measurements
-            if item.finite_loss and item.checkpoint_reloaded
+            if (
+                item.finite_loss
+                and item.checkpoint_reloaded
+                and item.device.requested == "mps"
+                and item.device.resolved == "mps"
+                and not item.device.fallback_used
+            )
         }
-        if self.inputs.v04.training.batch_size not in passed_pilot_batches:
+        if (
+            not pilot.passed
+            or pilot.requested_device != "mps"
+            or pilot.required_resolved_device != "mps"
+            or pilot.mandatory_batch_resolved_device != "mps"
+            or self.inputs.v04.training.batch_size not in passed_pilot_batches
+        ):
             raise PipelineExecutionError("v0.4 main training batch size lacks a passing MPS pilot")
-
         iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
-        shadow = _load_stage_dataset(
-            context, self.config, "v04_shadow_freeze", "dataset-v04-shadow"
-        )
         audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
         selection_manifest = _read_contract(
             audit_attempt / "v03-semantic-selection.json",
@@ -2723,33 +4299,17 @@ class _PipelineRuntime:
 
         def evaluation_callback(model: TransformerLM, _step: int, _nll: float) -> float:
             device = next(model.parameters()).device
-            scores = [
-                semantic_composite_score(
-                    iid_selection,
-                    _decode_examples(
-                        model,
-                        self.inputs.tokenizer,
-                        iid_selection,
-                        generation_caps=self.inputs.generation_caps,
-                        device=device,
-                    ),
-                )
-            ]
-            for view in SHADOW_VIEWS:
-                examples = tuple(item for item in shadow.examples if item.view is view)
-                scores.append(
-                    semantic_composite_score(
-                        examples,
-                        _decode_examples(
-                            model,
-                            self.inputs.tokenizer,
-                            examples,
-                            generation_caps=self.inputs.generation_caps,
-                            device=device,
-                        ),
-                    )
-                )
-            return 1.0 - min(scores)
+            predictions = _guarded_decode_examples(
+                context,
+                guard=self.guard,
+                model=model,
+                tokenizer=self.inputs.tokenizer,
+                examples=iid_selection,
+                generation_caps=self.inputs.generation_caps,
+                device=device,
+                progress_message="v0.4 checkpoint-selection decoding in progress.",
+            )
+            return 1.0 - semantic_composite_score(iid_selection, predictions)
 
         result, artifacts = _run_training(
             context,
@@ -2777,7 +4337,7 @@ class _PipelineRuntime:
         return self._finish(
             context,
             _stage_outcome(
-                "Activated v0.4 longer-context candidate completed worst-view-aware training.",
+                "Activated v0.4 longer-context candidate completed IID-only selection training.",
                 artifacts=(*artifacts, report_artifact),
             ),
         )
@@ -2815,6 +4375,178 @@ class _PipelineRuntime:
             self.inputs.tokenizer,
         )
         return report, result, model, checkpoint, device
+
+    def _require_v04_variant_training_provenance(
+        self,
+        context: StageContext,
+        report: V04CandidateTrainingReport,
+        result: CompactTrainingResult,
+        checkpoint: CheckpointManifest,
+    ) -> None:
+        """Rebuild and bind the active 1024-context candidate's training inputs."""
+
+        iid = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        augmentation = self.inputs.v03.augmentation
+        regenerated = build_frozen_v03_iid_material(
+            self.inputs.v03_dataset_config,
+            source_commit=self.inputs.frozen_data_source_commit,
+            train_template_families=tuple(augmentation.train_template_families),
+            train_alias_families=tuple(augmentation.train_alias_families),
+            renderer_variants_per_projection=augmentation.renderer_variants_per_projection,
+            include_insufficient_evidence_views=augmentation.include_insufficient_evidence_views,
+        )
+        _require_exact_regenerated_iid(regenerated.dataset, iid)
+        audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+        frozen_selection = _read_contract(
+            audit_attempt / "v03-semantic-selection.json",
+            SemanticSelectionManifest,
+        )
+        validation_examples = resolve_semantic_selection_examples(
+            iid,
+            frozen_selection,
+            self.inputs.v03,
+        )
+        train_examples = tuple(
+            item for item in iid.examples if item.view is RemediationView.IID_TRAIN
+        )
+        if (
+            not train_examples
+            or len(validation_examples) != self.inputs.v03.semantic_selection_example_limit
+        ):
+            raise PipelineExecutionError(
+                "v0.4 variant training inputs differ from the exact frozen inventories"
+            )
+        context_length = self.inputs.v04.longer_context_model.context_length
+        tokenized_train = _tokenize_examples(
+            train_examples,
+            self.inputs.tokenizer,
+            context_length=context_length,
+            generation_caps=self.inputs.generation_caps,
+        )
+        tokenized_validation = _tokenize_examples(
+            validation_examples,
+            self.inputs.tokenizer,
+            context_length=context_length,
+            generation_caps=self.inputs.generation_caps,
+        )
+        expected_train_inventory_sha256 = canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in train_examples)
+        )
+        expected_validation_inventory_sha256 = canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in validation_examples)
+        )
+        if (
+            not report.activated
+            or report.reused_v03_candidate
+            or report.source_stage != "v04_candidate_training"
+            or report.candidate_id != self.inputs.v04.pilot.candidate_id
+            or result.candidate_id != report.candidate_id
+            or result.checksum_sha256 != report.training_result_sha256
+            or result.sampling_strategy != "task_balanced"
+            or result.train_example_count != len(train_examples)
+            or result.validation_example_count != len(validation_examples)
+            or result.train_inventory_sha256 != expected_train_inventory_sha256
+            or result.validation_inventory_sha256 != expected_validation_inventory_sha256
+            or result.train_tokenized_sha256 != _tokenized_inventory_sha256(tokenized_train)
+            or result.validation_tokenized_sha256
+            != _tokenized_inventory_sha256(tokenized_validation)
+            or not _training_checkpoint_matches_result(
+                result,
+                checkpoint,
+                model_config=self.inputs.v04.longer_context_model,
+                training=self.inputs.v04.training,
+                tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
+                source_commit=context.source_commit,
+            )
+        ):
+            raise PipelineExecutionError(
+                "v0.4 variant training evidence differs from exact frozen inputs"
+            )
+
+    def _verified_v04_candidate_inventory(
+        self,
+        context: StageContext,
+    ) -> tuple[tuple[str, int, str], ...]:
+        """Reopen the exact control/variant identities consumed by v0.4 ranking."""
+
+        selection_attempt = _upstream_attempt(
+            context,
+            self.config,
+            "v03_development_evaluation",
+        )
+        selection = _read_contract(
+            selection_attempt / "v03-candidate-selection.json",
+            CandidateSelectionReport,
+        )
+        v03_training_attempt = _upstream_attempt(
+            context,
+            self.config,
+            "v03_candidate_training",
+        )
+        control_result = _load_training_result(
+            v03_training_attempt,
+            selection.selected_candidate_id,
+        )
+        control_model, control_checkpoint, _control_device = _load_candidate_checkpoint(
+            v03_training_attempt,
+            selection.selected_candidate_id,
+            control_result,
+            self.inputs.tokenizer,
+        )
+        if (
+            control_result.candidate_id != selection.selected_candidate_id
+            or control_result.checkpoint_manifest_sha256
+            != selection.selected_checkpoint_manifest_sha256
+            or control_checkpoint.checksum_sha256 != selection.selected_checkpoint_manifest_sha256
+            or control_model.config != self.inputs.v02.model
+        ):
+            raise PipelineExecutionError(
+                "v0.4 control identity differs from verified v0.3 selection evidence"
+            )
+        expected = [
+            (
+                selection.selected_candidate_id,
+                control_model.config.context_length,
+                control_checkpoint.checksum_sha256,
+            )
+        ]
+        candidate_report, candidate_result, model, checkpoint, _device = self._v04_checkpoint(
+            context
+        )
+        if candidate_report.activated:
+            if (
+                candidate_report.candidate_id == selection.selected_candidate_id
+                or candidate_result.candidate_id != candidate_report.candidate_id
+                or model.config != self.inputs.v04.longer_context_model
+                or checkpoint.checksum_sha256 != candidate_report.checkpoint_manifest_sha256
+            ):
+                raise PipelineExecutionError(
+                    "v0.4 variant identity differs from candidate-training evidence"
+                )
+            self._require_v04_variant_training_provenance(
+                context,
+                candidate_report,
+                candidate_result,
+                checkpoint,
+            )
+            expected.append(
+                (
+                    candidate_report.candidate_id,
+                    model.config.context_length,
+                    checkpoint.checksum_sha256,
+                )
+            )
+        elif (
+            candidate_report.candidate_id != selection.selected_candidate_id
+            or candidate_result.candidate_id != control_result.candidate_id
+            or candidate_result.checksum_sha256 != control_result.checksum_sha256
+            or checkpoint.checksum_sha256 != control_checkpoint.checksum_sha256
+            or model.config != control_model.config
+        ):
+            raise PipelineExecutionError(
+                "inactive v0.4 candidate does not exactly reuse the verified control"
+            )
+        return tuple(sorted(expected))
 
     def v04_shadow_evaluation(self, context: StageContext) -> StageOutcome:
         self._start(context)
@@ -2900,9 +4632,10 @@ class _PipelineRuntime:
         candidate_acceptance: dict[str, V04AcceptanceResult] = {}
         for candidate_index, candidate in enumerate(ordered_candidates):
             stem = f"v04-candidate-{candidate_index:02d}"
-            iid_evaluation, _iid_baseline, iid_predictions, iid_artifacts = (
+            iid_evaluation, _iid_baseline, _iid_predictions, iid_artifacts = (
                 _evaluate_candidate_view(
                     context,
+                    guard=self.guard,
                     inputs=self.inputs,
                     config_sha256_value=config_sha256(self.inputs.v04),
                     dataset=iid,
@@ -2916,10 +4649,7 @@ class _PipelineRuntime:
                 )
             )
             artifacts.extend(iid_artifacts)
-            iid_composite = semantic_composite_score(
-                full_iid_validation,
-                iid_predictions,
-            )
+            iid_composite = _semantic_report_composite(iid_evaluation)
             iid_acceptance = evaluate_v03_acceptance(iid_evaluation.view_metrics)
             artifacts.append(
                 _contract_artifact(
@@ -2934,8 +4664,9 @@ class _PipelineRuntime:
             view_composites = [iid_composite]
             for view in SHADOW_VIEWS:
                 examples = tuple(item for item in shadow.examples if item.view is view)
-                evaluation, _baseline, predictions, view_artifacts = _evaluate_candidate_view(
+                evaluation, _baseline, _predictions, view_artifacts = _evaluate_candidate_view(
                     context,
+                    guard=self.guard,
                     inputs=self.inputs,
                     config_sha256_value=config_sha256(self.inputs.v04),
                     dataset=shadow,
@@ -2950,7 +4681,7 @@ class _PipelineRuntime:
                 shadow_evaluations.append(evaluation)
                 shadow_index.append((view, evaluation.checksum_sha256))
                 artifacts.extend(view_artifacts)
-                view_composites.append(semantic_composite_score(examples, predictions))
+                view_composites.append(_semantic_report_composite(evaluation))
             acceptance = evaluate_v04_acceptance(
                 iid_acceptance,
                 tuple(item.view_metrics for item in shadow_evaluations),
@@ -3027,29 +4758,143 @@ class _PipelineRuntime:
 
     def v04_gate_and_final_policy_freeze(self, context: StageContext) -> StageOutcome:
         self._start(context)
+        iid_dataset = _load_stage_dataset(context, self.config, "v03_data_audit", "dataset-v03")
+        shadow_dataset = _load_stage_dataset(
+            context,
+            self.config,
+            "v04_shadow_freeze",
+            "dataset-v04-shadow",
+        )
+        train_examples = tuple(
+            item for item in iid_dataset.examples if item.view is RemediationView.IID_TRAIN
+        )
+        expected_scopes: dict[RemediationView, tuple[int, str]] = {}
+        for view in (RemediationView.IID_VALIDATION, *SHADOW_VIEWS):
+            source_dataset = (
+                iid_dataset if view is RemediationView.IID_VALIDATION else shadow_dataset
+            )
+            examples = tuple(item for item in source_dataset.examples if item.view is view)
+            if not train_examples or not examples:
+                raise PipelineExecutionError("v0.4 exact evaluation view inventory is empty")
+            scoped = _subset_dataset(
+                source_dataset,
+                (*train_examples, *examples),
+                dataset_version=source_dataset.manifest.dataset_version,
+            )
+            expected_scopes[view] = (len(examples), scoped.manifest.checksum_sha256)
+        expected_config_sha256 = config_sha256(self.inputs.v04)
         evaluation_attempt = _upstream_attempt(context, self.config, "v04_shadow_evaluation")
         index = _read_contract(
             evaluation_attempt / "v04-evaluation-index.json",
             V04EvaluationIndex,
         )
+        expected_candidates = self._verified_v04_candidate_inventory(context)
+        indexed_candidates = tuple(
+            (item.candidate_id, item.context_length, item.checkpoint_manifest_sha256)
+            for item in index.candidates
+        )
+        if indexed_candidates != expected_candidates:
+            raise PipelineExecutionError(
+                "v0.4 evaluation candidate inventory differs from verified training evidence"
+            )
+        verified_acceptance: dict[str, V04AcceptanceResult] = {}
         for candidate_index, candidate in enumerate(index.candidates):
+            stem = f"v04-candidate-{candidate_index:02d}"
+            iid_report = _read_contract(
+                evaluation_attempt / f"{stem}-iid-semantic-evaluation.json",
+                SemanticEvaluationReport,
+            )
+            iid_acceptance = _read_contract(
+                evaluation_attempt / f"{stem}-iid-acceptance.json",
+                V03AcceptanceResult,
+            )
+            shadow_reports = tuple(
+                _read_contract(
+                    evaluation_attempt / f"{stem}-{view.value}-semantic-evaluation.json",
+                    SemanticEvaluationReport,
+                )
+                for view in SHADOW_VIEWS
+            )
             candidate_acceptance = _read_contract(
-                evaluation_attempt / f"v04-candidate-{candidate_index:02d}-acceptance.json",
+                evaluation_attempt / f"{stem}-acceptance.json",
                 V04AcceptanceResult,
             )
+            iid_count, iid_dataset_sha256 = expected_scopes[RemediationView.IID_VALIDATION]
+            _require_semantic_report_scope(
+                iid_report,
+                view=RemediationView.IID_VALIDATION,
+                example_count=iid_count,
+                dataset_manifest_sha256=iid_dataset_sha256,
+                source_commit=context.source_commit,
+                config_sha256_value=expected_config_sha256,
+                tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
+                output_contract_sha256=self.inputs.compact_contract_sha256,
+                checkpoint_manifest_sha256=candidate.checkpoint_manifest_sha256,
+            )
+            for view, report in zip(SHADOW_VIEWS, shadow_reports, strict=True):
+                view_count, view_dataset_sha256 = expected_scopes[view]
+                _require_semantic_report_scope(
+                    report,
+                    view=view,
+                    example_count=view_count,
+                    dataset_manifest_sha256=view_dataset_sha256,
+                    source_commit=context.source_commit,
+                    config_sha256_value=expected_config_sha256,
+                    tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
+                    output_contract_sha256=self.inputs.compact_contract_sha256,
+                    checkpoint_manifest_sha256=candidate.checkpoint_manifest_sha256,
+                )
+            expected_iid_acceptance = evaluate_v03_acceptance(iid_report.view_metrics)
+            expected_candidate_acceptance = evaluate_v04_acceptance(
+                expected_iid_acceptance,
+                tuple(item.view_metrics for item in shadow_reports),
+            )
+            iid_composite = _semantic_report_composite(iid_report)
+            view_composites = (
+                iid_composite,
+                *tuple(_semantic_report_composite(item) for item in shadow_reports),
+            )
             if (
-                candidate_acceptance.checksum_sha256 != candidate.v04_acceptance_sha256
+                iid_report.evaluation_view is not RemediationView.IID_VALIDATION
+                or iid_report.checksum_sha256 != candidate.iid_report_sha256
+                or iid_acceptance.checksum_sha256 != candidate.iid_acceptance_sha256
+                or iid_acceptance != expected_iid_acceptance
+                or iid_acceptance.view_metrics != iid_report.view_metrics
+                or iid_report.view_metrics.artifacts.checkpoint_sha256
+                != candidate.checkpoint_manifest_sha256
+                or tuple(item.evaluation_view for item in shadow_reports) != SHADOW_VIEWS
+                or tuple(item.checksum_sha256 for item in shadow_reports)
+                != tuple(checksum for _view, checksum in candidate.shadow_reports)
+                or candidate_acceptance.v03_result != iid_acceptance
+                or candidate_acceptance.shadow_view_metrics
+                != tuple(item.view_metrics for item in shadow_reports)
+                or candidate_acceptance.checksum_sha256 != candidate.v04_acceptance_sha256
+                or candidate_acceptance != expected_candidate_acceptance
                 or bool(candidate_acceptance.advancement_allowed)
                 is not candidate.all_required_gates_passed
+                or candidate.iid_semantic_composite != iid_composite
+                or candidate.worst_view_semantic_composite != min(view_composites)
+                or any(
+                    item.view_metrics.artifacts.checkpoint_sha256
+                    != candidate.checkpoint_manifest_sha256
+                    for item in shadow_reports
+                )
             ):
                 raise PipelineExecutionError(
-                    "v0.4 candidate index differs from its immutable acceptance"
+                    "v0.4 candidate index differs from its immutable evaluation evidence"
                 )
+            verified_acceptance[candidate.candidate_id] = candidate_acceptance
+        if _select_v04_candidate(index.candidates).candidate_id != index.selected_candidate_id:
+            raise PipelineExecutionError("v0.4 candidate ranking changed during gate verification")
         acceptance = _read_contract(
             evaluation_attempt / "v04-acceptance.json",
             V04AcceptanceResult,
         )
-        if acceptance.checksum_sha256 != index.v04_acceptance_sha256:
+        selected_acceptance = verified_acceptance[index.selected_candidate_id]
+        if (
+            acceptance != selected_acceptance
+            or acceptance.checksum_sha256 != index.v04_acceptance_sha256
+        ):
             raise PipelineExecutionError("v0.4 gate acceptance differs from selected evidence")
         draft = FinalEvaluationPolicyFreeze.model_construct(
             v04_acceptance_sha256=acceptance.checksum_sha256,

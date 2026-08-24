@@ -578,6 +578,11 @@ def resolve_semantic_selection_examples(
         ):
             raise ValueError("semantic-selection entry observable key does not match the source")
         resolved.append(example)
+    expected_manifest = build_semantic_selection_manifest(dataset, config)
+    if manifest != expected_manifest:
+        raise ValueError(
+            "semantic-selection manifest differs from the deterministic source selection"
+        )
     return tuple(resolved)
 
 

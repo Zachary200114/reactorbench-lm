@@ -581,6 +581,91 @@ def test_resolution_rejects_entry_identity_and_observable_binding_drift() -> Non
         resolve_semantic_selection_examples(dataset, observable_drift, _config())
 
 
+def test_resolution_rejects_fully_rebound_unselected_row_substitution() -> None:
+    """A valid source row cannot replace the deterministic algorithm's row."""
+
+    dataset = _dataset()
+    config = _config()
+    manifest = build_semantic_selection_manifest(dataset, config)
+    selected_ids = {entry.example_id for entry in manifest.entries}
+    unselected = next(
+        example
+        for example in dataset.examples
+        if example.view is RemediationView.IID_VALIDATION and example.example_id not in selected_ids
+    )
+    task_candidates = tuple(
+        sorted(
+            (
+                example
+                for example in dataset.examples
+                if example.view is RemediationView.IID_VALIDATION
+                and example.task_name is unselected.task_name
+            ),
+            key=lambda example: (
+                len(example.compact_context.visible_fact_refs)
+                + len(example.compact_context.counterfactual_visible_fact_refs),
+                len(example.compact_context.counterfactual_visible_fact_refs),
+                len(example.prompt_text.encode("utf-8")),
+                example.prompt_sha256,
+            ),
+        )
+    )
+    midpoint = len(task_candidates) // 2
+    stratum = (
+        ContextSizeStratum.LOWER
+        if unselected in task_candidates[:midpoint]
+        else ContextSizeStratum.UPPER
+    )
+
+    payload = manifest.model_dump(mode="python", round_trip=True)
+    entries = [dict(entry) for entry in cast(tuple[dict[str, Any], ...], payload["entries"])]
+    replacement_index = next(
+        index
+        for index, entry in enumerate(entries)
+        if entry["task_name"] is unselected.task_name and entry["context_stratum"] is stratum
+    )
+    observable = {
+        "task_name": unselected.task_name.value,
+        "prompt_sha256": unselected.prompt_sha256,
+        "prompt_utf8_bytes": len(unselected.prompt_text.encode("utf-8")),
+        "visible_fact_count": len(unselected.compact_context.visible_fact_refs),
+        "counterfactual_visible_fact_count": len(
+            unselected.compact_context.counterfactual_visible_fact_refs
+        ),
+        "template_family_id": unselected.template_family_id,
+        "alias_family_id": unselected.alias_family_id,
+        "augmentation": unselected.augmentation,
+    }
+    entries[replacement_index] = {
+        "selection_index": replacement_index,
+        **observable,
+        "task_name": unselected.task_name,
+        "context_stratum": stratum,
+        "example_id": unselected.example_id,
+        "example_checksum_sha256": unselected.checksum_sha256,
+        "observable_selection_key_sha256": canonical_sha256(observable),
+    }
+    task_order = {task: index for index, task in enumerate(TaskName)}
+    stratum_order = {item: index for index, item in enumerate(CONTEXT_STRATA)}
+    entries.sort(
+        key=lambda entry: (
+            task_order[cast(TaskName, entry["task_name"])],
+            stratum_order[cast(ContextSizeStratum, entry["context_stratum"])],
+            cast(str, entry["prompt_sha256"]),
+        )
+    )
+    for index, entry in enumerate(entries):
+        entry["selection_index"] = index
+    payload["entries"] = tuple(entries)
+    rebound = _validated_manifest_payload(payload)
+
+    assert rebound.source_dataset_manifest_sha256 == manifest.source_dataset_manifest_sha256
+    assert rebound.iid_validation_inventory_sha256 == manifest.iid_validation_inventory_sha256
+    assert rebound.checksum_sha256 != manifest.checksum_sha256
+    with pytest.raises(ValueError, match="deterministic source selection"):
+        resolve_semantic_selection_examples(dataset, rebound, config)
+
+
 def test_manifest_atomic_write_load_pin_and_nonoverwrite(tmp_path: Path) -> None:
     manifest = build_semantic_selection_manifest(_dataset(), _config())
     path = tmp_path / "nested" / "semantic-selection.json"

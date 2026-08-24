@@ -13,10 +13,10 @@ Aster Station: a wholly fictional causal environment.
 ## Current status
 
 Phases 0–5 and the original Phase 6 experiment are complete locally. Phase 6 produced
-a verified negative result. A checksum-bound, development-only v0.2–v0.4 remediation
-runner is now being finalized for an owner-operated local run; its long run has not
-started, so it has no remediation model results. The Phase 7 inference/UI gate remains
-blocked until a behaviorally acceptable model checkpoint exists.
+a verified negative result. The checksum-bound, development-only v0.2–v0.4 remediation
+runner has passed its engineering gates and is ready for an owner-operated local run;
+that long run has not started, so there are no remediation model results. The Phase 7
+inference/UI gate remains blocked until a behaviorally acceptable checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -54,18 +54,24 @@ blocked until a behaviorally acceptable model checkpoint exists.
   reconstruction.
 - The developmental v0.2 `RB2` compact-output contract, strict bidirectional compiler,
   truth-independent constrained token selector, versioned v0.3 data extension, and
-  resumable v0.2–v0.4 development pipeline are implemented. Final integrated source
-  verification and the owner-operated long run remain pending; no remediation model
-  has been trained and no remediation acceptance result exists yet.
+  resumable v0.2–v0.4 development pipeline are implemented and integrated. The
+  v0.3 frozen-source build expands 1,892 source projections into a raw 5,859-example
+  cap-measurement inventory, then removes 24 same-task exact-prompt duplicates with
+  identical targets; only the resulting 5,835 examples are written, audited, or
+  trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
+  verification passed 1,072 tests with 86.07% branch coverage;
+  two historical-golden reads were deliberately excluded from this
+  remediation-only verification boundary. The owner-operated long run remains
+  pending, and no remediation acceptance result exists yet.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
 inference service or web interface, and the current checkpoint must not be presented as
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
-progress, safe stop/resume, and review evidence. Engineering verification and the
-local long run remain pending, and the separate fresh final-evaluation executor is
-intentionally locked and unimplemented in this release.
+progress, safe stop/resume, and review evidence. The local long run remains pending,
+and the separate fresh final-evaluation executor is intentionally locked and
+unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and

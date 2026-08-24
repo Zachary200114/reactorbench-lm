@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
+from enum import Enum
 from itertools import combinations
 
-from pydantic import Field, StrictBool, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, model_validator
 
+from reactorbench.dataset.content_guard import normalize_text
 from reactorbench.dataset.contracts import PromptEvidenceTarget
 from reactorbench.evaluation.compact import parse_compact_target
 from reactorbench.schemas.base import ContractModel, canonical_sha256
@@ -24,6 +27,43 @@ from reactorbench.schemas.target import (
 from .config import RemediationView
 from .data import RemediationExample, SafeDevelopmentDataset
 
+_LEAK_SENSITIVE_TARGET_FIELDS = frozenset(
+    {
+        "diagnosis_status",
+        "fault_labels",
+        "immediate_action",
+        "abstention_reason",
+        "next_event_type",
+    }
+)
+_LABEL_SEPARATOR = re.compile(r"[_-]+")
+_CLASSIFICATION_TASKS = (
+    TaskName.CONTINUE_LOG,
+    TaskName.FAULT_FAMILY,
+    TaskName.NEXT_ACTION,
+)
+
+
+class ClassInventory(ContractModel):
+    """Canonical, report-only class distribution for one classification task."""
+
+    task_name: TaskName
+    counts: tuple[tuple[StrictStr, StrictInt], ...] = Field(min_length=1)
+    total: StrictInt = Field(ge=1)
+
+    @model_validator(mode="after")
+    def inventory_is_canonical(self) -> ClassInventory:
+        if self.task_name not in _CLASSIFICATION_TASKS:
+            raise ValueError("class inventory is limited to classification tasks")
+        labels = tuple(label for label, _count in self.counts)
+        if labels != tuple(sorted(labels)) or len(labels) != len(set(labels)):
+            raise ValueError("class inventory labels must be unique and sorted")
+        if any(not label or type(count) is not int or count < 1 for label, count in self.counts):
+            raise ValueError("class inventory entries must have positive exact counts")
+        if sum(count for _label, count in self.counts) != self.total:
+            raise ValueError("class inventory counts do not sum to their total")
+        return self
+
 
 class ViewAudit(ContractModel):
     view: RemediationView
@@ -31,8 +71,26 @@ class ViewAudit(ContractModel):
     group_count: int = Field(ge=1)
     prompt_checksum_count: int = Field(ge=1)
     task_counts: tuple[tuple[TaskName, int], ...]
+    class_inventories: tuple[ClassInventory, ...]
     renderer_variant_count: int = Field(ge=0)
     evidence_removal_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def counts_are_self_consistent(self) -> ViewAudit:
+        task_names = tuple(task for task, _count in self.task_counts)
+        expected_task_names = tuple(task for task in TaskName if task in task_names)
+        if task_names != expected_task_names or len(task_names) != len(set(task_names)):
+            raise ValueError("view task counts must be unique and canonically ordered")
+        if any(type(count) is not int or count < 1 for _task, count in self.task_counts):
+            raise ValueError("view task counts must be positive exact integers")
+        task_counts = dict(self.task_counts)
+        expected_class_tasks = tuple(task for task in _CLASSIFICATION_TASKS if task in task_counts)
+        observed_class_tasks = tuple(item.task_name for item in self.class_inventories)
+        if observed_class_tasks != expected_class_tasks:
+            raise ValueError("view class inventories must match canonical task support")
+        if any(item.total != task_counts[item.task_name] for item in self.class_inventories):
+            raise ValueError("view class inventories do not cover their task counts")
+        return self
 
 
 class DevelopmentAuditReport(ContractModel):
@@ -80,6 +138,68 @@ def _intersection_count(values: dict[RemediationView, set[str]]) -> int:
     for first, second in combinations(values, 2):
         overlaps.update(values[first] & values[second])
     return len(overlaps)
+
+
+def _leak_sensitive_target_labels(example: RemediationExample) -> tuple[str, ...]:
+    """Return answer labels whose surface form must not appear in the prompt.
+
+    This intentionally mirrors the field-sensitive Phase 3 audit. Evidence-slot,
+    subsystem, trend, and operating-mode labels describe prompt-visible evidence or
+    context and may legitimately occur in the input. Diagnosis, fault, action,
+    abstention, and predicted-next-event labels are answer-bearing across the task
+    contracts, including nested counterfactual conclusions, and are therefore scanned.
+    """
+
+    target = parse_compact_target(example.compact_target, context=example.compact_context)
+    labels: set[str] = set()
+
+    def visit(value: object, field_name: str | None = None) -> None:
+        if isinstance(value, Enum):
+            if field_name in _LEAK_SENSITIVE_TARGET_FIELDS:
+                labels.add(str(value.value))
+            return
+        if isinstance(value, BaseModel):
+            for name in type(value).model_fields:
+                visit(getattr(value, name), name)
+            return
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                visit(item, field_name)
+
+    visit(target)
+    return tuple(sorted(labels))
+
+
+def _normalized_label_surface(value: str) -> str:
+    """Canonicalize case and interchangeable label separators for matching."""
+
+    return " ".join(_LABEL_SEPARATOR.sub(" ", normalize_text(value)).split())
+
+
+def _label_surface_in_normalized_prompt(normalized_prompt: str, label: str) -> bool:
+    normalized_label = _normalized_label_surface(label)
+    if not normalized_label:
+        return False
+    return (
+        re.search(
+            rf"(?<![a-z0-9]){re.escape(normalized_label)}(?![a-z0-9])",
+            normalized_prompt,
+        )
+        is not None
+    )
+
+
+def _has_target_text_leakage(example: RemediationExample) -> bool:
+    if (
+        example.compact_target in example.prompt_text
+        or example.canonical_target_json in example.prompt_text
+    ):
+        return True
+    normalized_prompt = _normalized_label_surface(example.prompt_text)
+    return any(
+        _label_surface_in_normalized_prompt(normalized_prompt, label)
+        for label in _leak_sensitive_target_labels(example)
+    )
 
 
 def _evidence_removal_is_valid(example: RemediationExample) -> bool:
@@ -157,15 +277,31 @@ def audit_safe_development_dataset(dataset: SafeDevelopmentDataset) -> Developme
     # duplicate inside the same task is a shortcut/leakage finding.
     prompt_counts = Counter((item.task_name, item.prompt_sha256) for item in examples)
     exact_duplicates = sum(count - 1 for count in prompt_counts.values() if count > 1)
-    target_leakage = sum(
-        item.compact_target in item.prompt_text or item.canonical_target_json in item.prompt_text
-        for item in examples
-    )
+    target_leakage = sum(_has_target_text_leakage(item) for item in examples)
     invalid_evidence = sum(not _evidence_removal_is_valid(item) for item in examples)
     view_audits: list[ViewAudit] = []
     for view in dataset.manifest.views:
         rows = by_view[view]
         counts = Counter(item.task_name for item in rows)
+        class_inventories: list[ClassInventory] = []
+        for task in _CLASSIFICATION_TASKS:
+            task_rows = tuple(item for item in rows if item.task_name is task)
+            if not task_rows:
+                continue
+            if any(item.classification_label is None for item in task_rows):
+                raise ValueError("classification task is missing a derived class label")
+            class_counts = Counter(
+                item.classification_label
+                for item in task_rows
+                if item.classification_label is not None
+            )
+            class_inventories.append(
+                ClassInventory(
+                    task_name=task,
+                    counts=tuple(sorted(class_counts.items())),
+                    total=len(task_rows),
+                )
+            )
         view_audits.append(
             ViewAudit(
                 view=view,
@@ -173,6 +309,7 @@ def audit_safe_development_dataset(dataset: SafeDevelopmentDataset) -> Developme
                 group_count=len(group_ids[view]),
                 prompt_checksum_count=len(prompt_hashes[view]),
                 task_counts=tuple((task, counts[task]) for task in TaskName if counts[task]),
+                class_inventories=tuple(class_inventories),
                 renderer_variant_count=sum(
                     item.augmentation == "renderer_variant" for item in rows
                 ),

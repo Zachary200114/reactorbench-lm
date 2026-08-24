@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+import reactorbench.evaluation.baselines as evaluation_baselines
 import reactorbench.remediation.baselines as remediation_baselines
 from reactorbench.evaluation.baselines import BaselineResult, _result
 from reactorbench.evaluation.compact import (
@@ -38,6 +39,7 @@ from reactorbench.schemas.enums import (
     ActionLabel,
     DiagnosisStatus,
     FaultFamily,
+    SplitName,
     TaskName,
 )
 from reactorbench.schemas.target import FaultDiagnosisTarget, NextActionTarget
@@ -265,6 +267,27 @@ def _tokenized(example: RemediationExample) -> CompactTokenizedExample:
     )
 
 
+def _experiment_data() -> ExperimentData:
+    dataset = _dataset()
+    train = tuple(
+        remediation_baselines._experiment_example(item, split=SplitName.IID_TRAIN)
+        for item in dataset.examples
+        if item.view is RemediationView.IID_TRAIN
+    )
+    validation = tuple(
+        remediation_baselines._experiment_example(item, split=SplitName.IID_VALIDATION)
+        for item in dataset.examples
+        if item.view is RemediationView.SHADOW_COMPONENT
+    )
+    return ExperimentData(
+        train=train,
+        validation=validation,
+        inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.source_checksum_sha256) for item in (*train, *validation))
+        ),
+    )
+
+
 def _perfect_classification_result(
     data: ExperimentData,
     *,
@@ -423,3 +446,141 @@ def test_public_wrapper_rejects_wrong_view_and_token_inventory() -> None:
             tokenized_validation=validation[:-1],
             evaluation_view=RemediationView.SHADOW_COMPONENT,
         )
+
+
+def test_bow_optimizer_polls_and_stops_inside_the_step_loop() -> None:
+    polls = 0
+
+    def stop_requested() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls == 4
+
+    with pytest.raises(KeyboardInterrupt):
+        remediation_baselines._cooperative_bow_logistic(
+            _experiment_data(),
+            _config(),
+            stop_requested=stop_requested,
+        )
+
+    assert polls == 4
+
+
+def test_gru_polls_and_stops_between_training_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config().model_copy(
+        update={"gru_batch_size": 1, "gru_epochs": 5},
+    )
+    monkeypatch.setattr(
+        remediation_baselines,
+        "_prompt_token_rows",
+        lambda records, _tokenizer, _maximum: tuple(
+            (1, 4 + index) for index, _ in enumerate(records)
+        ),
+    )
+    polls = 0
+
+    def stop_requested() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls == 4
+
+    with pytest.raises(KeyboardInterrupt):
+        remediation_baselines._cooperative_gru_result(
+            _experiment_data(),
+            _tokenizer(),
+            config,
+            TaskName.FAULT_FAMILY,
+            seed=5511,
+            stop_requested=stop_requested,
+        )
+
+    # Polls 1-2 bracket setup, poll 3 admits the first batch, and poll 4
+    # cooperatively stops before the second batch.
+    assert polls == 4
+
+
+def test_baseline_orchestration_polls_between_comparator_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        remediation_baselines,
+        "_rule_results",
+        lambda _data: pytest.fail("stop boundary did not prevent the next comparator"),
+    )
+    polls = 0
+
+    def stop_requested() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls == 3
+
+    with pytest.raises(KeyboardInterrupt):
+        _baselines_with_optional_continuation(
+            _experiment_data(),
+            _tokenizer(),
+            _config(),
+            tokenized_train=(),
+            tokenized_validation=(),
+            stop_requested=stop_requested,
+        )
+
+    assert polls == 3
+
+
+def test_baseline_stop_callback_requires_an_exact_boolean() -> None:
+    with pytest.raises(TypeError, match="exact boolean"):
+        remediation_baselines._poll_stop(cast(Any, lambda: 1))
+
+
+def test_false_stop_callback_preserves_non_timing_baseline_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _dataset()
+    train = tuple(
+        _tokenized(item) for item in dataset.examples if item.view is RemediationView.IID_TRAIN
+    )
+    validation = tuple(
+        _tokenized(item)
+        for item in dataset.examples
+        if item.view is RemediationView.SHADOW_COMPONENT
+    )
+
+    def prompt_rows(
+        records: tuple[ExperimentExample, ...],
+        _tokenizer: ProjectTokenizer,
+        _maximum: int,
+    ) -> tuple[tuple[int, ...], ...]:
+        return tuple((1, 4 + index) for index, _record in enumerate(records))
+
+    monkeypatch.setattr(remediation_baselines, "_prompt_token_rows", prompt_rows)
+    monkeypatch.setattr(evaluation_baselines, "_prompt_token_rows", prompt_rows)
+    legacy = run_remediation_baselines(
+        dataset,
+        _tokenizer(),
+        _config(),
+        tokenized_train=train,
+        tokenized_validation=validation,
+        evaluation_view=RemediationView.SHADOW_COMPONENT,
+    )
+    cooperative = run_remediation_baselines(
+        dataset,
+        _tokenizer(),
+        _config(),
+        tokenized_train=train,
+        tokenized_validation=validation,
+        evaluation_view=RemediationView.SHADOW_COMPONENT,
+        stop_requested=lambda: False,
+    )
+
+    def scientific_payload(result: BaselineResult) -> dict[str, object]:
+        return result.model_dump(
+            mode="python",
+            round_trip=True,
+            exclude={"elapsed_seconds", "checksum_sha256"},
+        )
+
+    assert tuple(map(scientific_payload, cooperative.results)) == tuple(
+        map(scientific_payload, legacy.results)
+    )

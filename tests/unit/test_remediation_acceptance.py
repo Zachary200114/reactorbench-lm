@@ -61,10 +61,12 @@ def _metric_set(**overrides: float) -> SemanticMetricSet:
     return SemanticMetricSet(**{name: _estimate(value) for name, value in values.items()})
 
 
-def _artifacts(*, checkpoint: str = "e", tokenizer: str = "2") -> DevelopmentArtifactBinding:
+def _artifacts(
+    *, checkpoint: str = "e", tokenizer: str = "2", config: str = "b"
+) -> DevelopmentArtifactBinding:
     return DevelopmentArtifactBinding(
         source_commit="a" * 40,
-        config_sha256="b" * 64,
+        config_sha256=config * 64,
         dataset_manifest_sha256="c" * 64,
         tokenizer_manifest_sha256=tokenizer * 64,
         output_contract_sha256="d" * 64,
@@ -80,6 +82,7 @@ def _packet(
     version: RemediationVersion,
     checkpoint: str = "e",
     tokenizer: str = "2",
+    config: str = "b",
     composition_score: float = 0.0,
     **metric_overrides: float,
 ) -> DevelopmentViewMetrics:
@@ -90,17 +93,22 @@ def _packet(
         contract_version=version,
         view=view,
         sample_count=100,
-        artifacts=_artifacts(checkpoint=checkpoint, tokenizer=tokenizer),
+        artifacts=_artifacts(checkpoint=checkpoint, tokenizer=tokenizer, config=config),
         metrics=_metric_set(**metric_overrides),
         composition_score_interval=composition,
     )
 
 
-def _passing_v03() -> V03AcceptanceResult:
+def _passing_v03(
+    *, checkpoint: str = "e", tokenizer: str = "2", config: str = "b"
+) -> V03AcceptanceResult:
     return evaluate_v03_acceptance(
         _packet(
             DevelopmentView.IID_VALIDATION,
             version=RemediationVersion.V03,
+            checkpoint=checkpoint,
+            tokenizer=tokenizer,
+            config=config,
         )
     )
 
@@ -488,6 +496,14 @@ def test_v04_rejects_mixed_candidate_bindings_and_result_tampering() -> None:
     )
     with pytest.raises(ValidationError, match="one frozen candidate"):
         evaluate_v04_acceptance(_passing_v03(), tuple(packets))
+
+    for mismatched_iid in (
+        _passing_v03(checkpoint="3"),
+        _passing_v03(tokenizer="4"),
+        _passing_v03(config="5"),
+    ):
+        with pytest.raises(ValidationError, match="one frozen candidate"):
+            evaluate_v04_acceptance(mismatched_iid, _shadow_packets())
 
     result = evaluate_v04_acceptance(_passing_v03(), _shadow_packets())
     payload = result.model_dump(mode="python", round_trip=True)

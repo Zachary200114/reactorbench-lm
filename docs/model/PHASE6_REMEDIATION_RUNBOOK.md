@@ -48,10 +48,11 @@ incompatible configuration or contract, incorrect tokenizer or artifact checksum
 unsafe existing output, and unavailable pipeline component.
 
 Do not start the long run until the dry run exits with code `0` and reports the frozen
-configuration checksum, source commit, and stage count. The primary run uses Apple MPS
-when the validated configuration and local PyTorch build support it, with the
-documented CPU fallback. The resolved device and runtime versions are recorded in the
-run evidence.
+configuration checksum, source commit, and stage count. The primary run requests Apple
+MPS. Earlier development work may use the documented CPU fallback, but a fallback does
+not satisfy the mandatory v0.4 MPS feasibility gate. Every pilot measurement records
+its requested and resolved device; if any mandatory measurement resolves to CPU, the
+pilot is a non-passing result and the 1,024-token candidate does not train.
 
 Finish and review the intended source commit before starting. From the start of the
 run through the later Codex evidence review, do not create a new commit, check out
@@ -82,12 +83,64 @@ then runs the permitted v0.4 pilot, candidate, shadow evaluation, policy freeze,
 review-bundle stages only when v0.3 passes. A failed scientific gate stops later work
 cleanly instead of weakening a threshold.
 
-The mandatory v0.4 context pilot checks batch sizes **1, 2, and 4**. The 512-token
-control and activated 1024-token candidate are compared on full IID validation and all
-six development shadow views. Selection follows the preregistered order: all required
-gates must pass, then the highest worst-view semantic composite wins, then the highest
-full-IID composite, with the shorter 512-token context as the deterministic final
-tie-break. No result may change that rule after the run begins.
+The v0.3 audit regenerates IID material once at the frozen source commit. It first
+reproduces the reviewed counterfactual-cap evidence against the raw 5,859-example
+inventory, then deterministically removes 24 same-task exact prompt duplicates whose
+targets are identical. The 5,835-example development inventory must contain all 55
+counterfactual rows unchanged. The stage records the raw/deduplicated manifest bridge,
+removal inventory, task-scoped visible-structure separation, target-leak scan, and
+report-only task/class inventories. A conflicting duplicate, cap drift, missing
+counterfactual, or cross-view structured collision blocks advancement.
+
+The longer-context pilot activates only when both the frozen v0.2 rate and the newly
+measured deduplicated v0.3 IID-train prompt-truncation rate meet the frozen 0.10
+materiality threshold. If v0.3 is below that threshold, the pilot records a passing
+no-op and the 512-token control is reused; that is not a 1,024-token feasibility claim.
+When activated, the mandatory v0.4 context pilot must actually resolve to Apple MPS
+while checking batch sizes **1, 2, and 4**; batch 4 must also pass finite-loss and
+checkpoint-reload checks. The pilot profiles the full 1,024-token IID train and
+validation inventories, selects the longest sequence for each task, and proves each
+ten-step batch schedule actually samples the global training maximum. CPU fallback is
+recorded as a negative feasibility result, not an MPS pass.
+Before longer-context main training, the consumer independently reopens all three
+pilot training-result contracts and verifies the exact batch-specific training
+configuration, model configuration, tokenizer, tokenized train/validation inventories,
+example counts, device resolution, checkpoint hash, and report checksum. It also
+regenerates the frozen v0.3 IID material, retokenizes the complete train and validation
+views at 1,024 tokens, reselects the longest row per task, recomputes every length
+profile and pilot inventory hash, and proves each batch schedule exercises the global
+maximum. A self-consistent summary that substitutes shorter rows cannot authorize the
+candidate. Before either the active or no-op branch, it also retokenizes the exact
+deduplicated IID-train view at 512 tokens and rederives the measured truncation rate
+and activation decision; a self-bound false activation or false no-op fails closed.
+The final policy consumer independently repeats this proof for an activated main
+candidate: it regenerates the exact deduplicated IID material, resolves the frozen
+48-row selection, retokenizes both inputs at 1,024 tokens, and cross-binds the training
+configuration, tokenizer, source, selected step/loss, and checkpoint weights and size.
+Both checkpoints are selected using only the frozen IID development selection set;
+the six shadow views are not read during fitting or checkpoint selection. The
+512-token control and eligible 1024-token candidate are then compared on full IID
+validation and all six development shadow views. Final candidate selection follows
+the preregistered order: all required gates must pass, then the highest worst-view
+semantic composite wins, then the highest full-IID composite, with the shorter
+512-token context as the deterministic final tie-break. No result may change that rule
+after the run begins. The ranking score is reconstructed from each immutable semantic
+report: schema validity is a hard prerequisite, followed by equal weighting of exact
+match, every supported classification/evidence/abstention/specificity metric,
+calibration quality, and selective-risk quality. The v0.3 gate reopens candidate
+training results, checkpoint manifests, and selection reports to verify the composite,
+training selection score, validation-NLL, step, and checkpoint tie-break fields. It
+independently rebuilds the
+deterministic 48-row selection, then checks every candidate's raw/tokenized validation
+inventory and exact scoped evaluation manifest against those rows. The v0.4 policy
+gate likewise reloads exact IID and shadow datasets; each reopened report must cover
+the full named view and match its scoped dataset, source commit, configuration,
+tokenizer, compact contract, checkpoint, predictions, and comparator bindings before
+IID/worst-view composites are rederived and selection repeats. It separately
+reopens the selected v0.3 control and the optional v0.4 candidate-training evidence,
+loads their bound checkpoints/configurations, and requires exactly one 512-token
+candidate when inactive or exactly that control plus the 1,024-token variant when
+active; relabelled or context-rebound index rows fail closed.
 
 The run is non-overwriting. If the run directory already exists, the start command
 refuses and tells you to resume it. It also remains bound to the Git commit at which it
@@ -96,9 +149,14 @@ scientific inputs before the Codex evidence review is complete.
 
 ## Progress and periodic updates
 
-The runner records a heartbeat every **30 seconds**, plus stage, evaluation,
-checkpoint, stop, failure, and completion events. In another Terminal window, inspect
-the newest verified snapshot at any time:
+The runner records a heartbeat every **30 seconds**, plus stage, bounded decode-
+progress, evaluation, checkpoint, stop, failure, and completion events. Stop/resource
+polling is finer grained than durable progress: it occurs inside each BOW optimizer
+step, GRU batch, comparator boundary, and decoded example, while decode progress is
+persisted only at a bounded interval plus completion to avoid excessive disk syncs.
+Before singleton decoding begins, the complete view inventory must also provide
+non-empty, globally unique example IDs; a duplicate fails before any model call.
+In another Terminal window, inspect the newest verified snapshot at any time:
 
 ```bash
 cd /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -140,10 +198,20 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ./scripts/stop_phase6_pipeline.sh
 ```
 
-The request is idempotent. The active stage stops at its next safe boundary; a training
-stage writes its next applicable durable checkpoint before returning a resumable
-state. Continue checking status until it says `stopped`. A stop request is not an
-immediate process kill, so allow the current atomic operation to finish.
+The request is idempotent. The active stage stops at its next safe boundary. An
+ordinary training-loop stop writes its next applicable durable checkpoint. If the
+request arrives inside a checkpoint-selection decode, that incomplete evaluation
+aborts without publishing a partial artifact; resume uses the newest earlier verified
+training state, or restarts that candidate when no durable step exists yet. At most the
+work since that recorded state is repeated. Baseline/evaluation work polls
+cooperatively within its inner loops and commits no partial scientific view artifact.
+Continue checking status until it says `stopped`. A stop request is not an immediate
+process kill, so allow the current atomic operation to finish.
+
+Stop-request archival is crash-durable across its source and archive directories. If
+a prior crash left both an identical source request and its checksum-named archive,
+resume verifies strict canonical equality and retires the duplicate source request;
+a conflicting existing archive fails closed.
 
 Use the stop command instead of deleting files or terminating the process. If an
 unavoidable Control-C or system interruption occurs, inspect status before resuming;
@@ -171,6 +239,17 @@ Resume verifies the original source/configuration binding, audits committed stag
 boundaries, archives the previous stop request, and continues from the last valid
 stage or durable training state. It does not silently skip a failed integrity check.
 
+Across repeated attempts, resume selects the highest verified durable step, copies it
+atomically into the new attempt, verifies the successor, records its checkpoint, and
+only then retires superseded committed states. Recognized
+`.state-step-########.lock` and `.state-step-########.tmp-*` crash remnants are
+preserved for forensic review; unknown, symbolic-link, or otherwise unsafe entries
+fail closed. Repeated hard kills can accumulate those recognized remnants and
+abandoned final-checkpoint directories. The actual run size includes them, and a
+projected write that could meet or exceed the 8 GiB run limit is refused before model
+work begins. They are not auto-deleted and may eventually require reviewed manual
+intervention.
+
 Do not use resume to override `blocked`. A blocked state means a frozen scientific gate
 did not pass and later stages were intentionally not run; preserve it for analysis.
 
@@ -179,11 +258,15 @@ did not pass and later stages were intentionally not run; preserve it for analys
 These are planning estimates, not measured v0.3/v0.4 results:
 
 - **Apple MPS development pipeline estimate:** approximately 6–24 hours.
-- **CPU-fallback development pipeline estimate:** approximately 24–72 hours.
+- **CPU fallback:** permitted for earlier development stages, but it cannot satisfy an
+  activated v0.4 MPS pilot. No successful activated CPU runtime estimate is claimed.
+  If measured v0.3 materiality makes the pilot a no-op, a control-only completion may
+  still be valid but provides no 1,024-token feasibility evidence.
 - **Storage estimate:** approximately 2–6 GiB, with a hard configured run-directory
   limit of 8 GiB.
 - **Process-memory boundary:** 16 GiB RSS as configured for this pipeline.
-- **Overall development-run time boundary:** 72 hours.
+- **Overall active development-run time boundary:** 72 hours. Time spent in a durable
+  stopped state does not consume this active-runtime budget.
 
 Actual time depends on the Mac, MPS availability, selected candidate, decoding length,
 and whether optional v0.4 work is activated by measured development evidence. The run
@@ -211,6 +294,15 @@ Important top-level evidence includes:
   markers; and
 - the final `review_bundle` stage artifacts — compact machine-readable and human-
   readable result indexes with paths to detailed evidence.
+
+Within the v0.3 audit attempt, the raw cap reproduction,
+`v03-counterfactual-cap-compatibility.json`, deduplicated cap report, duplicate-removal
+inventory embedded in the compatibility report, visible-structure separation report,
+and class inventories provide the
+trace from the frozen raw material to the actual training inventory. Class inventories
+are descriptive evidence, not acceptance thresholds. Within the v0.4 pilot attempt,
+the pilot report records full-view length hashes, maximum/mean sequence lengths,
+native-device resolution, and proof that the maximum training row was exercised.
 
 After a completed development run, the human and machine review indexes are under the
 committed review-bundle attempt:

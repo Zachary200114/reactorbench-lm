@@ -1,162 +1,213 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-23 America/New_York
+Last updated: 2026-08-24 America/New_York
 
-Current phase: **Phase 6 remediation engineering; v0.3/v0.4 implementation is
-incomplete and stopped at a safe checkpoint**
+Current phase: **Phase 6 remediation engineering is complete; the owner-operated
+v0.2–v0.4 development run has not started**
 
-Current objective: preserve the partially implemented remediation work without
-integrating or running it until account usage resets. On resume, repair the six
-source-review blockers, finish the pipeline, and verify focused gates before any
-training or final evaluation.
+Current objective: preserve the verified local implementation as a clean, non-pushed
+checkpoint and hand the checksum-bound long development run to the project owner.
+After that run completes, blocks, stops, or fails, Codex should review its immutable
+evidence without retraining or opening final data.
 
-Checkpoint reason: the user reported **2% account usage remaining** and explicitly
-requested a safe stop. Exact account usage is not visible to the tooling; 2% is the
-user-provided value. All implementation agents were interrupted and no new work was
-started after the stop request.
+Checkpoint reason: v0.3/v0.4 data, training, evaluation, evidence-consumer, progress,
+stop/resume, and storage boundaries have passed integrated verification and fresh
+read-only review. Work stops before the long run by design.
 
-Intended project path:
-`/Users/zachary/Documents/Personal-Projects/AI-transformer`
+Project path:
+/Users/zachary/Documents/Personal-Projects/AI-transformer
 
-Preserved implementation staging path:
-`/Users/zachary/Documents/ChatGPT/Projects/.reactorbench-v034`
+Exact account usage is not observable in this environment. No claim is made that an
+account-level percentage was measured.
 
-## Completed work in this staging checkpoint
+## Completed work
 
-- Preserved the previously completed v0.2 compact-output contract, deterministic
-  compiler, and truth-independent constrained decoder.
-- Added remediation modules for acceptance, audit, baselines, configuration, data,
-  decoding, inventory, metrics, orchestration, progress reporting, sampling,
-  selection, serialization, and training.
-- Completed the selection slice; its focused evidence was 22 tests passing with 95%
-  branch coverage.
-- Completed the orchestration slice; its focused evidence was 26 tests passing with
-  91% branch coverage.
-- Extended metrics/baseline tests; focused evidence was 30 tests passing.
-- Added package-resource verification and a Phase 6 remediation runbook. Focused
-  package evidence was Ruff and strict mypy passing and 4 tests passing.
-- Added CLI and shell entry points for run, status, resume, stop, and evaluation.
-  Before interruption, their focused evidence was Ruff and strict mypy passing, 12
-  tests passing, Bash syntax passing, and 85% branch coverage. These entry points are
-  not integration-ready because the pipeline they call is incomplete.
-- Moved the task marker to the end of the serialized prompt immediately before
-  `<|target|>` so left-side truncation retains it. Added focused serialization tests.
-- Began correcting checkpoint selection to use the preregistered tie-break tuple
-  `(selection_score, validation_nll, step)`.
-- Performed an independent source review and recorded the six fix-first findings
-  below.
-- No long training run, final evaluation, data regeneration, held-out tuning, GitHub
-  push, Vercel deployment, or external publication was started.
+- Preserved Phase 6 v0.1 as immutable negative evidence.
+- Completed v0.2 compact-output reliability: the frozen RB2 contract, strict
+  bidirectional compiler, task-footer-preserving serialization, tokenizer
+  reachability proof, truth-independent constrained decoding, task-balanced sampling,
+  safe checkpoints, and development-only acceptance contracts.
+- Completed the v0.3 scoped extension without changing historical v0.1/v0.2
+  inventories. The frozen-source build expands 1,892 source projections into 5,859
+  raw IID task examples used only in memory for cap reproduction, then removes 24
+  same-task exact-prompt duplicates whose targets are identical. Only the resulting
+  5,835 examples are written, audited, selected, or trained. All 55 group-atomic
+  counterfactual rows remain bit-exact: 40 train and 15 validation.
+- Embedded a bounded 24-row removal inventory and exact retained-counterpart bindings
+  in the v0.3 compatibility report. Added target-leak scans, report-only task/class
+  inventories, and task-scoped visible-structure separation.
+- Completed conditional v0.4 engineering. The 1,024-token candidate activates only
+  when both the frozen v0.2 and measured deduplicated-v0.3 IID-train prompt truncation
+  rates are at least 0.10. Otherwise the pilot is a passing no-op and the 512-token
+  control is reused.
+- For an active v0.4 path, require native Apple MPS without fallback for ten-step
+  batches 1, 2, and 4. The pilot profiles complete 1,024-token IID train/validation
+  inventories, chooses the longest row per task, and proves the global train maximum
+  appears in every batch schedule before longer-context training can start.
+- Made scientific consumers reconstruct evidence instead of trusting self-checksummed
+  summaries. They rebuild the deterministic 48-row selection, raw/deduplicated data
+  bridge, tokenizer and length inventories, pilot schedules, training/checkpoint
+  bindings, exact IID and six-shadow scopes, semantic composites, ranking tie-breaks,
+  and v0.3/v0.4 acceptance results.
+- Implemented the immutable 16-stage, non-overwriting pipeline with strict Git/config/
+  artifact provenance, 30-second heartbeats, bounded progress, safe public errors,
+  active-runtime and storage limits, and terminal review bundles.
+- Added cooperative polling inside BOW optimizer steps, GRU train/evaluation batches,
+  comparator boundaries, and each decoded example. No partial baseline, prediction,
+  or semantic-view artifact is published when work stops.
+- Made stop-request archival crash-durable and idempotent after strict equality.
+  Cross-attempt resume copies and verifies a successor before symlink-safe retirement
+  of superseded durable states.
+- Added separate-process lifecycle coverage for start, status, stop, exit code 8,
+  checkpoint resume, no completed-stage rerun, all 16 simulated stages, and the final
+  access lock.
+- Kept the ordinary runner physically separated from fresh final evaluation. The
+  final executor remains intentionally unimplemented and fails closed.
+- Added and updated the owner runbook, README, decision log, and executable wrappers.
 
-## Files created or changed in staging
+## Frozen development evidence
 
-- Remediation source: `src/reactorbench/remediation/`.
-- Compact and generator support:
-  `src/reactorbench/evaluation/compact.py` and
-  `src/reactorbench/dataset/scenarios.py`.
-- CLI scripts: `scripts/run_phase6_pipeline.sh`,
-  `scripts/check_phase6_status.sh`, `scripts/resume_phase6_pipeline.sh`,
-  `scripts/stop_phase6_pipeline.sh`, and `scripts/run_phase6_evaluation.sh`.
-- Tests: remediation unit/contract/property tests under `tests/`, including
-  `tests/unit/test_remediation_serialization.py`.
-- Packaging and commands: `pyproject.toml`, `Makefile`, and `README.md`.
-- Documentation: `docs/model/PHASE6_REMEDIATION_RUNBOOK.md`, this status file, and
-  additions to `research/DECISION_LOG.md`.
-- Development reports/configuration in staging contain provisional measured hashes
-  and counts. They must be regenerated and rebound after source fixes; they are not
-  final evidence.
+- Frozen data source commit:
+  992d86823a32813b226b73bc495d2ae6723d47ab
+- Raw 5,859-example cap-only manifest:
+  87420933f3e9549f8ef6785994a55e845e957c2942e0c5db0c4df5931075790a
+- Sole written/audited/trained 5,835-example manifest:
+  02ab7b7e29de7c74df5d308683b8c3d9f5d6204db0649a02d8288489d3be0af3
+- Tokenizer manifest:
+  ef80afa52030c764598663b0f51b90e7b753b91377b47b4a5648d729e0011ef8
+- v0.2 inventory: 882 IID train/validation examples (630/252), with 882/882
+  compile, target-fit, round-trip, constrained reachability, and footer retention;
+  zero cap exhaustion; 668/882 prompt truncations retained honestly.
+- v0.2 report checksum:
+  c4f9739d67503714ca83b9ecbd4e65d288592161be1ffe5f2c038d5e3485295b
+- Frozen raw v0.3 cap inventory: 55 counterfactual pairs (40/15), with 55/55
+  compile, target-fit, round-trip, reachability, and footer retention; zero cap
+  exhaustion; cap 108; every control prompt truncates at 512 tokens.
+- v0.3 frozen cap report checksum:
+  19612c9784612b2cbf5feb7c97a6bb2b351a510e28a853706ba212cfbfdf113f
+- Canonical pipeline configuration checksum:
+  4de973e2e009dccea7fc2ea430b4946c85b3066bde7b79673786479517ae666a
 
-## Tests and checks at stop
+These are data, tokenizer, and engineering-contract measurements, not new model-quality
+results. No v0.2, v0.3, or v0.4 long training result or acceptance result exists.
 
-- No full-suite or long-running gate was started after the user reported 2% usage.
-- The last minimal Ruff check failed because `pipeline.py` was interrupted mid-edit.
-  Reported issues included unused imports, line-length violations, an S603 subprocess
-  warning, and `F821 Undefined name _complete_review_markdown` near line 2809.
-- A focused pytest command for serialization, training, and sampling was launched
-  immediately before checkpointing, but its completion output was not reliably
-  captured after context truncation. It must not be counted as passing.
-- Earlier focused results listed in “Completed work” remain useful slice-level
-  evidence but do not establish integrated correctness.
+## Tests and checks run
 
-## Independent source-review blockers
+- Ruff format check: 188 files passed.
+- Ruff lint: passed.
+- Strict mypy: 153 source files passed.
+- Complete non-golden remediation unit plus separate-process owner lifecycle suite:
+  331 passed in 112.29 seconds.
+- Final permitted repository suite:
+  1,072 passed, 2 deliberately deselected, in 527.05 seconds.
+- Branch coverage: 86.07%, above the required 85%.
+- The two deselections are the documented historical final/golden asset readers:
+  test_resource_api_reads_the_root_reviewed_assets_without_drift and
+  test_approved_golden_packet_projects_sixty_examples. No held-out or final evaluation
+  was run.
+- Five wrappers are executable and pass Bash syntax:
+  run_phase6_pipeline.sh, check_phase6_status.sh, stop_phase6_pipeline.sh,
+  resume_phase6_pipeline.sh, and the locked-only run_phase6_evaluation.sh.
+- Git diff whitespace check: passed.
+- Fresh read-only integration review: no actionable material findings remained after
+  the final provenance and crash-boundary regressions.
+- Clean-tree 16-stage dry-run: pending the local implementation checkpoint because the
+  source verifier intentionally refuses a dirty checkout.
 
-1. The v0.3 task-balanced sampler cannot satisfy a six-record batch with one record
-   per task while also treating three-record augmentation groups as indivisible.
-   Redesign batching; augmentation-group atomicity belongs at split construction, not
-   as a mandatory whole-batch unit.
-2. Left-side prompt truncation removed the leading task header in 668 of 882 measured
-   development prompts. The task-footer code change has begun, but reports and all
-   related tests must be regenerated.
-3. Training checkpoint selection used `(selection_score, step)` instead of the frozen
-   `(selection_score, validation_nll, step)` tie-break. The correction is partial and
-   needs focused verification.
-4. Metrics do not yet bind caller-supplied artifact hashes to the baseline report,
-   dataset, and tokenizer provenance.
-5. Inventory does not yet prove actual-tokenizer constrained token-path reachability
-   for every compact target.
-6. Dataset/inventory count tables can be rechecksummed without proving their internal
-   counts. Validators must recompute and reconcile counts, with tamper tests.
+The module-name form of pytest-cov previously triggered a PyTorch import segmentation
+fault in this local Python environment. The path-based coverage target above completed
+successfully.
 
 ## Decisions and assumptions
 
-- Preserve Phase 6 v0.1 artifacts as immutable negative evidence.
-- Keep held-out/golden evaluation isolated until the implementation and acceptance
-  gates are frozen and passing.
-- Keep current measured caps, counts, and hashes provisional. Task-footer
-  serialization and later provenance rebinding make existing reports stale.
-- The current `source_commit` value is not exact provenance for the staged source
-  because that commit predates these implementation files. After the source is
-  integrated and committed locally, regenerate evidence against that exact commit and
-  commit the evidence separately.
-- The project owner controls GitHub pushes and Vercel deployment; neither is
-  authorized for this work.
+- D-077 selects v0.2 checkpoints using six free-running structural indicators, with
+  validation NLL and earlier step as frozen tie-breaks.
+- D-078 defines task-scoped visible-structure separation and safe exact-duplicate
+  removal.
+- D-079 binds raw cap reproduction to the deduplicated training inventory.
+- D-080 defines two-condition v0.4 activation and longest-sequence native-MPS proof.
+- D-081 bounds cross-attempt storage and charges only active progress time.
+- D-082 defines cooperative evaluation stopping and view-atomic artifact publication.
+- D-083 requires downstream reconstruction of scientific evidence and ranking.
+- D-084 makes stop archival crash-durable and conflict-intolerant.
+- The project owner controls GitHub pushes, external publication, credentials, and
+  deployment. Local checkpoint commits are permitted.
 
-## Known failures and open blockers
+## Residual risks, known failures, and blockers
 
-- `src/reactorbench/remediation/pipeline.py` is partial and fails Ruff because
-  `_complete_review_markdown` is undefined. No pipeline unit-test file was present at
-  the last inspection.
-- The sampler redesign assigned to an agent was interrupted; inspect for partial edits
-  before changing it.
-- The task-footer and selection tie-break changes are unverified as an integrated
-  slice.
-- The six audit findings above must be closed before training.
-- The final executor, terminal artifact bundle, full quality gates, independent final
-  review, clean-environment reproduction, and scientific runs remain pending.
-- Code and data license placeholders remain an external release blocker if still
-  unresolved in authoritative documentation.
+- The long development run is pending. Approximately 6–24 hours on Apple MPS is only
+  a planning estimate.
+- CPU fallback is permitted for earlier stages but cannot satisfy an activated v0.4
+  pilot. There is no successful activated-CPU estimate. An inactive control-only path
+  may complete but provides no 1,024-token evidence.
+- Recognized lock/temporary crash remnants and abandoned final-checkpoint directories
+  are retained for review and count toward the 8 GiB limit. Repeated hard kills may
+  eventually require reviewed manual intervention; unknown or unsafe entries fail
+  closed.
+- Phase 7 inference/UI remains blocked until a development candidate passes the frozen
+  gates and later fresh-final prerequisites are independently implemented and
+  approved.
+- Fresh final evaluation remains locked and unimplemented. Do not create readiness or
+  approval markers by hand.
+- Code and dataset license placeholders remain deferred until release preparation.
+- Exact account usage cannot be monitored here; the user must supply the visible
+  percentage for a precise account-level cutoff.
 
-## Uncommitted work and repository state
+## Files and artifact paths
 
-- This turn's implementation is preserved only in
-  `/Users/zachary/Documents/ChatGPT/Projects/.reactorbench-v034`.
-- Do **not** assume staging is complete or clean. Inspect it before editing and preserve
-  all partial work.
-- The implementation files have not been broadly synchronized into the intended
-  repository.
-- Last known intended-repository branch state before this work:
-  `main...origin/main [ahead 1]` with a clean worktree.
-- Last known intended-repository commit:
-  `1b2b543268cbaf0819f7229017f6d88b51371958`.
-- No remote push was performed.
+- Pipeline configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0.toml
+- Iteration configurations:
+  configs/experiments/phase6-remediation-v0.2.0.toml,
+  configs/experiments/phase6-remediation-v0.3.0.toml,
+  configs/experiments/phase6-remediation-v0.4.0.toml
+- Frozen inventory reports:
+  docs/model/PHASE6_V02_INVENTORY.json,
+  docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json
+- Owner instructions:
+  docs/model/PHASE6_REMEDIATION_RUNBOOK.md
+- Future run root:
+  runs/phase6-remediation-v0.4.0-local/
+- Canonical live status:
+  runs/phase6-remediation-v0.4.0-local/status.json
+- Append-only progress:
+  runs/phase6-remediation-v0.4.0-local/progress.jsonl
+
+## Repository state
+
+- Branch: main.
+- Last known Git commit before this hardening checkpoint:
+  2d9f8f7f437248f81fd18eb6a17df00015a08bd3
+- Before the checkpoint commit, local main is three commits ahead of origin/main.
+- Uncommitted work: 20 understood ReactorBench-LM files containing the reviewed
+  hardening, tests, and documentation. No unrelated or unexpected file is present.
+- No remediation run directory or fresh-final ledger/result was created.
+- No push or deployment was performed during this work.
 
 ## Immediate next step
 
-After usage resets, inspect the partial pipeline and sampler edits in staging. Repair
-the six audit blockers, beginning with the undefined pipeline helper and sampler
-contract. Run only their focused Ruff, strict-mypy, and unit/property tests. Then
-finish the final executor and terminal artifact bundle. Do not begin training or
-held-out evaluation until the integrated preflight gates pass.
+Create the local implementation checkpoint without pushing, run the clean-tree
+non-mutating dry-run, record its exact result here, and create the final local handoff
+commit. Then the owner may start the long development run from that clean commit.
 
-## Exact recommended next commands
+## Exact recommended next commands after final handoff
 
-```bash
-cd /Users/zachary/Documents/Personal-Projects/AI-transformer
-git status --short --branch
+    cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+    git status --short --branch
+    ./scripts/run_phase6_pipeline.sh --dry-run
+    caffeinate -i ./scripts/run_phase6_pipeline.sh
 
-cd /Users/zachary/Documents/ChatGPT/Projects/.reactorbench-v034
-sed -n '2780,2835p' src/reactorbench/remediation/pipeline.py
-```
+In a second Terminal:
+
+    cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+    ./scripts/check_phase6_status.sh
+
+For a cooperative safe stop and later resume:
+
+    ./scripts/stop_phase6_pipeline.sh
+    caffeinate -i ./scripts/resume_phase6_pipeline.sh
+
+The locked evaluation wrapper is not a research command in this release.
 
 ## Resume prompt
 

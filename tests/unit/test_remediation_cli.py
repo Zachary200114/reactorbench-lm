@@ -263,6 +263,36 @@ def test_dry_run_before_start_validates_plan_without_creating_run(
     assert errors == ""
 
 
+@pytest.mark.parametrize("command", ["start", "dry-run"])
+def test_pipeline_preflight_runtime_failures_are_sanitized(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project_root(tmp_path)
+    config = _config()
+    loaded = _loaded(root, config)
+    private_detail = "/Users/private/research/tokenizer-manifest.json"
+
+    def fail_preflight(**_kwargs: object) -> Mapping[str, StageAction]:
+        raise RuntimeError(f"source binding failed at {private_detail}")
+
+    monkeypatch.setattr(cli, "_load_configuration", lambda *_args: loaded)
+    monkeypatch.setattr(cli, "_source_commit", lambda _root: SOURCE_COMMIT)
+    monkeypatch.setattr(
+        cli,
+        "_pipeline_module",
+        lambda: SimpleNamespace(build_stage_actions=fail_preflight),
+    )
+
+    code, output, errors = _main([command], root)
+
+    assert code == cli.ExitCode.CONFIGURATION
+    assert output == ""
+    assert "Pipeline preflight failed safely" in errors
+    assert "Traceback" not in errors
+    assert private_detail not in errors
+    assert not (root / "work/cli-run").exists()
+
+
 def test_stop_is_exclusive_and_resume_archives_stale_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -554,6 +584,56 @@ def test_final_evaluation_calls_executor_once_only_after_visible_prerequisites(
     assert code == cli.ExitCode.FINAL_EVALUATION_LOCKED
     assert "already exists" in errors
     assert final_calls == [(config.run_name, True)]
+
+
+def test_locked_final_executor_is_bounded_at_the_main_command_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project_root(tmp_path)
+    config = _config()
+    _patch_runtime(
+        monkeypatch,
+        project_root=root,
+        config=config,
+        actions=_actions([]),
+    )
+    assert _main(["start"], root)[0] == cli.ExitCode.OK
+    run_directory = root / "work/cli-run"
+    for name in (
+        cli.FINAL_READY_MARKER,
+        cli.OWNER_REVIEW_MARKER,
+        cli.FRESH_EXTENSION_MARKER,
+    ):
+        (run_directory / name).write_bytes(b"{}\n")
+
+    class Blocked(RuntimeError):
+        pass
+
+    sensitive_detail = "/private/internal/checkpoint.safetensors"
+
+    def locked_executor(**_kwargs: object) -> object:
+        raise Blocked(sensitive_detail)
+
+    monkeypatch.setattr(
+        cli,
+        "_pipeline_module",
+        lambda: SimpleNamespace(
+            run_final_evaluation=locked_executor,
+            FinalEvaluationBlockedError=Blocked,
+        ),
+    )
+
+    code, output, errors = _main(
+        ["final-evaluation", "--confirm-final-evaluation"],
+        root,
+    )
+
+    assert code == cli.ExitCode.FINAL_EVALUATION_LOCKED
+    assert output == ""
+    assert "access remains locked" in errors
+    assert sensitive_detail not in errors
+    assert "Traceback" not in errors
+    assert not (run_directory / cli.FINAL_ACCESS_LEDGER).exists()
 
 
 def test_root_path_venv_and_config_argument_boundaries_fail_safely(

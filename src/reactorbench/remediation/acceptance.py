@@ -667,13 +667,13 @@ class V04AcceptanceResult(ContractModel):
             "checkpoint_sha256",
         )
         if self.shadow_view_metrics:
-            reference = self.shadow_view_metrics[0].artifacts
+            reference = self.v03_result.view_metrics.artifacts
             if any(
                 getattr(packet.artifacts, field) != getattr(reference, field)
-                for packet in self.shadow_view_metrics[1:]
+                for packet in self.shadow_view_metrics
                 for field in common_fields
             ):
-                raise ValueError("v0.4 shadow views must evaluate one frozen candidate")
+                raise ValueError("v0.4 IID and shadow views must evaluate one frozen candidate")
 
         all_checks_pass = (
             all(check.passed for check in self.program_checks)

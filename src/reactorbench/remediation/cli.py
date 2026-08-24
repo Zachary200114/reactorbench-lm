@@ -315,11 +315,14 @@ def _build_stage_actions(
     builder = cast(StageActionBuilder, getattr(_pipeline_module(), "build_stage_actions", None))
     if not callable(builder):
         raise CliFailure("Pipeline action factory is unavailable.", ExitCode.CONFIGURATION)
-    actions = builder(
-        project_root=project_root,
-        config=config,
-        source_commit=source_commit,
-    )
+    try:
+        actions = builder(
+            project_root=project_root,
+            config=config,
+            source_commit=source_commit,
+        )
+    except RuntimeError:
+        raise CliFailure("Pipeline preflight failed safely.", ExitCode.CONFIGURATION) from None
     if tuple(actions) != PIPELINE_STAGES or any(
         not callable(action) for action in actions.values()
     ):
