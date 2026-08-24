@@ -222,6 +222,7 @@ def test_start_status_dry_run_and_completed_resume_are_understandable_and_idempo
     assert "Latest progress: completed" in output
     assert f"Stage position: {len(PIPELINE_STAGES)}/{len(PIPELINE_STAGES)}" in output
     assert "Elapsed seconds:" in output
+    assert "Latest verified update UTC:" in output
     assert "Latest checkpoint:" in output
     assert "Stop request: none" in output
     assert errors == ""

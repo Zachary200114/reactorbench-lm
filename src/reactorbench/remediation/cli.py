@@ -555,6 +555,7 @@ def _print_status(
     if snapshot.completed_units is not None and snapshot.total_units is not None:
         print(f"Work completed: {snapshot.completed_units}/{snapshot.total_units}", file=output)
     print(f"Elapsed seconds: {snapshot.elapsed_seconds:.1f}", file=output)
+    print(f"Latest verified update UTC: {snapshot.timestamp_utc.isoformat()}", file=output)
     if snapshot.latest_metric is not None:
         print(
             f"Latest metric: {snapshot.latest_metric.name}={snapshot.latest_metric.value:.8g}",

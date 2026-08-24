@@ -198,6 +198,17 @@ stop, and resume wrappers rather than editing run evidence:
 ./scripts/resume_phase6_pipeline.sh
 ```
 
+On macOS, the same fixed workflow is available through a small local-only progress
+window:
+
+```bash
+./scripts/open_phase6_progress_gui.sh
+```
+
+The window is an owner testing utility, not the Phase 7 public interface. Opening or
+closing it does not start or kill training; Start, cooperative safe stop, and Resume
+remain confirmation-gated and preserve existing run evidence.
+
 Infrastructure availability is not a positive model result. The routine pipeline
 cannot open the frozen final evaluation, and the historical G01–G15 packet is
 prohibited as the fresh v0.4 golden gate. The separate fresh final-evaluation executor

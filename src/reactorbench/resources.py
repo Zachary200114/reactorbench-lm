@@ -12,6 +12,8 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _PHASE6_REMEDIATION_SCRIPTS: Final = frozenset(
     {
         "check_phase6_status.sh",
+        "open_phase6_progress_gui.sh",
+        "phase6_monitor_controller.sh",
         "resume_phase6_pipeline.sh",
         "run_phase6_evaluation.sh",
         "run_phase6_pipeline.sh",

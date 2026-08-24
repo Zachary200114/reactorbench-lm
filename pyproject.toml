@@ -34,6 +34,8 @@ include = [
   "/golden",
   "/schemas",
   "/scripts/check_phase6_status.sh",
+  "/scripts/open_phase6_progress_gui.sh",
+  "/scripts/phase6_monitor_controller.sh",
   "/scripts/resume_phase6_pipeline.sh",
   "/scripts/run_phase6_evaluation.sh",
   "/scripts/run_phase6_pipeline.sh",
@@ -67,6 +69,8 @@ packages = ["src/reactorbench"]
 "schemas/compact-output/v0" = "reactorbench/_data/schemas/compact-output/v0"
 "schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
 "scripts/check_phase6_status.sh" = "reactorbench/_data/scripts/check_phase6_status.sh"
+"scripts/open_phase6_progress_gui.sh" = "reactorbench/_data/scripts/open_phase6_progress_gui.sh"
+"scripts/phase6_monitor_controller.sh" = "reactorbench/_data/scripts/phase6_monitor_controller.sh"
 "scripts/resume_phase6_pipeline.sh" = "reactorbench/_data/scripts/resume_phase6_pipeline.sh"
 "scripts/run_phase6_evaluation.sh" = "reactorbench/_data/scripts/run_phase6_evaluation.sh"
 "scripts/run_phase6_pipeline.sh" = "reactorbench/_data/scripts/run_phase6_pipeline.sh"

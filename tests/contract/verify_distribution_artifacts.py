@@ -88,6 +88,8 @@ def _expected_resource_files() -> dict[str, bytes]:
                 expected[packaged_path] = path.read_bytes()
     for script_name in (
         "check_phase6_status.sh",
+        "open_phase6_progress_gui.sh",
+        "phase6_monitor_controller.sh",
         "resume_phase6_pipeline.sh",
         "run_phase6_evaluation.sh",
         "run_phase6_pipeline.sh",
@@ -227,6 +229,8 @@ with as_file(phase6_remediation_runbook_resource()) as runbook_path:
     assert runbook_path.read_bytes().startswith(b'# Phase 6 remediation local runbook')
 for script_name in (
     'check_phase6_status.sh',
+    'open_phase6_progress_gui.sh',
+    'phase6_monitor_controller.sh',
     'resume_phase6_pipeline.sh',
     'run_phase6_evaluation.sh',
     'run_phase6_pipeline.sh',

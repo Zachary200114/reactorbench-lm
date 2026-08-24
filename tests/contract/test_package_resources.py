@@ -41,6 +41,8 @@ COMPACT_OUTPUT_DIRECTORY = ROOT / "schemas" / "compact-output" / "v0"
 DATASET_GUARD_DIRECTORY = ROOT / "src" / "reactorbench" / "dataset" / "resources"
 PHASE6_SCRIPT_NAMES = (
     "check_phase6_status.sh",
+    "open_phase6_progress_gui.sh",
+    "phase6_monitor_controller.sh",
     "resume_phase6_pipeline.sh",
     "run_phase6_evaluation.sh",
     "run_phase6_pipeline.sh",
@@ -148,6 +150,7 @@ def test_remediation_runbook_freezes_the_user_operated_safety_workflow() -> None
     runbook = phase6_remediation_runbook_resource().read_text(encoding="utf-8")
     for command in (
         "./scripts/run_phase6_pipeline.sh",
+        "./scripts/open_phase6_progress_gui.sh",
         "./scripts/check_phase6_status.sh",
         "./scripts/stop_phase6_pipeline.sh",
         "./scripts/resume_phase6_pipeline.sh",

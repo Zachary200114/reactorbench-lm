@@ -1,6 +1,6 @@
 # Phase 6 remediation local runbook
 
-Status: **device fix verified; non-overwriting rerun pending**
+Status: **device fix and local run monitor verified; non-overwriting rerun pending**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -225,6 +225,51 @@ log are:
 ```text
 runs/phase6-remediation-v0.4.0-local-rerun-01/status.json
 runs/phase6-remediation-v0.4.0-local-rerun-01/progress.jsonl
+```
+
+### Optional local progress window
+
+The owner may use the small local-only macOS monitor instead of keeping several
+Terminal windows open:
+
+```bash
+cd /Users/zachary/Documents/Personal-Projects/AI-transformer
+./scripts/open_phase6_progress_gui.sh
+```
+
+Opening the monitor does not start training. It identifies the fixed
+`phase6-remediation-v0.4.0-local-rerun-01` run, refreshes through the existing
+strictly validated status command, and offers only allowlisted readiness, Start,
+status, safe-stop, stopped-run Resume, Finder, and copy operations. The activity log
+is bounded and non-scientific; the monitor never reads `status.json` or
+`progress.jsonl` directly and never changes their artifact contracts.
+
+The Homebrew project Python currently lacks `_tkinter`, and the importable macOS
+system Tk 8.5 was visually probed and rendered even a minimal window blank on this
+Mac. The launcher therefore uses the already-installed `/usr/bin/swiftc` AppKit toolchain
+to build a native app in a private temporary directory and removes that directory when
+the window closes. The native app invokes only the fixed
+`scripts/phase6_monitor_controller.sh` bridge, which keeps its shell process as the
+AppKit child and runs the standard-library controller with the project
+`.venv/bin/python`. A visual host test showed that launching framework Python directly
+from AppKit can route through `Python.app` and stall. Every project operation therefore
+remains inside the project `.venv` and frozen wrappers. No dependency or permanent
+application is installed. Building the temporary native app can make the first window
+take roughly 20 to 30 seconds to appear on this Mac.
+
+Start and Resume launch under `caffeinate` in a detached process session. Closing the
+window does not signal or terminate an active pipeline and displays a warning that
+the run will continue. `Request safe stop` remains cooperative rather than an
+immediate cancel. The monitor has no delete, overwrite, or automatic start-over
+operation: after this run exists, a scientifically justified fresh attempt requires
+a separately reviewed, versioned run-name/configuration change so existing evidence
+remains preserved.
+
+A non-window smoke check is available for maintainers and does not create or start a
+run:
+
+```bash
+./scripts/open_phase6_progress_gui.sh --smoke
 ```
 
 ## Stop safely
