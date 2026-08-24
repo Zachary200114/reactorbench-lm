@@ -2,18 +2,19 @@
 
 Last updated: 2026-08-24 America/New_York
 
-Current phase: **Phase 6 remediation rerun ready; local macOS progress monitor
-implemented and verified; rerun not started**
+Current phase: **Phase 6 remediation rerun 02 ready after the verified v0.3
+counterfactual-decoder fix; rerun 02 not started**
 
-Current objective: hand the project owner a simple local window for readiness, Start,
-verified progress, cooperative safe stop, and stopped-run Resume while preserving the
-failed run and every scientific boundary. After the rerun completes, blocks, stops,
-or fails, Codex should review its immutable evidence without retraining or opening
-final data.
+Current objective: let the project owner start the new non-overwriting rerun 02 from
+the local progress window. Preserve both failed engineering attempts and every
+scientific boundary. After rerun 02 completes, blocks, stops, or fails, Codex should
+review its immutable evidence without retraining or opening final data.
 
-Checkpoint reason: the optional local Phase 6 monitor is complete and verified at a
-safe pre-run boundary. Opening and visually checking the exact launcher did not create
-the rerun, start training, evaluate data, or change the preserved failed-run evidence.
+Checkpoint reason: rerun 01 failed safely during v0.3 candidate training at work 32 of
+48. The exact dead end was reproduced, fixed at the truth-independent constrained-
+decoder boundary, and replayed successfully on MPS. Full permitted tests pass. The
+new rerun 02 identity and monitor defaults are verified at a clean pre-run boundary.
+No training, data generation, final evaluation, push, or deployment was started.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -73,8 +74,9 @@ account-level percentage was measured.
   parameter device was the equivalent `mps:0`, and strict decoder equality rejected
   the spelling difference. Checkpoint consumers now return the actual parameter
   device while rejecting a different device type or explicitly requested index.
-- Added `phase6-remediation-v0.4.0-local-rerun-01` as the new default run identity.
-  The failed run is neither deleted nor reused.
+- Added `phase6-remediation-v0.4.0-local-rerun-01` as the first non-overwriting retry
+  identity. It is now also preserved as failed engineering evidence; neither earlier
+  run was deleted or reused.
 - Added a local-only native macOS Phase 6 monitor with overall and current-work
   progress bars, stage position, verified status details, a bounded activity log, and
   fixed confirmation-gated owner controls. It is explicitly not the Phase 7 UI.
@@ -91,6 +93,33 @@ account-level percentage was measured.
 - Visually verified the exact launcher in the pre-run state: `Not started`, stage 0 of
   16, correct source commit/run identity, Start enabled, and Stop/Resume/Finder
   disabled. Only Close was pressed; no lifecycle action was exercised.
+- Preserved rerun 01 at
+  `runs/phase6-remediation-v0.4.0-local-rerun-01/`. It completed the first seven
+  pipeline stages, including the v0.2 gate and v0.3 smoke stage, then failed safely
+  during v0.3 candidate training at step 200 and work item 32 of 48. Final evaluation
+  was not accessed.
+- Reproduced the failure twice from a private copy of the preserved step-100 state.
+  Development example `rbexample:c64d2ab90f7c0a7437993c08` reached the prefix
+  `RB2|counterfactual_compare|0~9,A~-~6~-|0~9,A~-~6~-`: both conclusions were
+  individually valid but identical, so the required changed-fields suffix had no
+  legal completion.
+- Added a relation-aware, truth-independent counterfactual conclusion constraint. It
+  uses only the already generated baseline conclusion, not target truth, and retains
+  at least one reachable difference while decoding the second conclusion.
+- Replayed steps 101–200 from the copied state on Apple MPS after the fix. The exact
+  formerly failing example completed schema-valid with EOS in 58 generated tokens.
+  The durable disposable replay reached step 200 with validation NLL
+  1.3842025559550057, training NLL 0.4324597716331482, and no MPS fallback. The
+  verification harness then made an incorrect diagnostic-only attribute lookup after
+  those assertions and exited nonzero; project code and the successful decode were
+  unaffected.
+- Added a bounded, checksum-bound local `failure-diagnostic.json` for future internal
+  stage callback failures. It records only safe exception class names and package-
+  relative code sites; exception messages, raw traceback text, and absolute paths are
+  excluded. Diagnostic publication can never mask or delay durable failure state.
+- Added `phase6-remediation-v0.4.0-local-rerun-02` as the new default run identity in
+  the CLI, GUI monitor, packaged resources, tests, and runbook. Both earlier attempts
+  remain immutable. Rerun 02 has not been created or started.
 
 ## Frozen development evidence
 
@@ -114,8 +143,12 @@ account-level percentage was measured.
   19612c9784612b2cbf5feb7c97a6bb2b351a510e28a853706ba212cfbfdf113f
 - Preserved failed-run configuration checksum:
   4de973e2e009dccea7fc2ea430b4946c85b3066bde7b79673786479517ae666a
-- New rerun configuration checksum:
+- Rerun 01 configuration checksum:
   96850668232781faa9d14319ce40e136aa1ada0c85317ed88b08ef795fcd6a13
+- Rerun 02 canonical configuration checksum:
+  6515bd0f2ae78ef566b4e322630a8759f49068f4577a98c83cdaf6acdf308710
+- Rerun 02 configuration file SHA-256:
+  edf6effe587eb25e5f0f3bd8103368b26a066158d749a8740ec9ba1f7ed1e538
 - Preserved v0.2 training result checksum:
   bc0332e69dd01aa9d2b48f5ca5c130c2e3c944a9435e5863399c0340bad68cac
 - Preserved v0.2 checkpoint-manifest checksum:
@@ -123,35 +156,58 @@ account-level percentage was measured.
 - Preserved v0.2 selected validation NLL: 0.1484147810350759 at the completed
   1,500-step boundary.
 
-The failed v0.2 checkpoint is engineering evidence, not an accepted model-quality
-result: the behavioral gate never decoded its first example. No remediation acceptance
-result and no v0.3/v0.4 training result exists.
+The first failed v0.2 checkpoint and rerun 01's partial v0.3 checkpoints are
+engineering evidence, not accepted model-quality results. Rerun 01's step-100
+validation NLL was 1.6342359354; its disposable corrected step-200 replay measured
+1.3842025559550057. Neither is a completed v0.3 acceptance result. No completed
+v0.3/v0.4 remediation result exists.
 
 ## Tests and checks run
 
-- Final permitted repository gate after the GUI implementation:
+- Final permitted repository gate after the counterfactual fix and rerun-02 update:
   - Ruff format: 190 files passed.
   - Ruff lint: passed.
   - Strict mypy: 155 source files passed.
-  - Pytest: 1,094 passed and 2 deliberately deselected in 548.54 seconds.
-  - Branch coverage: 85.72%, above the required 85%.
+  - Pytest: 1,095 passed and 2 deliberately deselected in 565.60 seconds.
+  - Branch coverage: 85.73%, above the required 85%.
 - The two deselections are the documented historical final/golden asset readers:
   test_resource_api_reads_the_root_reviewed_assets_without_drift and
   test_approved_golden_packet_projects_sixty_examples. No held-out or final evaluation
   was run.
-- Final GUI-focused check after the runbook correction: 44 passed and 1 protected
-  resource-reader test was deselected in 1.37 seconds.
+- Focused decoder, diagnostic, packaging, CLI, and GUI checks: 135 passed and 1
+  protected resource-reader test was deselected in 15.20 seconds.
 - Native Swift/AppKit type checking: passed. Property-list lint: passed. The GUI
   launcher and closed controller bridge both pass Bash syntax.
-- Real non-window launcher smoke check: passed and reported `Not started`; its strict
-  JSON snapshot reported the fixed rerun, stage total 16, and the expected conservative
-  button policy. The rerun directory remained absent.
+- Post-commit dry run passed at source commit
+  `3e70032d1767b4bee1a0e357cbbaca3b07b96eb3`: config checksum
+  `6515bd0f2ae78ef566b4e322630a8759f49068f4577a98c83cdaf6acdf308710`,
+  16 frozen stages, and no run creation.
+- Real non-window launcher smoke check passed and reported `Not started`; its strict
+  JSON snapshot reported rerun 02, stage total 16, source commit `3e70032d...`, Start
+  enabled, and Stop/Resume/Finder disabled. The rerun-02 directory remained absent.
+- Exact MPS regression replay from a private copy of rerun 01's step-100 state passed
+  the formerly failing step-200 decode: constrained schema true, EOS true, 58 tokens,
+  and no fallback. The three disposable replay directories were then removed; no
+  preserved run artifact changed.
+- Source and wheel distributions rebuilt successfully. The first isolated build was
+  blocked by sandboxed dependency resolution; after explicit approval, the pinned
+  Hatchling dependency was installed only in the temporary build environment. The
+  first isolated-install verification exposed a whitespace-dependent assertion in
+  the verifier itself; it now parses the canonical JSON and the verification passes.
+  Archive listings confirm both rerun configurations, the corrected runbook, AppKit
+  monitor source/metadata, controller, and all fixed wrapper scripts are present.
 - Exact native launcher visual check: passed. The temporary app closed cleanly, and
   its temporary bundle was removed. Start, readiness, stop, resume, and Finder were not
   invoked.
-- Source and wheel distributions rebuilt successfully. Archive listings confirm the
-  AppKit source/metadata, local controller, both launcher scripts, corrected runbook,
-  and `phase6-remediation-pipeline-v0.4.0-rerun-01.toml` are present.
+- Rerun 01 preserved checksums:
+  - run manifest:
+    `c1ee26805021be3218de26493faebb9e59f7c13692d959ffcaacdd333aa6a959`
+  - pipeline state:
+    `5219d0a96f99ed0bcb0d5c4408b0ab32757a25d3b7c7a68ad0865bdc2d234e61`
+  - status:
+    `007d53385902f80d5f8641f48b6b7a03365f61d904055ba60016a55de3a8abae`
+  - progress:
+    `3b8bea26d7dfea07c074fc8cc75031e20bbb431b8c1489fa876578e586ccb83d`
 - Preserved failed-run checksums remain unchanged:
   - run manifest:
     `ac1e0b5d1b5731d08c061fbceffd0fca115ee2e45003f986ee1d5c90091cd6c2`
@@ -186,6 +242,9 @@ successfully.
 - D-086 defines the local-only native macOS monitor, strict status-only parser,
   closed wrapper allowlist, detached Start/Resume ownership, cooperative stop, and
   prohibition on delete, overwrite, or automatic restart.
+- D-087 preserves rerun 01, requires a truth-independent reachable difference between
+  counterfactual conclusions, adds bounded safe local diagnostics, and assigns the
+  corrected attempt the new non-overwriting rerun-02 identity.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -193,8 +252,13 @@ successfully.
 
 - The first long run failed after approximately 3,627.6 active seconds at the v0.2
   development gate. It is terminal and must not be resumed or edited.
-- The replacement development rerun is pending. Approximately 6–24 hours on Apple MPS
-  remains only a planning estimate.
+- Rerun 01 failed after approximately 4,802.7 active seconds during v0.3 candidate
+  training at step 200 and work item 32 of 48. It is terminal and must not be resumed
+  or edited. Its preserved engineering evidence proves the device fix and identifies
+  the now-corrected counterfactual dead end.
+- Rerun 02 is pending. Approximately 6–24 hours on Apple MPS remains only a planning
+  estimate; the fix removes the reproduced dead end but cannot promise that a long
+  research run will uncover no different failure or that model gates will pass.
 - The monitor is a macOS owner utility, not a cross-platform product surface. It
   compiles a temporary AppKit bundle on each open, so the window can take roughly 20
   to 30 seconds to appear on this Mac.
@@ -220,6 +284,8 @@ successfully.
 ## Files and artifact paths
 
 - Pipeline configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-02.toml
+- Preserved rerun-01 configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-01.toml
 - Preserved failed-run configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0.toml
@@ -244,12 +310,14 @@ successfully.
   tests/unit/test_phase6_local_monitor.py
 - Preserved failed run:
   runs/phase6-remediation-v0.4.0-local/
-- New rerun root:
+- Preserved failed rerun 01:
   runs/phase6-remediation-v0.4.0-local-rerun-01/
-- Canonical live status:
-  runs/phase6-remediation-v0.4.0-local-rerun-01/status.json
-- Append-only progress:
-  runs/phase6-remediation-v0.4.0-local-rerun-01/progress.jsonl
+- New rerun-02 root (currently absent):
+  runs/phase6-remediation-v0.4.0-local-rerun-02/
+- Canonical live status after start:
+  runs/phase6-remediation-v0.4.0-local-rerun-02/status.json
+- Append-only progress after start:
+  runs/phase6-remediation-v0.4.0-local-rerun-02/progress.jsonl
 
 ## Repository state
 
@@ -260,20 +328,25 @@ successfully.
   f6f2369a050c9bf50d6c04351da603969a1f1273
 - Local monitor implementation commit:
   295f8e894f16e9d49f84e8dbe29e36697824a340
+- Rerun-01 source commit:
+  034b41cca07b999f701850986a67a692b40d8c30
+- Counterfactual decoder fix, safe diagnostic, and rerun-02 implementation commit:
+  3e70032d1767b4bee1a0e357cbbaca3b07b96eb3
 - This status update is intended as the next local handoff commit. After it is created,
-  main is ten commits ahead of origin/main.
+  main is twelve commits ahead of origin/main.
 - Uncommitted work after the status handoff commit: none; verify the clean tree on
   resume.
-- The failed run directory is preserved; the rerun directory does not exist yet.
+- Both failed run directories are preserved; the rerun-02 directory does not exist.
 - No fresh-final ledger/result was created or accessed.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
 Open the local monitor from the final clean local commit. Wait for the native window
-to appear, confirm it reports `Not started` and the fixed rerun name, optionally run
-the non-mutating readiness check, and press `Start new rerun` only when ready for the
-long owner-operated run. Do not resume or modify the preserved failed run.
+to appear, confirm it reports `Not started` and
+`phase6-remediation-v0.4.0-local-rerun-02`, optionally run the non-mutating readiness
+check, and press `Start new rerun` only when ready for the long owner-operated run.
+Do not resume or modify either preserved failed run.
 
 ## Exact recommended next command after final handoff
 

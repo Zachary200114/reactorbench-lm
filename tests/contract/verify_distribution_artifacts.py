@@ -168,6 +168,7 @@ def _verify_sdist(
 def _verify_isolated_install(wheel_path: Path) -> None:
     verification = """
 from importlib.resources import as_file
+import json
 from pathlib import Path
 import sys
 
@@ -226,9 +227,9 @@ with as_file(phase6_remediation_v04_config_resource()) as config_path:
 with as_file(phase6_remediation_pipeline_config_resource()) as config_path:
     assert config_path.read_bytes().startswith(b'pipeline_version = "0.4.0"')
 with as_file(phase6_v02_inventory_report_resource()) as report_path:
-    assert b'"report_version": "0.2.0"' in report_path.read_bytes()
+    assert json.loads(report_path.read_bytes())["report_version"] == "0.2.0"
 with as_file(phase6_v03_counterfactual_cap_report_resource()) as report_path:
-    assert b'"report_version": "0.3.0"' in report_path.read_bytes()
+    assert json.loads(report_path.read_bytes())["report_version"] == "0.3.0"
 with as_file(phase6_remediation_runbook_resource()) as runbook_path:
     assert runbook_path.read_bytes().startswith(b'# Phase 6 remediation local runbook')
 for script_name in (
