@@ -1,6 +1,6 @@
 # Phase 6 remediation local runbook
 
-Status: **device fix and local run monitor verified; non-overwriting rerun pending**
+Status: **counterfactual-constraint fix verified; non-overwriting rerun 02 pending**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -32,7 +32,7 @@ look like readiness, owner-review, extension, or access records cannot authorize
 access or substitute for the missing independently reviewed executor. Do not create
 such files by hand or use the command to probe whether a historical packet works.
 
-## Preserved failed attempt and current rerun
+## Preserved failed attempts and current rerun
 
 The first owner-operated run remains preserved at:
 
@@ -47,11 +47,28 @@ on the equivalent concrete device `mps:0`, and the decoder compared those spelli
 strictly. This is failed engineering evidence, not a model-quality gate result. Do not
 delete, rename, resume, or edit it.
 
-The corrected default configuration is:
+The first non-overwriting rerun remains preserved at:
 
 ```text
-configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-01.toml
 runs/phase6-remediation-v0.4.0-local-rerun-01/
+```
+
+It proved that the v0.2 device correction works, completed the first seven stages,
+and entered v0.3 candidate training. At step 200, development-only checkpoint
+selection failed on example `rbexample:c64d2ab90f7c0a7437993c08`. The
+truth-independent grammar allowed the second counterfactual conclusion to become
+identical to the first even though the target contract requires them to differ; no
+valid changed-fields suffix could then exist. A read-only-source replay from the
+preserved step-100 state reproduced the exact dead end. The corrected constraint now
+requires a still-reachable difference while constructing the second conclusion, and
+the exact step-200 example completes with schema-valid output and EOS. Do not delete,
+rename, resume, or edit this failed run.
+
+The current corrected default configuration is:
+
+```text
+configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-02.toml
+runs/phase6-remediation-v0.4.0-local-rerun-02/
 ```
 
 Checkpoint consumers now return the model's actual parameter device after verifying
@@ -60,14 +77,17 @@ explicit-index mismatch still fails closed. The exact preserved checkpoint opera
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers below now select the rerun configuration. The old run is bound
-to source commit `2aafcd1661ec7c3640a385621db171041532e547`; its live status command
-therefore fails closed from the corrected checkout. Inspect its immutable summary and
-manifest directly at:
+The ordinary wrappers below now select rerun 02. The original run is bound to source
+commit `2aafcd1661ec7c3640a385621db171041532e547`, and rerun 01 is bound to
+`034b41cca07b999f701850986a67a692b40d8c30`; their live status commands therefore
+fail closed from the corrected checkout. Inspect their immutable summaries directly
+at:
 
 ```text
 runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a/TERMINAL_REVIEW.md
 runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a/terminal-review-bundle.json
+runs/phase6-remediation-v0.4.0-local-rerun-01/terminal-reviews/state-5c8a51da7e9642d7b9900b32975a019bede81872ac86f3e413ad71e5d1e9a411/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-local-rerun-01/terminal-reviews/state-5c8a51da7e9642d7b9900b32975a019bede81872ac86f3e413ad71e5d1e9a411/terminal-review-bundle.json
 ```
 
 ## One-time setup
@@ -223,8 +243,8 @@ when those fields are available. The machine-readable heartbeat and append-only 
 log are:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-01/status.json
-runs/phase6-remediation-v0.4.0-local-rerun-01/progress.jsonl
+runs/phase6-remediation-v0.4.0-local-rerun-02/status.json
+runs/phase6-remediation-v0.4.0-local-rerun-02/progress.jsonl
 ```
 
 ### Optional local progress window
@@ -238,7 +258,7 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ```
 
 Opening the monitor does not start training. It identifies the fixed
-`phase6-remediation-v0.4.0-local-rerun-01` run, refreshes through the existing
+`phase6-remediation-v0.4.0-local-rerun-02` run, refreshes through the existing
 strictly validated status command, and offers only allowlisted readiness, Start,
 status, safe-stop, stopped-run Resume, Finder, and copy operations. The activity log
 is bounded and non-scientific; the monitor never reads `status.json` or
@@ -364,7 +384,7 @@ implemented in this release.
 All ordinary pipeline outputs stay under:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-01/
+runs/phase6-remediation-v0.4.0-local-rerun-02/
 ```
 
 Important top-level evidence includes:
@@ -375,6 +395,9 @@ Important top-level evidence includes:
 - `progress.jsonl` — ordered progress, heartbeat, and checkpoint evidence;
 - `stages/` — immutable numbered stage attempts, outcomes, reports, and completion
   markers; and
+- `failure-diagnostic.json` inside a failed attempt, when local diagnostic publication
+  succeeds — checksum-bound exception classes and project-relative code sites with no
+  exception message, traceback text, or absolute path; and
 - the final `review_bundle` stage artifacts — compact machine-readable and human-
   readable result indexes with paths to detailed evidence.
 
@@ -391,16 +414,16 @@ After a completed development run, the human and machine review indexes are unde
 committed review-bundle attempt:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-01/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
-runs/phase6-remediation-v0.4.0-local-rerun-01/stages/15-review_bundle/attempt-*/review-bundle.json
+runs/phase6-remediation-v0.4.0-local-rerun-02/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
+runs/phase6-remediation-v0.4.0-local-rerun-02/stages/15-review_bundle/attempt-*/review-bundle.json
 ```
 
 For `blocked`, `stopped`, or `failed` runs, the command prints the exact paths to an
 idempotent terminal-prefix bundle. If you return later, find it at:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-01/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
-runs/phase6-remediation-v0.4.0-local-rerun-01/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
+runs/phase6-remediation-v0.4.0-local-rerun-02/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-local-rerun-02/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
 ```
 
 Use the exact attempt or state-checksum path reported by the command; do not choose a
@@ -451,8 +474,9 @@ raw traceback or private internal detail.
 
 Do not manually edit, rename, replace, or delete:
 
-- any file under `runs/phase6-remediation-v0.4.0-local-rerun-01/` or the preserved
-  failed `runs/phase6-remediation-v0.4.0-local/`;
+- any file under `runs/phase6-remediation-v0.4.0-local-rerun-02/` or either preserved
+  failed run, `runs/phase6-remediation-v0.4.0-local-rerun-01/` and
+  `runs/phase6-remediation-v0.4.0-local/`;
 - the v0.2, v0.3, v0.4, or pipeline TOML configurations;
 - the compact-output contract or its manifest;
 - the v0.2 inventory or v0.3 counterfactual-cap reports;
@@ -483,7 +507,7 @@ Then ask Codex to inspect, without rerunning the long job:
 > checksum-bound run manifest, pipeline state, status, progress log, completion
 > markers, review bundle, detailed v0.2/v0.3/v0.4 reports, baselines, checkpoints, and
 > acceptance outcomes under
-> `runs/phase6-remediation-v0.4.0-local-rerun-01/`. Do not retrain,
+> `runs/phase6-remediation-v0.4.0-local-rerun-02/`. Do not retrain,
 > open frozen final data, use historical G01–G15 as the new golden gate, push, or
 > deploy. Tell me whether development completed, blocked, stopped, or failed; what the
 > measured results show; and the exact reviewed prerequisite needed next.

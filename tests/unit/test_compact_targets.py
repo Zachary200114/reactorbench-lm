@@ -396,6 +396,54 @@ def test_constraint_reaches_a_canonical_target_and_delays_eos_until_complete(
     assert not constraint.accepts_prefix(f"{text}X")
 
 
+def test_constraint_forces_counterfactual_conclusions_to_diverge_without_a_dead_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = CounterfactualConclusion(
+        diagnosis_status=DiagnosisStatus.DIAGNOSED,
+        fault_labels=(FaultFamily.SENSOR_DRIFT,),
+        evidence_slots=(),
+        immediate_action=ActionLabel.VERIFY_REDUNDANT_CHANNEL,
+    )
+    counterfactual = CounterfactualConclusion(
+        diagnosis_status=baseline.diagnosis_status,
+        fault_labels=baseline.fault_labels,
+        evidence_slots=baseline.evidence_slots,
+        immediate_action=ActionLabel.CONTINUE_MONITORING,
+    )
+    target = PromptCounterfactualComparisonTarget(
+        baseline=baseline,
+        counterfactual=counterfactual,
+        changed_fields=(CounterfactualChange.IMMEDIATE_ACTION,),
+        baseline_decisive_fact_refs=("o-0000",),
+        counterfactual_decisive_fact_refs=(),
+        decisive_evidence_slots=(),
+    )
+    context = _context(target.task_name)
+    text = serialize_compact_target(target, context=context)
+    tokenizer, by_character, _vocabulary_size = _character_tokenizer(monkeypatch, text)
+    constraint = CompactTargetConstraint(context, maximum_generated_tokens=len(text) + 1)
+    generated: tuple[int, ...] = ()
+    fields = text.split("|")
+    invalid_identical = "|".join((*fields[:3], fields[2], "-", *fields[5:]))
+    identical_conclusions = "|".join((fields[0], fields[1], fields[2], fields[2]))
+
+    assert not constraint.accepts_prefix(identical_conclusions)
+    for offset, character in enumerate(text):
+        logits = torch.zeros(tokenizer.vocab_size)
+        logits[by_character[character]] = 1.0
+        if offset < len(invalid_identical):
+            logits[by_character[invalid_identical[offset]]] = 100.0
+        selected = constraint.select_next_token_id(logits, tokenizer, generated)
+        assert selected == by_character[character]
+        generated = (*generated, selected)
+
+    assert constraint.accepts_complete(text)
+    assert not constraint.accepts_prefix(invalid_identical)
+    assert EOS_ID in constraint.allowed_next_token_ids(tokenizer, generated)
+    assert parse_compact_target(text, context=context) == target
+
+
 def test_constraint_selection_is_deterministic_bounded_and_rejects_bad_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

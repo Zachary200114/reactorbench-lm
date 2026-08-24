@@ -64,6 +64,10 @@ def _expected_resource_files() -> dict[str, bytes]:
         "phase6-remediation-pipeline-v0.4.0-rerun-01.toml": (
             ROOT / "configs" / "experiments" / "phase6-remediation-pipeline-v0.4.0-rerun-01.toml"
         ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/"
+        "phase6-remediation-pipeline-v0.4.0-rerun-02.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-pipeline-v0.4.0-rerun-02.toml"
+        ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
             ROOT / "docs" / "model" / "PHASE6_REMEDIATION_RUNBOOK.md"
         ).read_bytes(),

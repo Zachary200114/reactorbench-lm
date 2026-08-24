@@ -660,7 +660,76 @@ class _ConclusionSpec:
         return spec.prefix(fields[-1])
 
 
-type _FieldSpec = _ScalarSpec | _ListSpec | _ConclusionSpec
+def _field_has_alternative_completion(
+    spec: _ScalarSpec | _ListSpec,
+    value: str,
+    *,
+    excluded: str,
+) -> bool:
+    """Prove a partial scalar/list can finish differently from one excluded value."""
+
+    if isinstance(spec, _ScalarSpec):
+        return any(atom != excluded and atom.startswith(value) for atom in spec.atoms)
+    if not excluded.startswith(value):
+        return spec.prefix(value)
+    candidates = {EMPTY_VALUE, *spec.atoms}
+    excluded_parts = tuple(excluded.split(LIST_SEPARATOR)) if excluded != EMPTY_VALUE else ()
+    for cutoff in range(len(excluded_parts) + 1):
+        prefix = excluded_parts[:cutoff]
+        if prefix:
+            candidates.add(LIST_SEPARATOR.join(prefix))
+        for atom in spec.atoms:
+            candidates.add(LIST_SEPARATOR.join((*prefix, atom)))
+    return any(
+        candidate != excluded and candidate.startswith(value) and spec.complete(candidate)
+        for candidate in candidates
+    )
+
+
+@dataclass(frozen=True)
+class _CounterfactualConclusionSpec:
+    baseline: CounterfactualConclusion
+
+    def complete(self, value: str) -> bool:
+        try:
+            conclusion = _parse_conclusion(value)
+        except (CompactTargetError, ValueError):
+            return False
+        return conclusion != self.baseline and _encode_conclusion(conclusion) == value
+
+    def prefix(self, value: str) -> bool:
+        fields = value.split(CONCLUSION_SEPARATOR)
+        if len(fields) > 5:
+            return False
+        completed: list[str] = []
+        for field in fields[:-1]:
+            spec = _conclusion_field_spec(len(completed), tuple(completed))
+            if not spec.complete(field):
+                return False
+            completed.append(field)
+        spec = _conclusion_field_spec(len(completed), tuple(completed))
+        current = fields[-1]
+        if not spec.prefix(current):
+            return False
+
+        baseline_fields = _encode_conclusion(self.baseline).split(CONCLUSION_SEPARATOR)
+        comparable_fields = 4
+        if any(
+            field != baseline_fields[index]
+            for index, field in enumerate(completed[:comparable_fields])
+        ):
+            return True
+        index = len(completed)
+        if index >= comparable_fields:
+            return False
+        if not isinstance(spec, (_ScalarSpec, _ListSpec)):
+            raise AssertionError("counterfactual conclusion field has an invalid specification")
+        if _field_has_alternative_completion(spec, current, excluded=baseline_fields[index]):
+            return True
+        return index < comparable_fields - 1
+
+
+type _FieldSpec = _ScalarSpec | _ListSpec | _ConclusionSpec | _CounterfactualConclusionSpec
 
 
 def _diagnosis_fault_spec(status: DiagnosisStatus) -> _ListSpec:
@@ -818,8 +887,10 @@ def _task_field_spec(
         if index == 6:
             return _diagnosis_abstention_spec(status)
     else:
-        if index in {0, 1}:
+        if index == 0:
             return _ConclusionSpec()
+        if index == 1:
+            return _CounterfactualConclusionSpec(_parse_conclusion(completed[0]))
         if index == 2:
             baseline = _parse_conclusion(completed[0])
             counterfactual = _parse_conclusion(completed[1])

@@ -45,6 +45,8 @@ MAX_STAGE_WARNINGS = 256
 MAX_STAGE_ATTEMPTS = 100
 MAX_COMPLETION_MARKER_BYTES = 16 * 1024
 MAX_STAGE_OUTCOME_BYTES = 1024 * 1024
+MAX_FAILURE_DIAGNOSTIC_BYTES = 16 * 1024
+FAILURE_DIAGNOSTIC_FILENAME = "failure-diagnostic.json"
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -232,6 +234,44 @@ class StageOutcome(ContractModel):
             raise ValueError("stage metrics must use canonical name order")
         if any(_safe_message(warning) != warning for warning in self.warnings):
             raise ValueError("stage warnings are unsafe")
+        return self
+
+
+class InternalFailureDiagnostic(ContractModel):
+    """Bounded local failure evidence with no exception messages or absolute paths."""
+
+    diagnostic_version: Literal["0.1.0"] = "0.1.0"
+    stage: str
+    public_category: str
+    exception_chain: tuple[str, ...] = Field(min_length=1, max_length=8)
+    traceback_sites: tuple[str, ...] = Field(max_length=16)
+    fingerprint_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def payload_is_safe_and_bound(self) -> InternalFailureDiagnostic:
+        if self.stage not in PIPELINE_STAGES:
+            raise ValueError("failure diagnostic stage is outside the frozen graph")
+        _safe_message(self.public_category)
+        safe_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,191}$")
+        safe_site = re.compile(r"^[A-Za-z0-9_./:-]{1,256}$")
+        if any(safe_name.fullmatch(item) is None for item in self.exception_chain):
+            raise ValueError("failure diagnostic exception name is unsafe")
+        if any(safe_site.fullmatch(item) is None for item in self.traceback_sites):
+            raise ValueError("failure diagnostic traceback site is unsafe")
+        fingerprint_payload = {
+            "stage": self.stage,
+            "public_category": self.public_category,
+            "exception_chain": self.exception_chain,
+            "traceback_sites": self.traceback_sites,
+        }
+        if self.fingerprint_sha256 != canonical_sha256(fingerprint_payload):
+            raise ValueError("failure diagnostic fingerprint mismatch")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("failure diagnostic checksum mismatch")
         return self
 
 
@@ -481,6 +521,89 @@ def _bound_completion_marker(marker: StageCompletionMarker) -> StageCompletionMa
     payload = marker.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
     payload["checksum_sha256"] = canonical_sha256(payload)
     return StageCompletionMarker.model_validate_json(canonical_json_bytes(payload), strict=True)
+
+
+def _exception_chain(error: Exception) -> tuple[Exception, ...]:
+    chain: list[Exception] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while isinstance(current, Exception) and id(current) not in seen and len(chain) < 8:
+        seen.add(id(current))
+        chain.append(current)
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
+    return tuple(chain)
+
+
+def _safe_exception_name(error: Exception) -> str:
+    candidate = f"{type(error).__module__}.{type(error).__qualname__}"
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,191}", candidate) is None:
+        return "external.Exception"
+    return candidate
+
+
+def _internal_traceback_sites(errors: tuple[Exception, ...]) -> tuple[str, ...]:
+    package_root = Path(__file__).resolve().parents[1]
+    sites: list[str] = []
+    for error in errors:
+        traceback_cursor = error.__traceback__
+        while traceback_cursor is not None and len(sites) < 16:
+            code = traceback_cursor.tb_frame.f_code
+            try:
+                relative = Path(code.co_filename).resolve(strict=True).relative_to(package_root)
+            except (OSError, ValueError):
+                traceback_cursor = traceback_cursor.tb_next
+                continue
+            function = code.co_name
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", function) is not None:
+                site = f"{relative.as_posix()}:{function}:{traceback_cursor.tb_lineno}"
+                if site not in sites:
+                    sites.append(site)
+            traceback_cursor = traceback_cursor.tb_next
+    return tuple(sites)
+
+
+def _bound_failure_diagnostic(stage: str, error: Exception) -> InternalFailureDiagnostic:
+    errors = _exception_chain(error)
+    names = tuple(_safe_exception_name(item) for item in errors)
+    sites = _internal_traceback_sites(errors)
+    public_category = _safe_stage_failure_message(error)
+    fingerprint_payload = {
+        "stage": stage,
+        "public_category": public_category,
+        "exception_chain": names,
+        "traceback_sites": sites,
+    }
+    draft = InternalFailureDiagnostic.model_construct(
+        stage=stage,
+        public_category=public_category,
+        exception_chain=names,
+        traceback_sites=sites,
+        fingerprint_sha256=canonical_sha256(fingerprint_payload),
+        checksum_sha256="0" * 64,
+    )
+    payload = draft.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+    payload["checksum_sha256"] = canonical_sha256(payload)
+    return InternalFailureDiagnostic.model_validate_json(canonical_json_bytes(payload), strict=True)
+
+
+def _write_failure_diagnostic(
+    attempt_directory: Path,
+    *,
+    stage: str,
+    error: Exception,
+) -> None:
+    if attempt_directory.is_symlink() or not attempt_directory.is_dir():
+        raise ValueError("failure diagnostic attempt directory is unsafe")
+    diagnostic = _bound_failure_diagnostic(stage, error)
+    path = attempt_directory / FAILURE_DIAGNOSTIC_FILENAME
+    _write_model(path, diagnostic, replace=False)
+    if _read_model(path, InternalFailureDiagnostic, MAX_FAILURE_DIAGNOSTIC_BYTES) != diagnostic:
+        raise ValueError("failure diagnostic failed verification")
 
 
 def _write_model(path: Path, model: ContractModel, *, replace: bool) -> None:
@@ -1252,6 +1375,15 @@ class PipelineEngine:
                         return state
                     except Exception as error:
                         message = _safe_stage_failure_message(error)
+                        try:
+                            _write_failure_diagnostic(
+                                attempt_directory,
+                                stage=stage_name,
+                                error=error,
+                            )
+                        except Exception:  # noqa: S110 - failure state outranks diagnostics
+                            # Diagnostics must never mask or delay durable failure state.
+                            pass
                         completed = _utc_now()
                         stages = list(state.stages)
                         stages[ordinal] = stages[ordinal].model_copy(

@@ -351,6 +351,16 @@ def test_failed_action_has_safe_error_and_can_retry_in_new_attempt(tmp_path: Pat
     failed = store.load_state()
     assert failed.status == "failed"
     assert failed.stages[0].summary == ("Stage failed safely: an internal stage callback failed.")
+    diagnostic_path = (
+        store.run_directory / "stages/00-preflight/attempt-0001/failure-diagnostic.json"
+    )
+    diagnostic = json.loads(diagnostic_path.read_bytes())
+    assert diagnostic["stage"] == "preflight"
+    assert diagnostic["public_category"] == failed.stages[0].summary
+    assert diagnostic["exception_chain"] == ["builtins.RuntimeError"]
+    assert unsafe_detail not in diagnostic_path.read_text(encoding="ascii")
+    assert len(diagnostic["fingerprint_sha256"]) == 64
+    assert len(diagnostic["checksum_sha256"]) == 64
 
     completed = _engine(tmp_path, store, config, _actions(calls)).run()
     assert completed.status == "completed"

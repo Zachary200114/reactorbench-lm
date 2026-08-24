@@ -89,7 +89,7 @@ def phase6_remediation_pipeline_config_resource() -> Traversable:
     return _reviewed_resource(
         "configs",
         "experiments",
-        "phase6-remediation-pipeline-v0.4.0-rerun-01.toml",
+        "phase6-remediation-pipeline-v0.4.0-rerun-02.toml",
         directory=False,
     )
 
