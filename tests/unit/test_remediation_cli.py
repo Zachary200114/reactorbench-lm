@@ -936,7 +936,7 @@ def test_default_committed_pipeline_config_and_references_are_strictly_bound() -
         "configs/experiments/phase6-remediation-pipeline-v0.4.0.toml",
     )
     assert loaded.config.pipeline_version == "0.4.0"
-    assert loaded.config.run_name == "phase6-remediation-v0.4.0-local-rerun-02"
+    assert loaded.config.run_name == "phase6-remediation-v0.4.0-local-rerun-03"
     assert loaded.config.stop_before_final_evaluation is True
     assert loaded.checksum_sha256 == config_sha256(loaded.config)
     assert preserved.config.model_copy(update={"run_name": loaded.config.run_name}) == loaded.config

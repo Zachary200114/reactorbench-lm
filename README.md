@@ -14,7 +14,7 @@ Aster Station: a wholly fictional causal environment.
 
 Phases 0–5 and the original Phase 6 experiment are complete locally. Phase 6 produced
 a verified negative result. The checksum-bound, development-only v0.2–v0.4 remediation
-runner has passed its engineering gates. Its first owner-operated attempt completed
+runner is implemented and remains under active verification. Its first attempt completed
 v0.2 training, then failed before the first behavioral decode because a reloaded MPS
 model reported `mps:0` while the strict caller retained the equivalent generic name
 `mps`. After that device-boundary fix, rerun 01 completed the first seven pipeline
@@ -22,10 +22,20 @@ stages and reached v0.3 candidate training. It failed safely at step 200 because
 truth-independent decoder allowed two identical counterfactual conclusions, leaving
 no valid changed-fields suffix. The exact development-only failure was reproduced and
 the relation-aware constraint passed the formerly failing example on Apple MPS. Both
-attempts remain preserved as engineering evidence. The corrected, non-overwriting
-`phase6-remediation-v0.4.0-local-rerun-02` attempt is ready but not started; no
-remediation acceptance result exists. The Phase 7 inference/UI gate remains blocked
-until a behaviorally acceptable checkpoint exists.
+attempts remain preserved as engineering evidence. Rerun 02 then completed nine
+stages, both 2,000-step v0.3 candidates, and all 531 full-IID development evaluations.
+Its v0.3 gate failed before writing acceptance because training and gate reconstruction
+hashed the same tokenized inventory through different tuple/dictionary representations.
+All other reconstructed candidate bindings passed. One shared canonical checksum
+function now serves both paths, and the non-overwriting
+`phase6-remediation-v0.4.0-local-rerun-03` attempt is ready but not started.
+
+The preserved rerun-02 metrics are promising but not an acceptance result: constrained
+parse/schema validity reached 100% and constrained exact match reached 74.95%, while
+the reconstructed gate misses the frozen fault-margin, continuation-F1, and calibration
+thresholds. An unchanged rerun is therefore expected to stop as a legitimate v0.3
+scientific block even though the engineering checksum failure is fixed. The Phase 7
+inference/UI gate remains blocked until a behaviorally acceptable checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -70,10 +80,11 @@ until a behaviorally acceptable checkpoint exists.
   trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
   verification passed 1,095 tests with 85.73% branch coverage; two protected
   historical final/golden readers were deliberately excluded from this
-  remediation-only verification boundary. An exact replay from rerun 01's preserved
-  step-100 state reached step 200, decoded the formerly failing example with valid
-  constrained output and EOS, and used native MPS without fallback. Rerun 02 remains
-  pending.
+  remediation-only verification boundary. Rerun 02 completed v0.3 development
+  training/evaluation in 2h 59m 32s. Its preserved full-IID evidence passes seven of
+  ten reconstructed semantic checks and misses fault comparator margin (0.0098 versus
+  0.02), continuation macro-F1 (0.7182 versus 0.90), and expected calibration error
+  (0.1855 versus a maximum of 0.15). Rerun 03 remains pending.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
@@ -81,7 +92,7 @@ inference service or web interface, and the current checkpoint must not be prese
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
 progress, safe stop/resume, and review evidence. The versioned local rerun remains
-pending under the `rerun-02` identity, and the separate fresh final-evaluation executor
+pending under the `rerun-03` identity, and the separate fresh final-evaluation executor
 is intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
@@ -214,7 +225,7 @@ window:
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. The current default is
-`phase6-remediation-v0.4.0-local-rerun-02`; do not resume or modify either preserved
+`phase6-remediation-v0.4.0-local-rerun-03`; do not resume or modify any preserved
 failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
 the current version, and exact current-task work when the runner reports it. The
 entire-rerun bar is stage-based rather than a wall-clock estimate.

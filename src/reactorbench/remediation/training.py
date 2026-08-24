@@ -496,7 +496,10 @@ def _validate_tokenized_inventory(
             raise ValueError(f"{name} record has an invalid supervised token boundary")
 
 
-def _tokenized_inventory_sha256(records: tuple[CompactTokenizedExample, ...]) -> str:
+def tokenized_inventory_sha256(records: tuple[CompactTokenizedExample, ...]) -> str:
+    """Hash the one canonical tokenized-example representation used by every consumer."""
+
+    _validate_tokenized_inventory(records, name="tokenized checksum")
     return canonical_sha256(
         tuple(
             (
@@ -1363,8 +1366,8 @@ def train_compact_model(
     )
     training_hash = canonical_sha256(training.model_dump(mode="json", round_trip=True))
     model_hash = canonical_sha256(model_config.model_dump(mode="json", round_trip=True))
-    train_tokenized_hash = _tokenized_inventory_sha256(train_examples)
-    validation_tokenized_hash = _tokenized_inventory_sha256(validation_examples)
+    train_tokenized_hash = tokenized_inventory_sha256(train_examples)
+    validation_tokenized_hash = tokenized_inventory_sha256(validation_examples)
     tokenizer_hash = tokenizer_manifest.checksum_sha256
     resolution = resolve_training_device(training)
     device = _device(resolution)
@@ -1776,6 +1779,7 @@ __all__ = [
     "resolve_training_device",
     "retire_superseded_training_states",
     "selected_checkpoint_upper_bound_bytes",
+    "tokenized_inventory_sha256",
     "train_compact_model",
     "uniform_control_batch_indices",
 ]

@@ -78,6 +78,7 @@ from reactorbench.remediation.training import (
     TrainingProgress,
     durable_training_state_upper_bound_bytes,
     selected_checkpoint_upper_bound_bytes,
+    tokenized_inventory_sha256,
 )
 from reactorbench.schemas.base import canonical_json_bytes, canonical_sha256
 from reactorbench.schemas.enums import ActionLabel, SplitName, TaskName
@@ -1075,8 +1076,8 @@ def test_v04_candidate_consumer_reopens_and_binds_each_pilot_result(
                     task_name=task_name,
                     group_id=group_id,
                     token_ids=tuple(range(length)),
-                    target_mask=tuple(False for _ in range(length)),
-                    prompt_token_count=length - 1,
+                    target_mask=(*([False] * (length - 1)), True),
+                    prompt_token_count=length if variant == "long" else length - 1,
                     target_token_count=1,
                     prompt_tokens_retained=length - 1,
                     prompt_truncated=variant == "long",
@@ -2882,8 +2883,10 @@ def test_v04_native_mps_candidate_training_uses_only_iid_selection(
                 task_name=cast(TaskName, example.task_name),
                 group_id=cast(str, example.group_id),
                 token_ids=tuple(range(20 + index)),
-                target_mask=tuple(False for _ in range(20 + index)),
-                prompt_token_count=20 + index,
+                target_mask=(*([False] * (19 + index)), True),
+                prompt_token_count=(
+                    20 + index if truncate_prompts[0] and context_length == 512 else 19 + index
+                ),
                 target_token_count=1,
                 prompt_tokens_retained=19 + index,
                 prompt_truncated=truncate_prompts[0] if context_length == 512 else False,
@@ -4206,7 +4209,7 @@ def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
     with pytest.raises(ValueError, match="non-empty and unique"):
         pipeline._subset_dataset(source_dataset, (), dataset_version="0.3.0")
 
-    tokenized = SimpleNamespace(
+    tokenized = CompactTokenizedExample(
         example_id="example:train",
         task_name=TaskName.FAULT_FAMILY,
         group_id="group:1",
@@ -4217,8 +4220,8 @@ def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(
         prompt_tokens_retained=1,
         prompt_truncated=False,
     )
-    assert (
-        len(pipeline._tokenized_inventory_sha256((cast(CompactTokenizedExample, tokenized),))) == 64
+    assert pipeline._tokenized_inventory_sha256((tokenized,)) == tokenized_inventory_sha256(
+        (tokenized,)
     )
     monkeypatch.setattr(pipeline, "tokenize_compact_example", lambda *_args, **_kwargs: tokenized)
     observed_tokenized = pipeline._tokenize_examples(

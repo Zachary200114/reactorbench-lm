@@ -34,6 +34,7 @@ from reactorbench.remediation.training import (
     resolve_training_device,
     retire_superseded_training_states,
     selected_checkpoint_upper_bound_bytes,
+    tokenized_inventory_sha256,
     train_compact_model,
     uniform_control_batch_indices,
 )
@@ -132,6 +133,12 @@ def _examples(count: int = 12, *, prefix: str = "example") -> tuple[CompactToken
             prompt_truncated=False,
         )
         for index in range(count)
+    )
+
+
+def test_tokenized_inventory_checksum_has_one_frozen_canonical_representation() -> None:
+    assert tokenized_inventory_sha256(_examples(2)) == (
+        "c179599253cb31a080744332887cdc6c9515d27b2059882ce7105885686b408b"
     )
 
 

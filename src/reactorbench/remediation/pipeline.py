@@ -130,6 +130,7 @@ from .training import (
     latest_committed_training_state,
     retire_superseded_training_states,
     selected_checkpoint_upper_bound_bytes,
+    tokenized_inventory_sha256,
     train_compact_model,
 )
 
@@ -2008,22 +2009,9 @@ def _upstream_attempt(
 def _tokenized_inventory_sha256(
     examples: tuple[CompactTokenizedExample, ...],
 ) -> str:
-    return canonical_sha256(
-        tuple(
-            {
-                "example_id": item.example_id,
-                "task_name": item.task_name.value,
-                "group_id": item.group_id,
-                "token_ids": item.token_ids,
-                "target_mask": item.target_mask,
-                "prompt_token_count": item.prompt_token_count,
-                "target_token_count": item.target_token_count,
-                "prompt_tokens_retained": item.prompt_tokens_retained,
-                "prompt_truncated": item.prompt_truncated,
-            }
-            for item in examples
-        )
-    )
+    """Delegate reconstruction to the training contract's single canonical hash."""
+
+    return tokenized_inventory_sha256(examples)
 
 
 def _tokenize_examples(

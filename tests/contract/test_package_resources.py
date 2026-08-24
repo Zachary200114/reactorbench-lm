@@ -104,7 +104,7 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
     assert (
         phase6_remediation_pipeline_config_resource().read_bytes()
         == (
-            ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-02.toml"
+            ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml"
         ).read_bytes()
     )
     assert (
@@ -228,6 +228,10 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-02.toml": (
             "reactorbench/_data/configs/experiments/"
             "phase6-remediation-pipeline-v0.4.0-rerun-02.toml"
+        ),
+        "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml": (
+            "reactorbench/_data/configs/experiments/"
+            "phase6-remediation-pipeline-v0.4.0-rerun-03.toml"
         ),
         "docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
             "reactorbench/_data/docs/model/PHASE6_REMEDIATION_RUNBOOK.md"
