@@ -60,12 +60,14 @@ explicit-index mismatch still fails closed. The exact preserved checkpoint opera
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers below now select the rerun configuration. To inspect the old
-failed status without changing it, use:
+The ordinary wrappers below now select the rerun configuration. The old run is bound
+to source commit `2aafcd1661ec7c3640a385621db171041532e547`; its live status command
+therefore fails closed from the corrected checkout. Inspect its immutable summary and
+manifest directly at:
 
-```bash
-.venv/bin/python -m reactorbench.remediation status \
-  --config configs/experiments/phase6-remediation-pipeline-v0.4.0.toml
+```text
+runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a/terminal-review-bundle.json
 ```
 
 ## One-time setup

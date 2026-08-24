@@ -148,6 +148,9 @@ result and no v0.3/v0.4 training result exists.
   data generation, or evaluation executed.
 - Local source and wheel distributions built successfully; both the preserved and
   rerun pipeline configurations are present in the wheel.
+- The preserved run's live status command refuses from the corrected source commit as
+  designed. Its immutable terminal review remains at state checksum
+  b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a.
 
 The module-name form of pytest-cov previously triggered a PyTorch import segmentation
 fault in this local Python environment. The path-based coverage target above completed
@@ -224,7 +227,7 @@ successfully.
 - Complete device-fix/rerun implementation commit:
   f6f2369a050c9bf50d6c04351da603969a1f1273
 - This status update is the final local handoff commit after that implementation
-  checkpoint. After it is created, main is seven commits ahead of origin/main.
+  checkpoint. After it is created, main is eight commits ahead of origin/main.
 - Uncommitted work after the handoff commit: none; verify the clean tree on resume.
 - The failed run directory is preserved; the rerun directory does not exist yet.
 - No fresh-final ledger/result was created or accessed.
