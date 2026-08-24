@@ -1,7 +1,7 @@
 iteration_version = "0.2.0"
 status = "developmental"
 inventory_report_path = "docs/model/PHASE6_V02_INVENTORY.json"
-inventory_report_checksum_sha256 = "3d996f18a731cb4ef0ba26edecda97fb093f48241a06b0f5b26989bfbdbf23bd"
+inventory_report_checksum_sha256 = "c4f9739d67503714ca83b9ecbd4e65d288592161be1ffe5f2c038d5e3485295b"
 
 [paths]
 dataset_config_path = "configs/dataset/development-v0.1.0.toml"

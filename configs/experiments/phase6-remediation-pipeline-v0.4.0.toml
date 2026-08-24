@@ -2,11 +2,11 @@ pipeline_version = "0.4.0"
 run_name = "phase6-remediation-v0.4.0-local"
 run_root = "runs"
 v02_config_path = "configs/experiments/phase6-remediation-v0.2.0.toml"
-v02_config_sha256 = "72968c53b2b63042ef6e71918ddd2c03cdd4ac72a99dfe6e57b78890cb2f73fb"
+v02_config_sha256 = "86f39280d959900d2759f76ee1d16710fe1de0bc87952e05ad1fa4fbdcc717a2"
 v03_config_path = "configs/experiments/phase6-remediation-v0.3.0.toml"
-v03_config_sha256 = "9ba02d39b40b476602a2bb348679777300689bcaf3755da3df38d3ca5f28aac8"
+v03_config_sha256 = "2ca7984455aeba225d7ee5ee1cbec8a64716e748ae45b812f28fee0f51f35487"
 v04_config_path = "configs/experiments/phase6-remediation-v0.4.0.toml"
-v04_config_sha256 = "cf86dc4824ec71136824f86674086eca4b3f37c75f161979b610b9dab5f5ab9b"
+v04_config_sha256 = "c2efbee9a0ca05b5ce62453ae1af04e79f03315f53300ce5eff2ddba189c5725"
 stage_order = [
   "preflight",
   "v02_inventory_and_caps",
