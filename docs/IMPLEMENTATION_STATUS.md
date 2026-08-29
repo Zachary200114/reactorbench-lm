@@ -261,6 +261,10 @@ improve the training and calibration setup; they do not guarantee acceptance.
     the host's compiler 6.3.3 / SDK 6.3.2 mismatch, not by a reported source error.
   - Support-power rounded-observation regression: 43 property/unit/contract tests
     passed, including explicit seed 532786336.
+  - Clean-source targeted dry run passed at source commit
+    `0e38874c83ad20a9af41547a959bd959c595278a`: configuration checksum
+    `6b47c69470fb1b54022b224937ca3fb92224fb58783cfd8f0044267284ea900f`,
+    16 frozen stages, and no run creation.
 
 - Final permitted repository gate after the canonical checksum fix and rerun-03
   update:
@@ -502,12 +506,12 @@ successfully.
   c551fab316a2b7d5d5ec39a9f832b4b0cd0933c9
 - Initial status handoff commit:
   366fb8208a780fcc67a4de14911639a85576595f
-- Targeted-remediation implementation base commit before the final local checkpoint:
-  `d193e4c7373d2603f479393067afddec907fdd37`.
-- Final verification/status handoff commit is recorded after the local checkpoint;
-  inspect `git log -2 --oneline` and this section before resuming.
-- Uncommitted work is expected until the final local checkpoint commit is created;
-  verify `git status` after resuming.
+- Targeted-remediation implementation commit:
+  `0e38874c83ad20a9af41547a959bd959c595278a`.
+- Final verification and independent re-review disposition: ship, with no required
+  corrections.
+- The worktree was clean before this final status-only checkpoint; verify the final
+  handoff commit and clean state with `git status` after resuming.
 - All three failed run directories are preserved; the rerun-03 directory does not
   exist.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
@@ -516,9 +520,9 @@ successfully.
 
 ## Immediate next step
 
-Complete the permitted repository and package gates, make local checkpoint commits,
-and confirm the tree is clean. The owner may then push. Tomorrow, open the local
-monitor, confirm it reports `Not started` and
+The implementation, permitted repository/package gates, independent final re-review,
+and clean-source dry run are complete. The owner may now push the local commits.
+Tomorrow, open the local monitor, confirm it reports `Not started` and
 `phase6-remediation-v0.4.0-targeted-01`, optionally run the non-mutating readiness
 check, and press `Start new rerun` when ready to measure the preregistered targeted
 candidate. Do not resume or modify any preserved failed run. Passing remains unknown
