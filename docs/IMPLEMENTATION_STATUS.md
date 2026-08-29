@@ -2,21 +2,20 @@
 
 Last updated: 2026-08-29 America/New_York
 
-Current phase: **Phase 6 remediation rerun 02 preserved after a checksum-contract
-failure; the canonical fix and non-overwriting rerun 03 are prepared but not run**
+Current phase: **Phase 6 targeted v0.3 quality remediation implemented and verified;
+the non-overwriting targeted run is Not started**
 
-Current objective: verify and hand off the single-source tokenized-inventory checksum
-fix, preserve all three completed engineering attempts unchanged, and leave rerun 03
-ready for an owner-operated run. No claim is made that the corrected rerun will pass
-the frozen scientific gate.
+Current objective: hand off `phase6-remediation-v0.4.0-targeted-01` for a later
+owner-operated run. The prepared attempt targets the three measured v0.3 shortfalls,
+keeps every scientific threshold unchanged, and avoids repeating the already-proven
+v0.2 compute prefix. No claim is made that the new candidate will pass.
 
-Checkpoint reason: rerun 02 completed the first nine pipeline stages, both 2,000-step
-v0.3 candidate trainings, and the 531-example development evaluation before stage 10
-failed. The gate reconstructed tokenized inventories as dictionaries while training
-hashed the same inventory as tuples. Only those two bindings differed. Delegating the
-gate to the training contract exactly reproduces both recorded hashes. A separate
-read-only reconstruction shows that the preserved model passes seven of ten v0.3
-criteria and legitimately misses fault margin, continuation F1, and calibration.
+Checkpoint reason: rerun 02 provided valid development evidence that fault margin,
+continuation macro-F1, and calibration missed their preregistered thresholds. The new
+code adds deterministic within-task class balancing, disjoint validation-only
+temperature calibration, checksum-bound sampler provenance, and read-only v0.2 prefix
+reuse. Repository-wide tests pass; no dataset generation, training, final/golden
+access, deployment, or push occurred during this preparation.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -134,9 +133,36 @@ percentage was measured.
 - Reconstructed the preserved v0.3 acceptance evidence without using held-out or
   final data. Seven of ten criteria pass; fault margin, continuation macro F1, and
   expected calibration error miss their frozen thresholds.
-- Added `phase6-remediation-v0.4.0-local-rerun-03` as the new default identity in the
-  CLI, GUI monitor, packaged resources, tests, README, and runbook. It has not been
-  created or started.
+- Prepared `phase6-remediation-v0.4.0-local-rerun-03` for the checksum-only replay,
+  but superseded it before start with the targeted scientific-remediation identity.
+  Its run directory was never created.
+- Added `phase6-remediation-v0.4.0-targeted-01` as the CLI, GUI, and wrapper default.
+  The run directory remains absent.
+- Added deterministic task-and-class-balanced sampling with a separate metadata
+  inventory so frozen tokenized examples and historical training contracts remain
+  byte-compatible. A checksum-bound targeted sidecar is required for fresh training,
+  safe stop, cross-attempt copy, and resume; missing or mismatched metadata fails
+  before model/optimizer restoration. Cross-attempt copying now durably publishes
+  that sidecar first; a crash leaves only an ignorable binding-only attempt rather
+  than an unbindable committed state.
+- Kept the 48-example raw checkpoint-selection subset unchanged, added a disjoint
+  target-independent 56-example calibration subset, and reserved the remaining 427
+  IID validation rows for the gate. Temperature is selected deterministically from
+  0.50 through 5.00 in 0.05 increments using exact-match binary NLL and affects only
+  ECE/selective-risk confidence calculations. Raw and calibrated reports share the
+  exact prediction artifact and are checksum-bound together. The 56 calibration
+  predictions are now persisted, endpoint probabilities are safely clamped, and the
+  gate independently reopens both calibration and 427-row raw prediction artifacts
+  to recompute temperature, raw/calibrated metrics, and acceptance.
+- Added strict v0.2 prefix reuse. Preflight and the four v0.2 stages reopen the
+  canonical rerun-02 manifest, completion prefix, outcomes, and all referenced
+  artifacts; 21 files must pass canonical-contract, size, SHA-256, source, config,
+  non-symlink, and containment checks. The targeted configuration pins the exact
+  ordered 21-path/hash inventory and aggregate checksum, rejecting additions and
+  coherently re-signed substitutions. The targeted stages write only new reuse
+  reports and cannot call v0.2 training or decoding.
+- Preserved the model size, teacher-forced exposure, 2,000 training steps, and all ten
+  v0.3 acceptance thresholds.
 - Refreshed the public README, owner runbook, decision log, and this handoff record to
   distinguish the engineering fix from the model's still-unmet scientific criteria.
 - Added a distinct, visually prominent `ENTIRE RERUN` bar for all 16 stages to the
@@ -210,12 +236,31 @@ Rerun 02 is completed development evidence but not an accepted model result:
 - Preserved progress checksum:
   `4af616a1d43f3acbdc84e28a4e29df860560d8bd5e753fd0229aaeb4957324ff`
 
-An unchanged deterministic rerun 03 is expected to reach a legitimate v0.3
-scientific block after the checksum fix unless training variation changes the three
-missed metrics. Repeating it verifies the corrected contract; it does not guarantee
-scientific acceptance.
+The targeted attempt is designed to address the three measured development misses,
+but its scientific outcome remains unknown until the owner runs it. The code changes
+improve the training and calibration setup; they do not guarantee acceptance.
 
 ## Tests and checks run
+
+- Targeted v0.3 remediation verification on 2026-08-29:
+  - Ruff format: 192 files passed.
+  - Ruff lint: passed.
+  - Strict mypy: passed across all 78 source modules.
+  - Boundary-correct pytest/coverage gate: 1,123 passed and 2 deliberately deselected
+    in 564.71 seconds.
+  - Coverage: 85.29%, above the required 85%.
+  - Focused targeted gate/remediation suite: 111 passed.
+  - Direct reconstruction regression proves altered calibration predictions, raw gate
+    predictions, raw reports, and calibrated reports all fail closed before acceptance.
+  - Package-resource contract: 5 passed; wheel/sdist build, isolated no-network wheel
+    install, and distribution-resource verification passed.
+  - Read-only v0.2 reuse verification: 21 canonical/checksum-bound evidence files.
+  - Targeted run directory absence: passed.
+  - Swift syntax parse, property-list lint, seven shell-wrapper syntax checks, and Git
+    diff whitespace validation: passed. Full Swift typecheck is currently blocked by
+    the host's compiler 6.3.3 / SDK 6.3.2 mismatch, not by a reported source error.
+  - Support-power rounded-observation regression: 43 property/unit/contract tests
+    passed, including explicit seed 532786336.
 
 - Final permitted repository gate after the canonical checksum fix and rerun-03
   update:
@@ -326,6 +371,9 @@ successfully.
   corrected attempt the new non-overwriting rerun-02 identity.
 - D-088 preserves rerun 02, makes the training checksum contract canonical, assigns
   rerun 03, and requires honest reporting of the reconstructed seven-of-ten gate.
+- D-089 defines targeted-01, keeps every threshold unchanged, pins the exact 21-file
+  v0.2 reuse inventory, requires prediction-level consumer reconstruction, and makes
+  targeted resume publication binding-first.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -340,14 +388,25 @@ successfully.
 - Rerun 02 failed safely after approximately 10,772.9 active seconds at `v03_gate`.
   It is terminal and must not be resumed or edited. The false checksum mismatch is
   corrected, but its preserved model independently misses three frozen thresholds.
-- Rerun 03 is pending. A new run may take hours on Apple MPS. Because the inputs and
-  training contract remain deterministic, it is expected to reach a legitimate v0.3
-  scientific block if its results reproduce rerun 02; it may also expose a different
-  engineering failure. The checksum fix is not a promise of model acceptance.
+- The targeted run is pending and may still take hours on Apple MPS. It should be
+  shorter because its four v0.2 compute stages are verification-only, but v0.3 data
+  audit, smoke, two candidate trainings, calibration, and gate evaluation remain real
+  work. The changes improve the evidence-aligned learning setup; they do not promise
+  acceptance or guarantee a large metric increase.
+- During final verification, one unrestricted coverage command mistakenly omitted
+  the two recorded deselections and executed both protected historical tests. It
+  passed 1,125 tests and did not start training, generate data, run the fresh-final
+  executor, create a final-access ledger/result, or mutate run artifacts. The boundary
+  mistake is retained here rather than hidden; the final release gate was rerun with
+  the exact deselections and passed 1,123 tests at 85.29% coverage.
+- Full Swift typechecking cannot currently be repeated because the installed Apple
+  Swift 6.3.3 compiler rejects the installed 6.3.2 SDK. Swift syntax parsing succeeds;
+  plist and wrapper validation succeed. Reinstalling a matched Apple toolchain is an
+  environment maintenance task, not a reason to alter the monitor source.
 - The monitor is a macOS owner utility, not a cross-platform product surface. It
   compiles a temporary AppKit bundle on each open, so the window can take roughly 20
   to 30 seconds to appear on this Mac.
-- The final rerun-03 GUI check must not press readiness, Start, stop, Resume, or
+- The final targeted GUI check must not press readiness, Start, stop, Resume, or
   Finder. Lifecycle correctness is covered by unit/contract tests; a real Start
   remains an owner action.
 - CPU fallback is permitted for earlier stages but cannot satisfy an activated v0.4
@@ -369,6 +428,10 @@ successfully.
 ## Files and artifact paths
 
 - Pipeline configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml
+- Targeted v0.3 configuration:
+  configs/experiments/phase6-remediation-v0.3.1-targeted.toml
+- Superseded unstarted checksum-only configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml
 - Preserved rerun-02 configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-02.toml
@@ -401,12 +464,24 @@ successfully.
   runs/phase6-remediation-v0.4.0-local-rerun-01/
 - Preserved failed rerun 02:
   runs/phase6-remediation-v0.4.0-local-rerun-02/
-- New rerun-03 root (currently absent):
-  runs/phase6-remediation-v0.4.0-local-rerun-03/
+- Targeted run root (currently absent):
+  runs/phase6-remediation-v0.4.0-targeted-01/
 - Canonical live status after start:
-  runs/phase6-remediation-v0.4.0-local-rerun-03/status.json
+  runs/phase6-remediation-v0.4.0-targeted-01/status.json
+
+### Targeted v0.3 preparation (Not started)
+
+- Default identity: `phase6-remediation-v0.4.0-targeted-01`.
+- The new v0.3 config compares a task-balanced control with a deterministic
+  task-and-class-balanced candidate. It freezes a 48-example raw semantic selection
+  subset, then a disjoint 56-example validation-only calibration subset; the final
+  IID gate inventory is the remaining 427 rows for the current 531-row inventory.
+- Thresholds, model size, teacher-forced exposure, and 2,000 training steps are
+  unchanged. Temperature calibration affects only confidence-based gate metrics.
+- The targeted run directory is intentionally absent. No training or data generation
+  has been started, and the expected result is unknown.
 - Append-only progress after start:
-  runs/phase6-remediation-v0.4.0-local-rerun-03/progress.jsonl
+  runs/phase6-remediation-v0.4.0-targeted-01/progress.jsonl
 
 ## Repository state
 
@@ -427,13 +502,16 @@ successfully.
   c551fab316a2b7d5d5ec39a9f832b4b0cd0933c9
 - Initial status handoff commit:
   366fb8208a780fcc67a4de14911639a85576595f
-- Final verification/status handoff is the current local `HEAD`; inspect it with
-  `git rev-parse HEAD` after resuming.
-- Uncommitted work after the final handoff commit: none; verify the clean tree on
-  resume.
+- Targeted-remediation implementation base commit before the final local checkpoint:
+  `d193e4c7373d2603f479393067afddec907fdd37`.
+- Final verification/status handoff commit is recorded after the local checkpoint;
+  inspect `git log -2 --oneline` and this section before resuming.
+- Uncommitted work is expected until the final local checkpoint commit is created;
+  verify `git status` after resuming.
 - All three failed run directories are preserved; the rerun-03 directory does not
   exist.
-- No fresh-final ledger/result was created or accessed.
+- No fresh-final executor, ledger, or result was created or accessed. The protected
+  historical test-boundary mistake is separately disclosed above.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
@@ -441,10 +519,10 @@ successfully.
 Complete the permitted repository and package gates, make local checkpoint commits,
 and confirm the tree is clean. The owner may then push. Tomorrow, open the local
 monitor, confirm it reports `Not started` and
-`phase6-remediation-v0.4.0-local-rerun-03`, optionally run the non-mutating readiness
-check, and press `Start new rerun` only if a clean engineering replay is worth the
-compute despite the preserved three-metric scientific shortfall. Do not resume or
-modify any preserved failed run.
+`phase6-remediation-v0.4.0-targeted-01`, optionally run the non-mutating readiness
+check, and press `Start new rerun` when ready to measure the preregistered targeted
+candidate. Do not resume or modify any preserved failed run. Passing remains unknown
+until that owner-operated run completes.
 
 ## Exact recommended next command after final handoff
 

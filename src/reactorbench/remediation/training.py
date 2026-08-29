@@ -39,7 +39,12 @@ from reactorbench.schemas.base import ContractModel, canonical_json_bytes, canon
 from reactorbench.tokenizer import TokenizerArtifactManifest
 
 from .config import RemediationTraining
-from .sampling import task_balanced_batch_indices
+from .sampling import (
+    SamplingMetadataRecord,
+    sampling_metadata_inventory_sha256,
+    task_balanced_batch_indices,
+    task_class_balanced_batch_indices,
+)
 from .serialization import (
     CompactTokenizedExample,
     compact_batch_tensors,
@@ -52,6 +57,7 @@ STATE_MANIFEST_FILENAME = "manifest.json"
 STATE_MODEL_FILENAME = "model.safetensors"
 STATE_BEST_MODEL_FILENAME = "best_model.safetensors"
 STATE_OPTIMIZER_FILENAME = "optimizer.safetensors"
+TARGETED_SAMPLING_BINDING_FILENAME = "targeted-sampling-binding.json"
 STATE_FILE_INVENTORY = (
     STATE_BEST_MODEL_FILENAME,
     STATE_MANIFEST_FILENAME,
@@ -77,7 +83,7 @@ CandidateId = Annotated[
     StrictStr,
     Field(min_length=1, max_length=96, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"),
 ]
-type SamplingStrategy = Literal["uniform_control", "task_balanced"]
+type SamplingStrategy = Literal["uniform_control", "task_balanced", "task_class_balanced"]
 type EvaluationCallback = Callable[[TransformerLM, int, float], float]
 type ProgressCallback = Callable[["TrainingProgress"], None]
 type StopRequested = Callable[[int], bool]
@@ -86,6 +92,116 @@ type MonotonicClock = Callable[[], float]
 
 class TrainingError(RuntimeError):
     """Safe public failure raised by the compact-target fitting core."""
+
+
+class TargetedSamplingBinding(ContractModel):
+    """Required sidecar provenance for the targeted task-class sampler only."""
+
+    contract_version: Literal["0.3.1-targeted"] = "0.3.1-targeted"
+    sampling_strategy: Literal["task_class_balanced"]
+    candidate_id: CandidateId
+    training_config_sha256: Sha256
+    train_inventory_sha256: Sha256
+    train_tokenized_sha256: Sha256
+    sampling_metadata_inventory_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> TargetedSamplingBinding:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("targeted sampling binding checksum mismatch")
+        return self
+
+
+def bind_targeted_sampling(
+    *,
+    candidate_id: str,
+    training_config_sha256: str,
+    train_inventory_sha256: str,
+    train_tokenized_sha256: str,
+    sampling_metadata_inventory_sha256: str,
+) -> TargetedSamplingBinding:
+    """Create the checksum-bound sidecar without altering legacy artifacts."""
+
+    draft = TargetedSamplingBinding.model_construct(
+        sampling_strategy="task_class_balanced",
+        candidate_id=candidate_id,
+        training_config_sha256=training_config_sha256,
+        train_inventory_sha256=train_inventory_sha256,
+        train_tokenized_sha256=train_tokenized_sha256,
+        sampling_metadata_inventory_sha256=sampling_metadata_inventory_sha256,
+        checksum_sha256="0" * 64,
+    )
+    return TargetedSamplingBinding(
+        **draft.model_dump(mode="python", exclude={"checksum_sha256"}),
+        checksum_sha256=canonical_sha256(
+            draft.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        ),
+    )
+
+
+def ensure_targeted_sampling_binding(
+    root: Path,
+    binding: TargetedSamplingBinding | None,
+    *,
+    create_if_missing: bool,
+) -> None:
+    """Create or verify the targeted sidecar without weakening legacy roots."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("targeted sampling binding root is unsafe")
+    path = root / TARGETED_SAMPLING_BINDING_FILENAME
+    if binding is None:
+        if path.exists() or path.is_symlink():
+            raise ValueError("historical training root must not contain a targeted binding")
+        return
+    payload = canonical_json_bytes(binding.model_dump(mode="json", round_trip=True)) + b"\n"
+    if path.exists() or path.is_symlink():
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size != len(payload)
+            or path.read_bytes() != payload
+        ):
+            raise ValueError("targeted sampling binding is missing, linked, or mismatched")
+        return
+    if not create_if_missing:
+        raise ValueError("targeted sampling binding is required before resume")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    parent_descriptor = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(parent_descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
+def load_targeted_sampling_binding(root: Path) -> TargetedSamplingBinding:
+    """Reopen one canonical, regular targeted sidecar from a bounded root."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("targeted sampling binding root is unsafe")
+    path = root / TARGETED_SAMPLING_BINDING_FILENAME
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= MAX_STATE_MANIFEST_BYTES
+    ):
+        raise ValueError("targeted sampling binding is missing or unsafe")
+    payload = path.read_bytes()
+    _strict_json_object(payload)
+    binding = TargetedSamplingBinding.model_validate_json(payload, strict=True)
+    canonical = canonical_json_bytes(binding.model_dump(mode="json", round_trip=True)) + b"\n"
+    if payload != canonical:
+        raise ValueError("targeted sampling binding is not canonical JSON")
+    return binding
 
 
 class DeviceResolution(ContractModel):
@@ -425,7 +541,11 @@ def _bounded_integer(value: object, *, name: str, minimum: int, maximum: int) ->
 
 
 def _validated_sampling_strategy(value: object) -> SamplingStrategy:
-    if type(value) is not str or value not in {"uniform_control", "task_balanced"}:
+    if type(value) is not str or value not in {
+        "uniform_control",
+        "task_balanced",
+        "task_class_balanced",
+    }:
         raise ValueError("sampling_strategy is not supported")
     return cast(SamplingStrategy, value)
 
@@ -794,6 +914,10 @@ def _committed_training_states(
     resolved_root = state_root.resolve(strict=True)
     states: list[_CommittedTrainingState] = []
     for entry in sorted(resolved_root.iterdir(), key=lambda path: path.name):
+        if entry.name == TARGETED_SAMPLING_BINDING_FILENAME:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValueError("targeted sampling binding is unsafe")
+            continue
         state_match = _STATE_DIRECTORY_PATTERN.fullmatch(entry.name)
         if state_match is not None:
             if entry.is_symlink() or not entry.is_dir():
@@ -1281,6 +1405,7 @@ def train_compact_model(
     progress_callback: ProgressCallback | None = None,
     stop_requested: StopRequested | None = None,
     monotonic_clock: MonotonicClock = time.perf_counter,
+    sampling_metadata: tuple[SamplingMetadataRecord, ...] | None = None,
 ) -> CompactTrainingOutcome:
     """Fit one candidate or return a checksum-bound safe resumable stop."""
 
@@ -1289,6 +1414,11 @@ def train_compact_model(
     if type(tokenizer_manifest) is not TokenizerArtifactManifest:
         raise TypeError("training requires an exact tokenizer manifest")
     sampling_strategy = _validated_sampling_strategy(sampling_strategy)
+    if sampling_strategy == "task_class_balanced":
+        if type(sampling_metadata) is not tuple:
+            raise ValueError("task-class-balanced training requires exact sampling metadata")
+    elif sampling_metadata is not None:
+        raise ValueError("sampling metadata is only permitted for task-class-balanced training")
     if type(vocab_size) is not int or not 8 <= vocab_size <= 65_536:
         raise ValueError("vocab_size must be an integer in [8, 65536]")
     if vocab_size != tokenizer_manifest.actual_vocab_size:
@@ -1327,21 +1457,6 @@ def train_compact_model(
     state_root = durable_state_root.resolve(strict=True)
     if resume_state_directory is not None and not isinstance(resume_state_directory, Path):
         raise TypeError("resume_state_directory must be a pathlib.Path or None")
-    committed_states = _committed_training_states(state_root, candidate_id=candidate_id)
-    if resume_state_directory is None:
-        if committed_states:
-            raise FileExistsError(
-                "durable training state already exists; resume from the newest state"
-            )
-    else:
-        if resume_state_directory.is_symlink():
-            raise ValueError("resume state must be a direct non-symlink child of the state root")
-        resolved_resume = resume_state_directory.resolve(strict=True)
-        if resolved_resume.parent != state_root:
-            raise ValueError("resume state must be a direct non-symlink child of the state root")
-        if not committed_states or committed_states[-1].directory != resolved_resume:
-            raise ValueError("resume state must be the newest surviving valid durable state")
-        resume_state_directory = resolved_resume
 
     _validate_tokenized_inventory(train_examples, name="training")
     _validate_tokenized_inventory(validation_examples, name="validation")
@@ -1369,6 +1484,39 @@ def train_compact_model(
     train_tokenized_hash = tokenized_inventory_sha256(train_examples)
     validation_tokenized_hash = tokenized_inventory_sha256(validation_examples)
     tokenizer_hash = tokenizer_manifest.checksum_sha256
+    targeted_binding = (
+        bind_targeted_sampling(
+            candidate_id=candidate_id,
+            training_config_sha256=training_hash,
+            train_inventory_sha256=train_inventory_sha256,
+            train_tokenized_sha256=train_tokenized_hash,
+            sampling_metadata_inventory_sha256=sampling_metadata_inventory_sha256(
+                cast(tuple[SamplingMetadataRecord, ...], sampling_metadata)
+            ),
+        )
+        if sampling_strategy == "task_class_balanced"
+        else None
+    )
+    committed_states = _committed_training_states(state_root, candidate_id=candidate_id)
+    ensure_targeted_sampling_binding(
+        state_root,
+        targeted_binding,
+        create_if_missing=resume_state_directory is None and not committed_states,
+    )
+    if resume_state_directory is None:
+        if committed_states:
+            raise FileExistsError(
+                "durable training state already exists; resume from the newest state"
+            )
+    else:
+        if resume_state_directory.is_symlink():
+            raise ValueError("resume state must be a direct non-symlink child of the state root")
+        resolved_resume = resume_state_directory.resolve(strict=True)
+        if resolved_resume.parent != state_root:
+            raise ValueError("resume state must be a direct non-symlink child of the state root")
+        if not committed_states or committed_states[-1].directory != resolved_resume:
+            raise ValueError("resume state must be the newest surviving valid durable state")
+        resume_state_directory = resolved_resume
     resolution = resolve_training_device(training)
     device = _device(resolution)
     include_mps_rng = device.type == "mps"
@@ -1495,9 +1643,19 @@ def train_compact_model(
                     seed=training.seed,
                     cursor=sampler_cursor,
                 )
-            else:
+            elif sampling_strategy == "task_balanced":
                 indices = task_balanced_batch_indices(
                     train_examples,
+                    batch_size=training.batch_size,
+                    seed=training.seed,
+                    step=sampler_cursor // training.batch_size,
+                )
+            else:
+                if sampling_metadata is None:
+                    raise RuntimeError("task-class sampler metadata disappeared")
+                indices = task_class_balanced_batch_indices(
+                    train_examples,
+                    metadata=sampling_metadata,
                     batch_size=training.batch_size,
                     seed=training.seed,
                     step=sampler_cursor // training.batch_size,
@@ -1757,6 +1915,7 @@ def train_compact_model(
 
 __all__ = [
     "MAX_RETAINED_DURABLE_STATES",
+    "TARGETED_SAMPLING_BINDING_FILENAME",
     "TRAINING_CONTRACT_VERSION",
     "TRAINING_STATE_VERSION",
     "CompactTrainingOutcome",
@@ -1768,14 +1927,18 @@ __all__ = [
     "ProgressCallback",
     "SamplingStrategy",
     "StopRequested",
+    "TargetedSamplingBinding",
     "TrainingError",
     "TrainingEvaluationPoint",
     "TrainingProgress",
     "TrainingStateFile",
     "TrainingStateManifest",
+    "bind_targeted_sampling",
     "compact_validation_nll",
     "durable_training_state_upper_bound_bytes",
+    "ensure_targeted_sampling_binding",
     "latest_committed_training_state",
+    "load_targeted_sampling_binding",
     "resolve_training_device",
     "retire_superseded_training_states",
     "selected_checkpoint_upper_bound_bytes",

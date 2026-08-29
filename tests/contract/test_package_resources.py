@@ -22,6 +22,8 @@ from reactorbench.resources import (
     phase6_remediation_pipeline_config_resource,
     phase6_remediation_runbook_resource,
     phase6_remediation_script_resource,
+    phase6_remediation_targeted_pipeline_config_resource,
+    phase6_remediation_targeted_v03_config_resource,
     phase6_remediation_v02_config_resource,
     phase6_remediation_v03_config_resource,
     phase6_remediation_v04_config_resource,
@@ -105,6 +107,16 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
         phase6_remediation_pipeline_config_resource().read_bytes()
         == (
             ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml"
+        ).read_bytes()
+    )
+    assert (
+        phase6_remediation_targeted_v03_config_resource().read_bytes()
+        == (ROOT / "configs/experiments/phase6-remediation-v0.3.1-targeted.toml").read_bytes()
+    )
+    assert (
+        phase6_remediation_targeted_pipeline_config_resource().read_bytes()
+        == (
+            ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
         ).read_bytes()
     )
     assert (
@@ -215,6 +227,9 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-v0.3.0.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.0.toml"
         ),
+        "configs/experiments/phase6-remediation-v0.3.1-targeted.toml": (
+            "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.1-targeted.toml"
+        ),
         "configs/experiments/phase6-remediation-v0.4.0.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-v0.4.0.toml"
         ),
@@ -232,6 +247,10 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml": (
             "reactorbench/_data/configs/experiments/"
             "phase6-remediation-pipeline-v0.4.0-rerun-03.toml"
+        ),
+        "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml": (
+            "reactorbench/_data/configs/experiments/"
+            "phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
         ),
         "docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
             "reactorbench/_data/docs/model/PHASE6_REMEDIATION_RUNBOOK.md"

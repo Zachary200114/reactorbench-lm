@@ -26,11 +26,16 @@ from reactorbench.remediation.config import (
     load_v03_config,
     load_v04_config,
 )
+from reactorbench.schemas.base import canonical_sha256
 from reactorbench.schemas.enums import SplitName, TaskName
 
 ROOT = Path(__file__).resolve().parents[2]
 V02_PATH = ROOT / "configs/experiments/phase6-remediation-v0.2.0.toml"
 V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.0.toml"
+TARGETED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.1-targeted.toml"
+TARGETED_PIPELINE_PATH = (
+    ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
+)
 V04_PATH = ROOT / "configs/experiments/phase6-remediation-v0.4.0.toml"
 
 
@@ -98,6 +103,50 @@ def test_committed_v03_contract_freezes_candidates_and_semantic_gate() -> None:
         config.selection.selective_risk_coverage,
         config.selection.maximum_selective_risk,
     ) == (1.0, 0.02, 0.02, 0.9, 0.7, 0.8, 0.1, 0.15, 0.8, 0.2)
+    assert (
+        config_sha256(config) == "2ca7984455aeba225d7ee5ee1cbec8a64716e748ae45b812f28fee0f51f35487"
+    )
+
+
+def test_targeted_v03_changes_sampling_and_calibration_but_not_thresholds() -> None:
+    config = load_v03_config(TARGETED_V03_PATH)
+
+    assert tuple(item.sampling for item in config.candidates) == (
+        "task_balanced",
+        "task_class_balanced",
+    )
+    assert tuple(item.seed for item in config.candidates) == (6301, 6302)
+    assert config.training.steps == 2000
+    assert config.targeted_policy is not None
+    assert config.targeted_policy.sampling_metadata_required is True
+    assert config.targeted_policy.calibration.calibration_example_limit == 56
+    assert (
+        config.selection.constrained_schema_validity,
+        config.selection.minimum_fault_margin,
+        config.selection.minimum_action_margin,
+        config.selection.minimum_continuation_macro_f1,
+        config.selection.minimum_evidence_f1,
+        config.selection.minimum_required_abstention_accuracy,
+        config.selection.maximum_no_fault_false_positive_rate,
+        config.selection.maximum_expected_calibration_error,
+        config.selection.selective_risk_coverage,
+        config.selection.maximum_selective_risk,
+    ) == (1.0, 0.02, 0.02, 0.9, 0.7, 0.8, 0.1, 0.15, 0.8, 0.2)
+
+
+def test_targeted_prefix_reuse_has_an_exact_external_evidence_pin() -> None:
+    raw = _raw(TARGETED_PIPELINE_PATH)
+    config = PipelineConfig.model_validate(raw)
+    assert config.reuse_v02_prefix is not None
+    assert len(config.reuse_v02_prefix.evidence) == 21
+    assert canonical_sha256(config.reuse_v02_prefix.evidence) == (
+        config.reuse_v02_prefix.evidence_inventory_sha256
+    )
+
+    changed = copy.deepcopy(raw)
+    changed["reuse_v02_prefix"]["evidence"][0][1] = "0" * 64
+    with pytest.raises(ValidationError, match="inventory checksum"):
+        PipelineConfig.model_validate(changed)
 
 
 def test_committed_v04_contract_freezes_shadow_and_final_access_boundaries() -> None:

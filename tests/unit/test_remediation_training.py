@@ -16,9 +16,11 @@ from pydantic import ValidationError
 
 from reactorbench.model import TransformerConfig, TransformerLM
 from reactorbench.remediation.config import RemediationTraining
+from reactorbench.remediation.sampling import SamplingMetadataRecord
 from reactorbench.remediation.serialization import CompactTokenizedExample
 from reactorbench.remediation.training import (
     MAX_RETAINED_DURABLE_STATES,
+    TARGETED_SAMPLING_BINDING_FILENAME,
     CompactTrainingResult,
     CompactTrainingStopped,
     DeviceResolution,
@@ -26,6 +28,7 @@ from reactorbench.remediation.training import (
     MonotonicClock,
     SamplingStrategy,
     StopRequested,
+    TargetedSamplingBinding,
     TrainingError,
     TrainingProgress,
     TrainingStateManifest,
@@ -142,6 +145,84 @@ def test_tokenized_inventory_checksum_has_one_frozen_canonical_representation() 
     )
 
 
+def test_targeted_sampler_binding_is_required_and_resume_bound(tmp_path: Path) -> None:
+    examples = _examples()
+    metadata = _sampling_metadata(examples)
+    base = tmp_path / "targeted-resume"
+    stopped = _run(
+        base,
+        sampling="task_class_balanced",
+        train_examples=examples,
+        sampling_metadata=metadata,
+        stop_requested=lambda step: step == 2,
+    )
+    assert isinstance(stopped, CompactTrainingStopped)
+    binding_path = base / "states" / TARGETED_SAMPLING_BINDING_FILENAME
+    binding = TargetedSamplingBinding.model_validate_json(binding_path.read_bytes(), strict=True)
+    assert binding.candidate_id == stopped.candidate_id
+    assert binding.train_inventory_sha256 == stopped.train_inventory_sha256
+    assert binding.train_tokenized_sha256 == stopped.train_tokenized_sha256
+
+    resumed = _run(
+        base,
+        sampling="task_class_balanced",
+        train_examples=examples,
+        sampling_metadata=metadata,
+        resume=base / "states" / stopped.durable_state_name,
+    )
+    assert isinstance(resumed, CompactTrainingResult)
+
+
+def test_targeted_resume_rejects_missing_or_changed_metadata_binding(tmp_path: Path) -> None:
+    examples = _examples()
+    metadata = _sampling_metadata(examples)
+    for case in ("missing", "changed"):
+        base = tmp_path / case
+        stopped = _run(
+            base,
+            sampling="task_class_balanced",
+            train_examples=examples,
+            sampling_metadata=metadata,
+            stop_requested=lambda step: step == 2,
+        )
+        assert isinstance(stopped, CompactTrainingStopped)
+        binding_path = base / "states" / TARGETED_SAMPLING_BINDING_FILENAME
+        if case == "missing":
+            binding_path.unlink()
+            expected = "required before resume"
+            changed = metadata
+        else:
+            expected = "mismatched"
+            changed = tuple(
+                SamplingMetadataRecord(
+                    example_id=item.example_id,
+                    task_name=item.task_name,
+                    classification_label="changed-label",
+                    augmentation=item.augmentation,
+                )
+                if item.classification_label is not None
+                else item
+                for item in metadata
+            )
+        with pytest.raises(ValueError, match=expected):
+            _run(
+                base,
+                sampling="task_class_balanced",
+                train_examples=examples,
+                sampling_metadata=changed,
+                resume=base / "states" / stopped.durable_state_name,
+            )
+        assert not (base / "final-checkpoint").exists()
+
+
+def test_historical_training_rejects_targeted_sidecar(tmp_path: Path) -> None:
+    state_root = tmp_path / "legacy" / "states"
+    state_root.mkdir(parents=True)
+    (state_root / TARGETED_SAMPLING_BINDING_FILENAME).write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="historical training root"):
+        _run(tmp_path / "legacy")
+
+
 def _run(
     base: Path,
     *,
@@ -159,6 +240,7 @@ def _run(
     validation_examples: tuple[CompactTokenizedExample, ...] | None = None,
     monotonic_clock: MonotonicClock = time.perf_counter,
     training: RemediationTraining | None = None,
+    sampling_metadata: tuple[SamplingMetadataRecord, ...] | None = None,
 ) -> CompactTrainingResult | CompactTrainingStopped:
     states = base / "states"
     states.mkdir(parents=True, exist_ok=True)
@@ -186,6 +268,26 @@ def _run(
         progress_callback=progress_callback,
         stop_requested=stop_requested,
         monotonic_clock=monotonic_clock,
+        sampling_metadata=sampling_metadata,
+    )
+
+
+def _sampling_metadata(
+    examples: tuple[CompactTokenizedExample, ...],
+) -> tuple[SamplingMetadataRecord, ...]:
+    classification = {
+        TaskName.FAULT_FAMILY,
+        TaskName.NEXT_ACTION,
+        TaskName.CONTINUE_LOG,
+    }
+    return tuple(
+        SamplingMetadataRecord(
+            example_id=item.example_id,
+            task_name=item.task_name,
+            classification_label=f"label-{index % 3}" if item.task_name in classification else None,
+            augmentation=f"augmentation-{index % 2}",
+        )
+        for index, item in enumerate(examples)
     )
 
 

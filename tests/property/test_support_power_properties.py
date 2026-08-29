@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from itertools import pairwise
 
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from reactorbench.schemas import ComponentState, PlantVariant, StateVariable
@@ -161,6 +161,7 @@ def test_g12_map_context_does_not_change_pre_decision_generation(
 
 
 @settings(max_examples=20, deadline=None)
+@example(seed=532786336, variant=PlantVariant.ASTER_A)
 @given(
     seed=st.integers(min_value=0, max_value=2**32 - 1),
     variant=st.sampled_from((PlantVariant.ASTER_A, PlantVariant.ASTER_B)),

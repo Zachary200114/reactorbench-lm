@@ -92,6 +92,7 @@
 | D-086 | Provide a local-only macOS Phase 6 monitor that parses only the existing validated status command, routes a closed set of project wrappers, detaches `caffeinate` Start/Resume from the window lifetime, and offers cooperative stop without delete, overwrite, or automatic restart. Keep the tested standard-library Python controller and every project operation bound to `.venv`; use the already-installed Swift/AppKit runtime for the native window because the project Python lacks `_tkinter` and a minimal visual probe proved that system Tk 8.5 renders blank on this Mac. | A small owner utility reduces Terminal coordination without creating Phase 7, a parallel scientific contract, an arbitrary command surface, or a new dependency. The measured Tk failure makes AppKit the smallest working local host. Detached process ownership lets training survive monitor closure, while immutable run identities preserve failed, stopped, blocked, and completed evidence. |
 | D-087 | Preserve failed rerun 01 unchanged, require the truth-independent counterfactual constraint to retain a reachable difference between its two conclusions, publish only bounded checksum-bound local failure diagnostics without messages or absolute paths, and use `phase6-remediation-v0.4.0-local-rerun-02` for the corrected attempt. | The step-200 v0.3 control deterministically selected two identical valid conclusions, which the target contract prohibits, and the locally prefix-valid grammar discovered the contradiction only after no legal suffix remained. Relation-aware prefix viability prevents that dead end without using target truth. The exact failed example then completed schema-valid with EOS from the preserved step-100 state. A new run identity retains both negative engineering attempts and their provenance. |
 | D-088 | Preserve failed rerun 02 unchanged, make the training contract's tuple-based tokenized-inventory checksum the single canonical implementation for both producers and reconstruction gates, and use `phase6-remediation-v0.4.0-local-rerun-03` for any corrected re-execution. Report rerun 02's reconstructed seven-of-ten v0.3 gate honestly and do not imply that the checksum correction makes the model acceptable. | Rerun 02 completed nine stages and all v0.3 evaluation work, but the gate duplicated the checksum algorithm with a dictionary representation while training used tuples. Only the two reconstructed tokenized hashes differed; every other ranking binding passed, and delegation to the producer contract exactly reproduces both recorded hashes. The preserved evidence independently indicates legitimate misses on fault margin, continuation F1, and calibration, so a corrected unchanged rerun is expected to block scientifically rather than advance. |
+| D-089 | Use `phase6-remediation-v0.4.0-targeted-01` for the preregistered quality-remediation attempt: compare task-balanced and task-plus-class-balanced candidates, fit temperature on exactly 56 disjoint validation predictions, keep all thresholds unchanged, and reuse v0.2 only through an externally pinned exact 21-file inventory. Persist the calibration predictions and require the v0.3 gate to independently reopen them and the 427 gate predictions to recompute temperature, raw/calibrated metrics, and acceptance. Publish targeted sampling metadata before a copied resume state. | Rerun 02's model misses are concentrated enough to justify one bounded scientific intervention, but a self-checksummed summary or coherently re-signed prefix is not independent evidence. Exact artifact pins, consumer-side reconstruction, stable endpoint math, and binding-before-state publication make the new experiment falsifiable and crash-resumable without weakening the gates or altering historical runs. |
 
 ## Provisional decisions
 
@@ -118,3 +119,22 @@
 ## Resolved workspace issue
 
 The original directory name had a trailing space. Zachary renamed it to `AI-transformer` before implementation; the research dossier now targets that corrected path.
+# Targeted v0.3 remediation preparation — 2026-08-29
+
+Development rerun-02 showed concentrated rare-class semantic errors (fault
+support-power/UNRESOLVED, sensor-noise/sensor-drift, rare next actions, and sparse
+continuation labels) plus over-confident incorrect predictions. The prepared targeted
+program therefore compares a task-balanced control with deterministic within-task
+class balance, using only existing IID-train metadata and preserving tokenized hashes.
+A disjoint validation-only 56-row calibration freeze follows the unchanged 48-row raw
+semantic checkpoint-selection freeze, so temperature fitting cannot select a model or
+leak into the 427-row IID gate. Thresholds, compact architecture, and step count stay
+unchanged to retain falsifiable acceptance criteria. Reusing the verified v0.2 rerun-02
+prefix is scientifically safe because it is checksum-bound, read-only verification of
+the already-passed compact-output control; all v0.3 data, candidates, and evaluation
+remain new. Twenty-one manifest/completion/outcome/artifact files must verify before
+reuse, and the four v0.2 stage actions cannot call training or decoding. The new
+class-aware sampler uses a separate checksum-bound metadata sidecar so historical
+tokenized and training contracts remain byte-compatible across safe stop/resume. Raw
+and calibrated v0.3 gate reports reference the exact same prediction artifact. The
+targeted run is **Not started** and its outcome is unknown.

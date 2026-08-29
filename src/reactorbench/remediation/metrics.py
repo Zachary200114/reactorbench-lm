@@ -494,6 +494,7 @@ def evaluate_semantic_predictions(
     predictions: tuple[DualPathCompactPrediction, ...],
     baseline_report: RemediationBaselineReport,
     artifacts: DevelopmentArtifactBinding,
+    confidence_transform: Callable[[float], float] | None = None,
 ) -> SemanticEvaluationReport:
     """Calculate supported task metrics and bind them to exact development evidence."""
 
@@ -553,9 +554,19 @@ def evaluate_semantic_predictions(
         path.canonical_target_json == example.canonical_target_json
         for example, path in zip(ordered_examples, constrained_paths, strict=True)
     )
-    confidence = tuple(
+    raw_confidence = tuple(
         float(path.selected_token_geometric_mean_probability) for path in constrained_paths
     )
+    confidence = (
+        raw_confidence
+        if confidence_transform is None
+        else tuple(confidence_transform(value) for value in raw_confidence)
+    )
+    if any(
+        type(value) is not float or not math.isfinite(value) or not 0.0 <= value <= 1.0
+        for value in confidence
+    ):
+        raise ValueError("confidence transform must return finite probabilities")
 
     classification: dict[TaskName, MetricEstimate] = {}
     task_metrics: list[TaskBehaviorMetrics] = []

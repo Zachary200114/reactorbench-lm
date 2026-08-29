@@ -8,10 +8,18 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictBool, StrictFloat, StrictInt, field_validator, model_validator
+from pydantic import (
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from reactorbench.model.config import StrictConfigModel, TransformerConfig, _relative_project_path
-from reactorbench.schemas.base import ContractId, canonical_json_bytes
+from reactorbench.schemas.base import ContractId, canonical_json_bytes, canonical_sha256
 from reactorbench.schemas.enums import SplitName
 
 MAX_REMEDIATION_CONFIG_BYTES = 256 * 1024
@@ -227,7 +235,7 @@ class AugmentationPolicy(StrictConfigModel):
 class CandidatePolicy(StrictConfigModel):
     candidate_id: ContractId
     seed: Annotated[StrictInt, Field(ge=0, le=4_294_967_295)]
-    sampling: Literal["uniform_control", "task_balanced"]
+    sampling: Literal["uniform_control", "task_balanced", "task_class_balanced"]
     exposure: Literal["teacher_forced_only"]
     enabled: Literal[True]
 
@@ -293,6 +301,32 @@ class SemanticSelectionPolicy(StrictConfigModel):
         return self
 
 
+class CalibrationPolicy(StrictConfigModel):
+    """Frozen, validation-only temperature-calibration declaration."""
+
+    policy_version: Literal["0.3.1-targeted"]
+    calibration_example_limit: Literal[56]
+    grid_start: StrictFloat
+    grid_stop: StrictFloat
+    grid_step: StrictFloat
+    selection_excludes_semantic_subset: Literal[True]
+    calibration_is_validation_only: Literal[True]
+
+    @model_validator(mode="after")
+    def grid_is_preregistered(self) -> CalibrationPolicy:
+        if (self.grid_start, self.grid_stop, self.grid_step) != (0.5, 5.0, 0.05):
+            raise ValueError("calibration temperature grid differs from preregistration")
+        return self
+
+
+class TargetedV03Policy(StrictConfigModel):
+    """Narrow opt-in for the non-historical semantic remediation attempt."""
+
+    policy_version: Literal["0.3.1-targeted"]
+    sampling_metadata_required: Literal[True]
+    calibration: CalibrationPolicy
+
+
 class V03Config(StrictConfigModel):
     iteration_version: Literal["0.3.0"]
     requires_v02_gate: Literal[True]
@@ -306,6 +340,7 @@ class V03Config(StrictConfigModel):
     counterfactual_cap_report_path: str
     counterfactual_cap_report_checksum_sha256: Sha256
     semantic_selection_example_limit: Literal[48]
+    targeted_policy: TargetedV03Policy | None = None
 
     @field_validator("baseline_config_path", "counterfactual_cap_report_path", mode="after")
     @classmethod
@@ -333,11 +368,15 @@ class V03Config(StrictConfigModel):
         ids = tuple(item.candidate_id for item in self.candidates)
         if len(ids) != len(set(ids)):
             raise ValueError("v0.3 candidate IDs must be unique")
-        if tuple(item.sampling for item in self.candidates) != (
-            "uniform_control",
-            "task_balanced",
-        ):
-            raise ValueError("v0.3 freezes the control and task-balanced candidates")
+        historical = ("uniform_control", "task_balanced")
+        targeted = ("task_balanced", "task_class_balanced")
+        sampling = tuple(item.sampling for item in self.candidates)
+        if self.targeted_policy is None and sampling != historical:
+            raise ValueError("historical v0.3 freezes the control and task-balanced candidates")
+        if self.targeted_policy is not None and sampling != targeted:
+            raise ValueError(
+                "targeted v0.3 requires task-balanced and task-class-balanced candidates"
+            )
         return self
 
 
@@ -529,6 +568,71 @@ PIPELINE_STAGES: tuple[str, ...] = (
 )
 
 
+class V02PrefixReusePolicy(StrictConfigModel):
+    """Checksum-pinned read-only prefix source for the targeted pipeline only."""
+
+    policy_version: Literal["0.3.1-targeted"]
+    source_run_root: str
+    source_run_manifest_sha256: Sha256
+    source_commit: Annotated[str, Field(pattern=r"^[0-9a-f]{7,64}$")]
+    evidence_inventory_sha256: Sha256
+    evidence: tuple[tuple[StrictStr, Sha256], ...] = Field(min_length=21, max_length=21)
+    verify_only_stages: tuple[
+        Literal[
+            "v02_inventory_and_caps",
+            "v02_smoke",
+            "v02_development_training",
+            "v02_development_gate",
+        ],
+        Literal[
+            "v02_inventory_and_caps",
+            "v02_smoke",
+            "v02_development_training",
+            "v02_development_gate",
+        ],
+        Literal[
+            "v02_inventory_and_caps",
+            "v02_smoke",
+            "v02_development_training",
+            "v02_development_gate",
+        ],
+        Literal[
+            "v02_inventory_and_caps",
+            "v02_smoke",
+            "v02_development_training",
+            "v02_development_gate",
+        ],
+    ]
+
+    @field_validator("source_run_root", mode="after")
+    @classmethod
+    def source_is_project_relative(cls, value: str) -> str:
+        return _relative_project_path(value)
+
+    @field_validator("verify_only_stages", mode="before")
+    @classmethod
+    def stages_become_tuple(cls, value: object) -> object:
+        return tuple(value) if type(value) is list else value
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def evidence_becomes_exact_tuples(cls, value: object) -> object:
+        if type(value) is not list:
+            return value
+        return tuple(tuple(item) if type(item) is list else item for item in value)
+
+    @model_validator(mode="after")
+    def stages_are_exact(self) -> V02PrefixReusePolicy:
+        if self.verify_only_stages != PIPELINE_STAGES[1:5]:
+            raise ValueError("v0.2 reuse must verify exactly the four compute-heavy prefix stages")
+        paths = tuple(path for path, _checksum in self.evidence)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("v0.2 reuse evidence must contain 21 unique paths in canonical order")
+        if canonical_sha256(self.evidence) != self.evidence_inventory_sha256:
+            raise ValueError("v0.2 reuse evidence inventory checksum mismatch")
+        return self
+
+
 class PipelineConfig(StrictConfigModel):
     pipeline_version: Literal["0.4.0"]
     run_name: ContractId
@@ -547,6 +651,7 @@ class PipelineConfig(StrictConfigModel):
     maximum_run_bytes: Annotated[StrictInt, Field(ge=1024 * 1024, le=32 * 1024**3)]
     maximum_process_rss_bytes: Annotated[StrictInt, Field(ge=256 * 1024**2, le=128 * 1024**3)]
     stop_before_final_evaluation: Literal[True]
+    reuse_v02_prefix: V02PrefixReusePolicy | None = None
 
     @field_validator("stop_before_final_evaluation", mode="before")
     @classmethod
@@ -606,7 +711,7 @@ def config_sha256(config: StrictConfigModel) -> str:
     if not isinstance(config, StrictConfigModel):
         raise TypeError("config must use the strict remediation contract")
     return hashlib.sha256(
-        canonical_json_bytes(config.model_dump(mode="json", round_trip=True))
+        canonical_json_bytes(config.model_dump(mode="json", round_trip=True, exclude_none=True))
     ).hexdigest()
 
 
@@ -615,6 +720,7 @@ __all__ = [
     "SHADOW_VIEWS",
     "VIEW_SOURCE_SPLIT",
     "AugmentationPolicy",
+    "CalibrationPolicy",
     "CandidatePolicy",
     "DecoderPolicy",
     "FinalAccessPolicy",
@@ -625,7 +731,9 @@ __all__ = [
     "RemediationView",
     "SemanticSelectionPolicy",
     "ShadowPolicy",
+    "TargetedV03Policy",
     "V02Config",
+    "V02PrefixReusePolicy",
     "V03Config",
     "V04Config",
     "config_sha256",

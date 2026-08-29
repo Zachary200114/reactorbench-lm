@@ -28,7 +28,14 @@ Its v0.3 gate failed before writing acceptance because training and gate reconst
 hashed the same tokenized inventory through different tuple/dictionary representations.
 All other reconstructed candidate bindings passed. One shared canonical checksum
 function now serves both paths, and the non-overwriting
-`phase6-remediation-v0.4.0-local-rerun-03` attempt is ready but not started.
+`phase6-remediation-v0.4.0-targeted-01` is the prepared development-only targeted
+attempt and remains **Not started**. Its outcome is unknown: it retains every frozen
+acceptance threshold while comparing task-balanced control sampling with deterministic
+task-and-class-balanced sampling and fitting confidence temperature only on a disjoint
+validation calibration subset. The exact 56 calibration predictions and 427 gate
+predictions are persisted; the gate independently reopens them to recompute the
+temperature, raw/calibrated reports, and acceptance result. Reused v0.2 evidence is
+externally pinned to an exact 21-file SHA-256 inventory rather than trusted by summary.
 
 The preserved rerun-02 metrics are promising but not an acceptance result: constrained
 parse/schema validity reached 100% and constrained exact match reached 74.95%, while
@@ -78,13 +85,13 @@ inference/UI gate remains blocked until a behaviorally acceptable checkpoint exi
   cap-measurement inventory, then removes 24 same-task exact-prompt duplicates with
   identical targets; only the resulting 5,835 examples are written, audited, or
   trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
-  verification passed 1,104 tests with 85.73% branch coverage; two protected
+  verification passed 1,123 tests with 85.29% coverage; two protected
   historical final/golden readers were deliberately excluded from this
   remediation-only verification boundary. Rerun 02 completed v0.3 development
   training/evaluation in 2h 59m 32s. Its preserved full-IID evidence passes seven of
   ten reconstructed semantic checks and misses fault comparator margin (0.0098 versus
   0.02), continuation macro-F1 (0.7182 versus 0.90), and expected calibration error
-  (0.1855 versus a maximum of 0.15). Rerun 03 remains pending.
+  (0.1855 versus a maximum of 0.15). The targeted-01 attempt remains Not started.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
@@ -92,7 +99,7 @@ inference service or web interface, and the current checkpoint must not be prese
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
 progress, safe stop/resume, and review evidence. The versioned local rerun remains
-pending under the `rerun-03` identity, and the separate fresh final-evaluation executor
+pending under the `phase6-remediation-v0.4.0-targeted-01` identity, and the separate fresh final-evaluation executor
 is intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
@@ -225,7 +232,7 @@ window:
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. The current default is
-`phase6-remediation-v0.4.0-local-rerun-03`; do not resume or modify any preserved
+`phase6-remediation-v0.4.0-targeted-01`; do not resume or modify any preserved
 failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
 the current version, and exact current-task work when the runner reports it. The
 entire-rerun bar is stage-based rather than a wall-clock estimate.

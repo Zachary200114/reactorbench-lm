@@ -68,10 +68,18 @@ def phase6_remediation_v02_config_resource() -> Traversable:
 
 
 def phase6_remediation_v03_config_resource() -> Traversable:
-    """Return the reviewed Phase 6 v0.3 semantic-learning configuration."""
+    """Return the reviewed historical v0.3 semantic-learning configuration."""
 
     return _reviewed_resource(
         "configs", "experiments", "phase6-remediation-v0.3.0.toml", directory=False
+    )
+
+
+def phase6_remediation_targeted_v03_config_resource() -> Traversable:
+    """Return the reviewed targeted v0.3 semantic-remediation configuration."""
+
+    return _reviewed_resource(
+        "configs", "experiments", "phase6-remediation-v0.3.1-targeted.toml", directory=False
     )
 
 
@@ -84,12 +92,23 @@ def phase6_remediation_v04_config_resource() -> Traversable:
 
 
 def phase6_remediation_pipeline_config_resource() -> Traversable:
-    """Return the reviewed default Phase 6 remediation rerun configuration."""
+    """Return the reviewed historical Phase 6 remediation rerun configuration."""
 
     return _reviewed_resource(
         "configs",
         "experiments",
         "phase6-remediation-pipeline-v0.4.0-rerun-03.toml",
+        directory=False,
+    )
+
+
+def phase6_remediation_targeted_pipeline_config_resource() -> Traversable:
+    """Return the reviewed targeted Phase 6 remediation configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-pipeline-v0.4.0-targeted-01.toml",
         directory=False,
     )
 
@@ -183,6 +202,8 @@ __all__ = [
     "phase6_remediation_pipeline_config_resource",
     "phase6_remediation_runbook_resource",
     "phase6_remediation_script_resource",
+    "phase6_remediation_targeted_pipeline_config_resource",
+    "phase6_remediation_targeted_v03_config_resource",
     "phase6_remediation_v02_config_resource",
     "phase6_remediation_v03_config_resource",
     "phase6_remediation_v04_config_resource",

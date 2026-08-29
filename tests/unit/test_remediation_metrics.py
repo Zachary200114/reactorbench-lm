@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from typing import Any, cast
 
 import numpy as np
@@ -353,6 +354,7 @@ def _evaluate(
     predictions: tuple[DualPathCompactPrediction, ...],
     *,
     baseline: RemediationBaselineReport | None = None,
+    confidence_transform: Callable[[float], float] | None = None,
 ) -> SemanticEvaluationReport:
     selected_baseline = baseline or _baseline_report()
     return evaluate_semantic_predictions(
@@ -361,6 +363,7 @@ def _evaluate(
         predictions=predictions,
         baseline_report=selected_baseline,
         artifacts=_artifacts(predictions, selected_baseline),
+        confidence_transform=confidence_transform,
     )
 
 
@@ -450,6 +453,38 @@ def test_wrong_valid_predictions_expose_errors_abstention_and_calibration() -> N
         "unconstrained_invalid_schema": len(examples),
     }
     assert 0.0 < semantic_composite_score(examples, predictions) < 0.1
+
+
+def test_confidence_transform_changes_only_calibration_metrics() -> None:
+    examples = _examples()
+    targets = _truth_targets()
+    predictions = tuple(
+        _dual(
+            example,
+            target if index % 2 == 0 else _wrong_target(target),
+            confidence=0.95,
+        )
+        for index, (example, target) in enumerate(zip(examples, targets, strict=True))
+    )
+    raw = _evaluate(examples, predictions)
+    calibrated = _evaluate(examples, predictions, confidence_transform=lambda value: value * 0.6)
+
+    assert calibrated.predictions_sha256 == raw.predictions_sha256
+    assert calibrated.baseline_report_sha256 == raw.baseline_report_sha256
+    assert calibrated.constrained == raw.constrained
+    assert calibrated.unconstrained == raw.unconstrained
+    assert calibrated.task_metrics == raw.task_metrics
+    assert calibrated.failures == raw.failures
+    raw_metrics = raw.view_metrics.metrics.model_dump(mode="json", round_trip=True)
+    calibrated_metrics = calibrated.view_metrics.metrics.model_dump(mode="json", round_trip=True)
+    for name in ("expected_calibration_error", "selective_risk_at_80_percent_coverage"):
+        raw_metrics.pop(name)
+        calibrated_metrics.pop(name)
+    assert calibrated_metrics == raw_metrics
+    assert (
+        calibrated.view_metrics.metrics.expected_calibration_error
+        != raw.view_metrics.metrics.expected_calibration_error
+    )
 
 
 def test_malformed_constrained_paths_fail_closed_and_report_both_failure_tiers() -> None:

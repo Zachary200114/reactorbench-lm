@@ -33,6 +33,7 @@ from .config import RemediationView, V03Config, config_sha256
 from .data import RemediationExample, SafeDevelopmentDataset
 
 SELECTION_EXAMPLE_COUNT: Literal[48] = 48
+CALIBRATION_SELECTION_EXAMPLE_COUNT: Literal[56] = 56
 EXAMPLES_PER_TASK: Literal[8] = 8
 EXAMPLES_PER_TASK_STRATUM: Literal[4] = 4
 MAX_SELECTION_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -400,6 +401,53 @@ class SemanticSelectionManifest(ContractModel):
         return self
 
 
+class CalibrationSelectionEntry(ContractModel):
+    """Identity-bound member of the disjoint post-selection calibration subset."""
+
+    selection_index: int = Field(strict=True, ge=0, lt=CALIBRATION_SELECTION_EXAMPLE_COUNT)
+    task_name: TaskName
+    context_stratum: ContextSizeStratum
+    example_id: ContractId
+    example_checksum_sha256: Sha256
+    prompt_sha256: Sha256
+    observable_selection_key_sha256: Sha256
+
+
+class CalibrationSelectionManifest(ContractModel):
+    """Target-independent 56-row calibration freeze, disjoint from semantic selection."""
+
+    manifest_version: Literal["0.3.1-targeted"] = "0.3.1-targeted"
+    semantic_selection_manifest_sha256: Sha256
+    iid_validation_inventory_sha256: Sha256
+    selected_example_count: Literal[56] = CALIBRATION_SELECTION_EXAMPLE_COUNT
+    entries: tuple[CalibrationSelectionEntry, ...] = Field(min_length=56, max_length=56)
+    selected_inventory_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @field_validator("entries", mode="before")
+    @classmethod
+    def calibration_entries_become_tuple(cls, value: object) -> object:
+        return tuple(value) if type(value) is list else value
+
+    @model_validator(mode="after")
+    def disjoint_shape_and_checksum_match(self) -> CalibrationSelectionManifest:
+        if tuple(item.selection_index for item in self.entries) != tuple(range(56)):
+            raise ValueError("calibration entries must use canonical indexed order")
+        if len({item.example_id for item in self.entries}) != 56:
+            raise ValueError("calibration example IDs must be unique")
+        expected_inventory = canonical_sha256(
+            tuple((item.example_id, item.example_checksum_sha256) for item in self.entries)
+        )
+        if self.selected_inventory_sha256 != expected_inventory:
+            raise ValueError("calibration selected inventory checksum mismatch")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("calibration selection manifest checksum mismatch")
+        return self
+
+
 def _entry(
     *,
     selection_index: int,
@@ -586,6 +634,111 @@ def resolve_semantic_selection_examples(
     return tuple(resolved)
 
 
+def build_calibration_selection_manifest(
+    dataset: SafeDevelopmentDataset,
+    config: V03Config,
+    semantic_manifest: SemanticSelectionManifest,
+) -> CalibrationSelectionManifest:
+    """Freeze the disjoint target-independent 56-row temperature-calibration subset."""
+
+    if config.targeted_policy is None:
+        raise ValueError("calibration selection is reserved for the targeted v0.3 policy")
+    semantic_rows = resolve_semantic_selection_examples(dataset, semantic_manifest, config)
+    semantic_ids = {item.example_id for item in semantic_rows}
+    iid = tuple(
+        item for item in _source_examples(dataset) if item.view is RemediationView.IID_VALIDATION
+    )
+    candidates = tuple(
+        _observable_candidate(item) for item in iid if item.example_id not in semantic_ids
+    )
+    by_task = {
+        task: tuple(item for item in candidates if item.task_name is task) for task in TaskName
+    }
+    selected: list[tuple[TaskName, ContextSizeStratum, _ObservableCandidate]] = []
+    for task in TaskName:
+        total = 6 if task is TaskName.COUNTERFACTUAL_COMPARE else 10
+        per_stratum = total // 2
+        rows = tuple(sorted(by_task[task], key=lambda item: item.complexity_key))
+        midpoint = len(rows) // 2
+        lower, upper = rows[:midpoint], rows[midpoint:]
+        if min(len(lower), len(upper)) < per_stratum:
+            raise ValueError("calibration selection cannot satisfy its disjoint context quota")
+        selected.extend(
+            (task, ContextSizeStratum.LOWER, item)
+            for item in _round_robin_surface_pick(lower, count=per_stratum)
+        )
+        selected.extend(
+            (task, ContextSizeStratum.UPPER, item)
+            for item in _round_robin_surface_pick(upper, count=per_stratum)
+        )
+    selected.sort(
+        key=lambda item: (
+            list(TaskName).index(item[0]),
+            CONTEXT_STRATA.index(item[1]),
+            item[2].prompt_sha256,
+        )
+    )
+    entries = tuple(
+        CalibrationSelectionEntry(
+            selection_index=index,
+            task_name=task,
+            context_stratum=stratum,
+            example_id=candidate.example.example_id,
+            example_checksum_sha256=candidate.example.checksum_sha256,
+            prompt_sha256=candidate.prompt_sha256,
+            observable_selection_key_sha256=canonical_sha256(candidate.observable_payload()),
+        )
+        for index, (task, stratum, candidate) in enumerate(selected)
+    )
+    if len(entries) != CALIBRATION_SELECTION_EXAMPLE_COUNT:
+        raise RuntimeError("calibration selection filled the wrong number of rows")
+    draft = CalibrationSelectionManifest.model_construct(
+        semantic_selection_manifest_sha256=semantic_manifest.checksum_sha256,
+        iid_validation_inventory_sha256=_identity_inventory_sha256(iid),
+        entries=entries,
+        selected_inventory_sha256=canonical_sha256(
+            tuple((item.example_id, item.example_checksum_sha256) for item in entries)
+        ),
+        checksum_sha256="0" * 64,
+    )
+    checksum = canonical_sha256(
+        draft.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+    )
+    return CalibrationSelectionManifest(
+        **draft.model_dump(mode="python", exclude={"checksum_sha256"}), checksum_sha256=checksum
+    )
+
+
+def resolve_calibration_selection_examples(
+    dataset: SafeDevelopmentDataset,
+    config: V03Config,
+    semantic_manifest: SemanticSelectionManifest,
+    calibration_manifest: CalibrationSelectionManifest,
+) -> tuple[RemediationExample, ...]:
+    """Rebuild and verify the disjoint calibration freeze before it is used."""
+
+    expected = build_calibration_selection_manifest(dataset, config, semantic_manifest)
+    if calibration_manifest != expected:
+        raise ValueError(
+            "calibration selection manifest differs from deterministic source selection"
+        )
+    semantic_ids = {
+        item.example_id
+        for item in resolve_semantic_selection_examples(dataset, semantic_manifest, config)
+    }
+    iid = {
+        item.example_id: item
+        for item in _source_examples(dataset)
+        if item.view is RemediationView.IID_VALIDATION
+    }
+    resolved = tuple(
+        iid[item.example_id] for item in calibration_manifest.entries if item.example_id in iid
+    )
+    if len(resolved) != 56 or semantic_ids & {item.example_id for item in resolved}:
+        raise ValueError("calibration selection is missing or overlaps semantic selection")
+    return resolved
+
+
 def _strict_json(payload: bytes) -> object:
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -681,16 +834,21 @@ def load_semantic_selection_manifest(
 
 
 __all__ = [
+    "CALIBRATION_SELECTION_EXAMPLE_COUNT",
     "CONTEXT_STRATA",
     "EXAMPLES_PER_TASK",
     "EXAMPLES_PER_TASK_STRATUM",
     "SELECTION_EXAMPLE_COUNT",
     "SELECTION_POLICY_SHA256",
+    "CalibrationSelectionEntry",
+    "CalibrationSelectionManifest",
     "ContextSizeStratum",
     "SemanticSelectionEntry",
     "SemanticSelectionManifest",
+    "build_calibration_selection_manifest",
     "build_semantic_selection_manifest",
     "load_semantic_selection_manifest",
+    "resolve_calibration_selection_examples",
     "resolve_semantic_selection_examples",
     "write_semantic_selection_manifest",
 ]

@@ -1,6 +1,6 @@
 # Phase 6 remediation local runbook
 
-Status: **canonical tokenized-inventory checksum fix verified; non-overwriting rerun 03 pending**
+Status: **targeted v0.3 quality remediation verified; targeted-01 Not started**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -96,8 +96,8 @@ scientific `blocked` state at v0.3 rather than advance to v0.4.
 The current corrected default configuration is:
 
 ```text
-configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml
-runs/phase6-remediation-v0.4.0-local-rerun-03/
+configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml
+runs/phase6-remediation-v0.4.0-targeted-01/
 ```
 
 Checkpoint consumers now return the model's actual parameter device after verifying
@@ -106,7 +106,9 @@ explicit-index mismatch still fails closed. The exact preserved checkpoint opera
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers below now select rerun 03. The original run is bound to source
+The ordinary wrappers below now select the targeted-01 identity. The unstarted
+rerun-03 configuration remains historical preparation and is not the default. The
+original run is bound to source
 commit `2aafcd1661ec7c3640a385621db171041532e547`, rerun 01 is bound to
 `034b41cca07b999f701850986a67a692b40d8c30`, and rerun 02 is bound to
 `cf732307d1d1f756772af7a87214ffde8e9bf8b0`. Their live status commands therefore
@@ -164,12 +166,33 @@ if necessary; an optional foreground form is:
 caffeinate -i ./scripts/run_phase6_pipeline.sh
 ```
 
-The runner executes the frozen stages in order. It starts with v0.2 inventory,
-correctness, smoke, training, and development gates; advances to v0.3 data audit,
-candidate training, semantic evaluation, and acceptance only when v0.2 passes; and
-then runs the permitted v0.4 pilot, candidate, shadow evaluation, policy freeze, and
-review-bundle stages only when v0.3 passes. A failed scientific gate stops later work
+The runner retains the frozen 16-stage interface. For targeted-01, preflight and the
+four v0.2 stages verify the preserved rerun-02 manifest, completion prefix, outcomes,
+and all referenced artifacts by canonical contract, size, SHA-256, source, config,
+path containment, and non-symlink checks. The targeted configuration externally pins
+the exact canonical path and SHA-256 of all 21 permitted files plus their aggregate
+inventory hash, so a coherently re-signed addition or substitution is rejected. The
+stages write only small new reuse reports; they do not regenerate v0.2 data, train
+v0.2, or decode its gate. The runner then
+advances to v0.3 data audit, candidate training, semantic evaluation, and acceptance;
+when v0.3 passes, it runs the permitted v0.4 pilot, candidate, shadow evaluation,
+policy freeze, and review-bundle stages. A failed scientific gate stops later work
 cleanly instead of weakening a threshold.
+
+Targeted v0.3 compares a task-balanced control against a deterministic
+task-and-class-balanced candidate. Model size, teacher-forced exposure, 2,000 steps,
+and every acceptance threshold are unchanged. Checkpoint selection still uses the
+same target-independent 48-example subset and raw confidence. A separate
+target-independent 56-example validation subset is decoded only after selection to
+fit a scalar temperature on the fixed 0.50–5.00 grid. The remaining 427 IID rows form
+the gate. Calibration changes only confidence used for ECE and selective risk; raw
+tokens, canonical outputs, prediction checksums, semantic metrics, and candidate
+selection remain unchanged. Confidence endpoints are clamped before NLL evaluation.
+The exact 56 calibration predictions and 427 raw gate predictions are immutable
+JSONL artifacts. The gate reopens those artifacts and independently recomputes the
+temperature, raw report, calibrated report, and acceptance result before binding them.
+Targeted cross-attempt recovery writes its checksum-bound sampling sidecar before
+publishing a copied model state, so an interruption cannot leave an unbindable state.
 
 The v0.3 audit regenerates IID material once at the frozen source commit. It first
 reproduces the reviewed counterfactual-cap evidence against the raw 5,859-example
@@ -273,8 +296,8 @@ when those fields are available. The machine-readable heartbeat and append-only 
 log are:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-03/status.json
-runs/phase6-remediation-v0.4.0-local-rerun-03/progress.jsonl
+runs/phase6-remediation-v0.4.0-targeted-01/status.json
+runs/phase6-remediation-v0.4.0-targeted-01/progress.jsonl
 ```
 
 ### Optional local progress window
@@ -288,7 +311,7 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ```
 
 Opening the monitor does not start training. It identifies the fixed
-`phase6-remediation-v0.4.0-local-rerun-03` run, refreshes through the existing
+`phase6-remediation-v0.4.0-targeted-01` run, refreshes through the existing
 strictly validated status command, and offers only allowlisted readiness, Start,
 status, safe-stop, stopped-run Resume, Finder, and copy operations. The activity log
 is bounded and non-scientific; the monitor never reads `status.json` or
@@ -425,7 +448,7 @@ implemented in this release.
 All ordinary pipeline outputs stay under:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-03/
+runs/phase6-remediation-v0.4.0-targeted-01/
 ```
 
 Important top-level evidence includes:
@@ -455,16 +478,16 @@ After a completed development run, the human and machine review indexes are unde
 committed review-bundle attempt:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-03/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
-runs/phase6-remediation-v0.4.0-local-rerun-03/stages/15-review_bundle/attempt-*/review-bundle.json
+runs/phase6-remediation-v0.4.0-targeted-01/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
+runs/phase6-remediation-v0.4.0-targeted-01/stages/15-review_bundle/attempt-*/review-bundle.json
 ```
 
 For `blocked`, `stopped`, or `failed` runs, the command prints the exact paths to an
 idempotent terminal-prefix bundle. If you return later, find it at:
 
 ```text
-runs/phase6-remediation-v0.4.0-local-rerun-03/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
-runs/phase6-remediation-v0.4.0-local-rerun-03/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
+runs/phase6-remediation-v0.4.0-targeted-01/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-targeted-01/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
 ```
 
 Use the exact attempt or state-checksum path reported by the command; do not choose a
@@ -515,7 +538,7 @@ raw traceback or private internal detail.
 
 Do not manually edit, rename, replace, or delete:
 
-- any file under `runs/phase6-remediation-v0.4.0-local-rerun-03/` or any preserved
+- any file under `runs/phase6-remediation-v0.4.0-targeted-01/` or any preserved
   failed run: `runs/phase6-remediation-v0.4.0-local-rerun-02/`,
   `runs/phase6-remediation-v0.4.0-local-rerun-01/`, and
   `runs/phase6-remediation-v0.4.0-local/`;
@@ -549,7 +572,7 @@ Then ask Codex to inspect, without rerunning the long job:
 > checksum-bound run manifest, pipeline state, status, progress log, completion
 > markers, review bundle, detailed v0.2/v0.3/v0.4 reports, baselines, checkpoints, and
 > acceptance outcomes under
-> `runs/phase6-remediation-v0.4.0-local-rerun-03/`. Do not retrain,
+> `runs/phase6-remediation-v0.4.0-targeted-01/`. Do not retrain,
 > open frozen final data, use historical G01–G15 as the new golden gate, push, or
 > deploy. Tell me whether development completed, blocked, stopped, or failed; what the
 > measured results show; and the exact reviewed prerequisite needed next.

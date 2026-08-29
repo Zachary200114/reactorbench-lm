@@ -17,10 +17,13 @@ from reactorbench.remediation.sampling import (
     MAX_BATCH_SIZE,
     MAX_GROUP_ID_UTF8_BYTES,
     MAX_SAMPLING_INTEGER,
+    SamplingMetadataRecord,
     SamplingRecord,
     TaskBalancedSamplingError,
+    sampling_metadata_inventory_sha256,
     task_balanced_batch,
     task_balanced_batch_indices,
+    task_class_balanced_batch_indices,
 )
 from reactorbench.schemas.enums import TaskName
 
@@ -30,6 +33,73 @@ class _Record:
     record_id: str
     task_name: TaskName
     group_id: str
+
+
+@dataclass(frozen=True)
+class _ClassRecord:
+    example_id: str
+    task_name: TaskName
+    group_id: str
+
+
+def _class_inventory() -> tuple[tuple[_ClassRecord, ...], tuple[SamplingMetadataRecord, ...]]:
+    classification = {
+        TaskName.FAULT_FAMILY,
+        TaskName.NEXT_ACTION,
+        TaskName.CONTINUE_LOG,
+    }
+    records: list[_ClassRecord] = []
+    metadata: list[SamplingMetadataRecord] = []
+    for task in TaskName:
+        for index in range(6):
+            example_id = f"{task.value}:{index}"
+            records.append(_ClassRecord(example_id, task, f"group:{example_id}"))
+            metadata.append(
+                SamplingMetadataRecord(
+                    example_id=example_id,
+                    task_name=task,
+                    classification_label=(f"label-{index % 3}" if task in classification else None),
+                    augmentation=f"augmentation-{index % 2}",
+                )
+            )
+    return tuple(records), tuple(metadata)
+
+
+def test_task_class_sampler_is_deterministic_and_balances_supervised_strata() -> None:
+    records, metadata = _class_inventory()
+    first = task_class_balanced_batch_indices(
+        records, metadata=metadata, batch_size=18, seed=91, step=4
+    )
+    replay = task_class_balanced_batch_indices(
+        records, metadata=metadata, batch_size=18, seed=91, step=4
+    )
+    assert first == replay
+    assert Counter(records[index].task_name for index in first) == Counter(
+        dict.fromkeys(TaskName, 3)
+    )
+    metadata_by_id = {item.example_id: item for item in metadata}
+    for task in (TaskName.FAULT_FAMILY, TaskName.NEXT_ACTION, TaskName.CONTINUE_LOG):
+        labels = {
+            metadata_by_id[records[index].example_id].classification_label
+            for index in first
+            if records[index].task_name is task
+        }
+        assert labels == {"label-0", "label-1", "label-2"}
+
+
+def test_task_class_metadata_hash_is_order_independent_and_mismatch_is_rejected() -> None:
+    records, metadata = _class_inventory()
+    assert sampling_metadata_inventory_sha256(metadata) == sampling_metadata_inventory_sha256(
+        tuple(reversed(metadata))
+    )
+    with pytest.raises(ValueError, match="exactly cover"):
+        task_class_balanced_batch_indices(
+            records,
+            metadata=metadata[:-1],
+            batch_size=6,
+            seed=1,
+            step=0,
+        )
 
 
 def _singletons(*, tasks: tuple[TaskName, ...], per_task: int) -> tuple[_Record, ...]:

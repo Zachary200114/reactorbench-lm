@@ -57,6 +57,12 @@ from .acceptance import (
 )
 from .audit import audit_safe_development_dataset
 from .baselines import RemediationBaselineReport, run_remediation_baselines
+from .calibration import (
+    CalibrationObservation,
+    TemperatureCalibrationReport,
+    apply_temperature,
+    fit_temperature,
+)
 from .config import (
     PIPELINE_STAGES,
     SHADOW_VIEWS,
@@ -105,29 +111,43 @@ from .orchestration import (
     PipelineEngine,
     PipelineState,
     PipelineStore,
+    RunManifest,
     StageAction,
+    StageCompletionMarker,
     StageContext,
     StageMetric,
     StageOutcome,
     StageStatus,
 )
 from .progress import PROGRESS_EVENT_LOG_FILENAME, ProgressMetric, ProgressSnapshot
-from .sampling import task_balanced_batch_indices
+from .sampling import (
+    SamplingMetadataRecord,
+    sampling_metadata_inventory_sha256,
+    task_balanced_batch_indices,
+)
 from .selection import (
+    CalibrationSelectionManifest,
     SemanticSelectionManifest,
+    build_calibration_selection_manifest,
     build_semantic_selection_manifest,
+    resolve_calibration_selection_examples,
     resolve_semantic_selection_examples,
 )
 from .serialization import CompactTokenizedExample, tokenize_compact_example
 from .training import (
+    TARGETED_SAMPLING_BINDING_FILENAME,
     CompactTrainingOutcome,
     CompactTrainingResult,
     CompactTrainingStopped,
     DeviceResolution,
     EvaluationCallback,
+    TargetedSamplingBinding,
     TrainingProgress,
+    bind_targeted_sampling,
     durable_training_state_upper_bound_bytes,
+    ensure_targeted_sampling_binding,
     latest_committed_training_state,
+    load_targeted_sampling_binding,
     retire_superseded_training_states,
     selected_checkpoint_upper_bound_bytes,
     tokenized_inventory_sha256,
@@ -230,6 +250,35 @@ class ExecutionPreflightReport(ContractModel):
         )
         if self.checksum_sha256 != expected:
             raise ValueError("execution preflight report checksum mismatch")
+        return self
+
+
+class V02PrefixReuseReport(ContractModel):
+    """New-run reference proving one v0.2 stage was independently reused, not run."""
+
+    report_version: Literal["0.3.1-targeted"] = "0.3.1-targeted"
+    stage_name: Literal[
+        "v02_inventory_and_caps",
+        "v02_smoke",
+        "v02_development_training",
+        "v02_development_gate",
+    ]
+    source_run_manifest_sha256: Sha256
+    source_commit: GitCommit
+    evidence: tuple[tuple[StrictStr, Sha256], ...] = Field(min_length=21, max_length=21)
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> V02PrefixReuseReport:
+        if tuple(path for path, _hash in self.evidence) != tuple(
+            sorted(path for path, _hash in self.evidence)
+        ):
+            raise ValueError("prefix reuse evidence must use canonical path order")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("prefix reuse report checksum mismatch")
         return self
 
 
@@ -561,6 +610,34 @@ class CandidateSelectionReport(ContractModel):
         )
         if self.checksum_sha256 != expected:
             raise ValueError("candidate selection report checksum mismatch")
+        return self
+
+
+class TargetedV03GateBinding(ContractModel):
+    """Bind calibration, raw evidence, calibrated evidence, and unchanged thresholds."""
+
+    report_version: Literal["0.3.1-targeted"] = "0.3.1-targeted"
+    candidate_selection_sha256: Sha256
+    calibration_selection_sha256: Sha256
+    temperature_calibration_sha256: Sha256
+    raw_evaluation_sha256: Sha256
+    calibrated_evaluation_sha256: Sha256
+    acceptance_sha256: Sha256
+    raw_prediction_artifact_sha256: Sha256
+    calibrated_prediction_artifact_sha256: Sha256
+    outputs_bit_exact: Literal[True]
+    thresholds_unchanged: Literal[True]
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def invariance_and_checksum_match(self) -> TargetedV03GateBinding:
+        if self.raw_prediction_artifact_sha256 != self.calibrated_prediction_artifact_sha256:
+            raise ValueError("calibration must not alter the prediction artifact")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("targeted v0.3 gate binding checksum mismatch")
         return self
 
 
@@ -1848,6 +1925,128 @@ def _load_execution_inputs(
     )
 
 
+def verify_v02_prefix_reuse(project_root: Path, config: PipelineConfig) -> tuple[Path, ...]:
+    """Reopen the targeted run's immutable v0.2 evidence without copying or locking it."""
+
+    policy = config.reuse_v02_prefix
+    if policy is None:
+        return ()
+    root = _safe_input_path(project_root, policy.source_run_root, kind="directory")
+    manifest_path = root / "run-manifest.json"
+    manifest = _read_contract(manifest_path, RunManifest)
+    if (
+        manifest.checksum_sha256 != policy.source_run_manifest_sha256
+        or manifest.source_commit != policy.source_commit
+        or manifest.v02_config_sha256 != config.v02_config_sha256
+    ):
+        raise PipelineExecutionError("preserved v0.2 run provenance differs")
+
+    def verified_reference(reference: ArtifactReference) -> Path:
+        path = root / reference.relative_path
+        cursor = root
+        for part in Path(reference.relative_path).parts:
+            cursor /= part
+            if cursor.is_symlink():
+                raise PipelineExecutionError("preserved v0.2 evidence traverses a symlink")
+        if (
+            not path.is_file()
+            or not path.resolve(strict=True).is_relative_to(root)
+            or path.stat().st_size != reference.size_bytes
+            or hashlib.sha256(path.read_bytes()).hexdigest() != reference.sha256
+        ):
+            raise PipelineExecutionError("preserved v0.2 artifact checksum or size differs")
+        return path
+
+    stage_prefix = (
+        "v02_inventory_and_caps",
+        "v02_smoke",
+        "v02_development_training",
+        "v02_development_gate",
+    )
+    checked: list[Path] = [manifest_path]
+    for ordinal, stage in enumerate(stage_prefix, start=1):
+        marker_path = root / f"stages/{ordinal:02d}-{stage}/completed.json"
+        marker = _read_contract(marker_path, StageCompletionMarker)
+        if (
+            marker.run_name != manifest.run_name
+            or marker.pipeline_config_sha256 != manifest.pipeline_config_sha256
+            or marker.source_commit != manifest.source_commit
+            or marker.stage != stage
+            or marker.ordinal != ordinal
+            or marker.attempt != 1
+        ):
+            raise PipelineExecutionError("preserved v0.2 completion prefix differs")
+        outcome_path = verified_reference(marker.outcome)
+        outcome = _read_contract(outcome_path, StageOutcome)
+        if not outcome.advancement_allowed:
+            raise PipelineExecutionError("preserved v0.2 stage did not advance")
+        checked.extend((marker_path, outcome_path))
+        for reference in outcome.artifacts:
+            checked.append(verified_reference(reference))
+
+    if len(checked) != 21 or len(checked) != len(set(checked)):
+        raise PipelineExecutionError("preserved v0.2 evidence inventory is invalid")
+    for path in checked:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or not path.resolve(strict=True).is_relative_to(root)
+        ):
+            raise PipelineExecutionError("preserved v0.2 evidence path is unsafe")
+    observed = tuple(
+        sorted(
+            (
+                path.relative_to(root).as_posix(),
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+            for path in checked
+        )
+    )
+    if (
+        observed != policy.evidence
+        or canonical_sha256(observed) != policy.evidence_inventory_sha256
+    ):
+        raise PipelineExecutionError("preserved v0.2 evidence differs from its external pin")
+    return tuple(checked)
+
+
+def _v02_reuse_outcome(
+    context: StageContext, config: PipelineConfig, stage_name: str
+) -> StageOutcome:
+    """Write only a small new reference packet for one verified v0.2 stage."""
+
+    policy = config.reuse_v02_prefix
+    if policy is None or stage_name not in policy.verify_only_stages:
+        raise PipelineExecutionError("v0.2 reuse stage is not enabled by the targeted policy")
+    evidence = verify_v02_prefix_reuse(context.project_root, config)
+    root = context.project_root / policy.source_run_root
+    rows = tuple(
+        sorted(
+            (
+                path.relative_to(root).as_posix(),
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+            for path in evidence
+        )
+    )
+    draft = V02PrefixReuseReport.model_construct(
+        stage_name=stage_name,
+        source_run_manifest_sha256=policy.source_run_manifest_sha256,
+        source_commit=policy.source_commit,
+        evidence=rows,
+        checksum_sha256="0" * 64,
+    )
+    report = _bound_model(draft, V02PrefixReuseReport)
+    artifact = _contract_artifact(context, f"{stage_name}-reuse.json", report)
+    return _stage_outcome(
+        "Verified immutable v0.2 evidence was reused; no training or decoding was invoked.",
+        artifacts=(artifact,),
+        metrics=(
+            StageMetric(name="verified_evidence_files", value=float(len(rows)), unit="files"),
+        ),
+    )
+
+
 def _process_peak_rss_bytes() -> int:
     observed = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     if platform.system() != "Darwin":
@@ -2128,6 +2327,68 @@ def _write_predictions(
     )
 
 
+def _read_predictions(
+    *,
+    manifest_path: Path,
+    predictions_path: Path,
+    view: RemediationView,
+    examples: tuple[RemediationExample, ...],
+) -> tuple[PredictionArtifactManifest, tuple[DualPathCompactPrediction, ...]]:
+    """Reopen one immutable prediction artifact and prove its exact example binding."""
+
+    if not examples:
+        raise ValueError("prediction evidence requires a non-empty example inventory")
+    manifest = _read_contract(manifest_path, PredictionArtifactManifest)
+    if (
+        predictions_path.is_symlink()
+        or not predictions_path.is_file()
+        or not 0 < predictions_path.stat().st_size <= MAX_PIPELINE_JSON_BYTES
+        or predictions_path.stat().st_size != manifest.predictions_size_bytes
+    ):
+        raise ValueError("prediction evidence is missing, unsafe, or oversized")
+    payload = predictions_path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != manifest.predictions_sha256:
+        raise PipelineExecutionError("prediction evidence byte checksum differs")
+    rows = payload.splitlines(keepends=True)
+    if (
+        len(rows) != len(examples)
+        or len(rows) != manifest.example_count
+        or any(not row.endswith(b"\n") or len(row) > MAX_PREDICTION_ROW_BYTES for row in rows)
+    ):
+        raise PipelineExecutionError("prediction evidence row inventory differs")
+    predictions = tuple(
+        DualPathCompactPrediction.model_validate_json(row, strict=True) for row in rows
+    )
+    ordered_examples = tuple(sorted(examples, key=lambda item: item.example_id))
+    ordered_predictions = tuple(sorted(predictions, key=lambda item: item.example_id))
+    if (
+        predictions != ordered_predictions
+        or canonical_prediction_jsonl_bytes(predictions) != payload
+    ):
+        raise PipelineExecutionError("prediction evidence is not canonical identity-ordered JSONL")
+    for example, prediction in zip(ordered_examples, ordered_predictions, strict=True):
+        if (
+            example.view is not view
+            or prediction.example_id != example.example_id
+            or prediction.example_checksum_sha256 != example.checksum_sha256
+        ):
+            raise PipelineExecutionError("prediction evidence example provenance differs")
+    if (
+        manifest.view is not view
+        or manifest.example_inventory_sha256
+        != canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in ordered_examples)
+        )
+        or manifest.prediction_inventory_sha256
+        != canonical_sha256(
+            tuple((item.example_id, item.checksum_sha256) for item in ordered_predictions)
+        )
+        or prediction_artifact_byte_sha256(ordered_predictions) != manifest.predictions_sha256
+    ):
+        raise PipelineExecutionError("prediction evidence manifest differs from its payload")
+    return manifest, ordered_predictions
+
+
 def _decode_examples(
     model: TransformerLM,
     tokenizer: ProjectTokenizer,
@@ -2247,6 +2508,108 @@ def _semantic_report_composite(report: SemanticEvaluationReport) -> float:
     if not math.isfinite(score) or not 0.0 <= score <= 1.0:
         raise PipelineExecutionError("semantic report composite is outside its bound")
     return score
+
+
+def _semantic_reports_differ_only_in_confidence(
+    raw: SemanticEvaluationReport,
+    calibrated: SemanticEvaluationReport,
+) -> bool:
+    """Compare reports after removing only the two confidence-derived estimates."""
+
+    payloads: list[dict[str, object]] = []
+    for report in (raw, calibrated):
+        payload = cast(dict[str, object], report.model_dump(mode="json", round_trip=True))
+        view_metrics = cast(dict[str, object], payload["view_metrics"])
+        metrics = cast(dict[str, object], view_metrics["metrics"])
+        metrics.pop("expected_calibration_error")
+        metrics.pop("selective_risk_at_80_percent_coverage")
+        view_metrics.pop("checksum_sha256")
+        payload.pop("checksum_sha256")
+        payloads.append(payload)
+    return payloads[0] == payloads[1]
+
+
+def _reconstruct_targeted_v03_gate(
+    *,
+    selection: CandidateSelectionReport,
+    calibration_selection: CalibrationSelectionManifest,
+    calibration: TemperatureCalibrationReport,
+    calibration_examples: tuple[RemediationExample, ...],
+    calibration_prediction_manifest: PredictionArtifactManifest,
+    calibration_predictions: tuple[DualPathCompactPrediction, ...],
+    gate_examples: tuple[RemediationExample, ...],
+    raw_prediction_manifest: PredictionArtifactManifest,
+    raw_predictions: tuple[DualPathCompactPrediction, ...],
+    raw_baseline: RemediationBaselineReport,
+    expected_artifacts: DevelopmentArtifactBinding,
+    saved_raw_evaluation: SemanticEvaluationReport,
+    saved_calibrated_evaluation: SemanticEvaluationReport,
+) -> tuple[V03AcceptanceResult, TargetedV03GateBinding]:
+    """Independently reconstruct every targeted acceptance input from raw evidence."""
+
+    observations = tuple(
+        CalibrationObservation(
+            example_id=example.example_id,
+            raw_confidence=float(prediction.constrained.selected_token_geometric_mean_probability),
+            exact_match=prediction.constrained.canonical_target_json
+            == example.canonical_target_json,
+        )
+        for example, prediction in zip(calibration_examples, calibration_predictions, strict=True)
+    )
+    reconstructed_calibration = fit_temperature(
+        observations,
+        calibration_selection_manifest_sha256=calibration_selection.checksum_sha256,
+        calibration_prediction_manifest_sha256=(calibration_prediction_manifest.checksum_sha256),
+        calibration_predictions_sha256=calibration_prediction_manifest.predictions_sha256,
+        selected_checkpoint_manifest_sha256=selection.selected_checkpoint_manifest_sha256,
+    )
+    if calibration != reconstructed_calibration:
+        raise PipelineExecutionError(
+            "temperature calibration differs from independently reopened evidence"
+        )
+    reconstructed_raw = evaluate_semantic_predictions(
+        view=RemediationView.IID_VALIDATION,
+        examples=gate_examples,
+        predictions=raw_predictions,
+        baseline_report=raw_baseline,
+        artifacts=expected_artifacts,
+    )
+    reconstructed_calibrated = evaluate_semantic_predictions(
+        view=RemediationView.IID_VALIDATION,
+        examples=gate_examples,
+        predictions=raw_predictions,
+        baseline_report=raw_baseline,
+        artifacts=expected_artifacts,
+        confidence_transform=lambda value: apply_temperature(
+            value, calibration.selected_temperature
+        ),
+    )
+    if (
+        saved_raw_evaluation != reconstructed_raw
+        or saved_calibrated_evaluation != reconstructed_calibrated
+        or raw_prediction_manifest.predictions_sha256 != saved_raw_evaluation.predictions_sha256
+        or not _semantic_reports_differ_only_in_confidence(
+            saved_raw_evaluation, saved_calibrated_evaluation
+        )
+    ):
+        raise PipelineExecutionError(
+            "targeted gate reports differ from independently reopened evidence"
+        )
+    acceptance = evaluate_v03_acceptance(reconstructed_calibrated.view_metrics)
+    draft_binding = TargetedV03GateBinding.model_construct(
+        candidate_selection_sha256=selection.checksum_sha256,
+        calibration_selection_sha256=calibration_selection.checksum_sha256,
+        temperature_calibration_sha256=calibration.checksum_sha256,
+        raw_evaluation_sha256=reconstructed_raw.checksum_sha256,
+        calibrated_evaluation_sha256=reconstructed_calibrated.checksum_sha256,
+        acceptance_sha256=acceptance.checksum_sha256,
+        raw_prediction_artifact_sha256=raw_prediction_manifest.predictions_sha256,
+        calibrated_prediction_artifact_sha256=raw_prediction_manifest.predictions_sha256,
+        outputs_bit_exact=True,
+        thresholds_unchanged=True,
+        checksum_sha256="0" * 64,
+    )
+    return acceptance, _bound_model(draft_binding, TargetedV03GateBinding)
 
 
 def _require_semantic_report_scope(
@@ -2607,6 +2970,7 @@ def _prepare_resume_state(
     candidate_id: str,
     destination_root: Path,
     state_upper_bound_bytes: int,
+    targeted_binding: TargetedSamplingBinding | None = None,
 ) -> Path | None:
     """Consolidate, copy, checkpoint, then retire cross-attempt durable states."""
 
@@ -2627,6 +2991,13 @@ def _prepare_resume_state(
         raise ValueError("resume destination escapes its current stage attempt")
 
     prior_roots = _prior_training_state_roots(context, candidate_id)
+    for item in prior_roots:
+        if item.latest_state is not None:
+            ensure_targeted_sampling_binding(
+                item.root,
+                targeted_binding,
+                create_if_missing=False,
+            )
     source = _latest_resume_from_roots(prior_roots)
     if source is None:
         return None
@@ -2646,6 +3017,14 @@ def _prepare_resume_state(
     guard.enforce_projected_write(
         context,
         reservation_bytes=state_upper_bound_bytes,
+    )
+    # Publish the tiny checksum-bound sidecar before the much larger state copy.
+    # A crash can then leave only an ignorable binding-only attempt, never a
+    # committed targeted state that subsequent resume validation cannot bind.
+    ensure_targeted_sampling_binding(
+        destination_root,
+        targeted_binding,
+        create_if_missing=targeted_binding is not None,
     )
     copied = _copy_resume_state(source, destination_root)
     verified_copy = latest_committed_training_state(
@@ -2709,7 +3088,7 @@ def _run_training(
     guard: _ResourceGuard,
     inputs: _ExecutionInputs,
     candidate_id: str,
-    sampling_strategy: Literal["uniform_control", "task_balanced"],
+    sampling_strategy: Literal["uniform_control", "task_balanced", "task_class_balanced"],
     model_config: TransformerConfig,
     training: RemediationTraining,
     train_examples: tuple[RemediationExample, ...],
@@ -2729,6 +3108,40 @@ def _run_training(
         context_length=model_config.context_length,
         generation_caps=generation_caps,
     )
+    train_inventory_sha256 = canonical_sha256(
+        tuple((item.example_id, item.checksum_sha256) for item in train_examples)
+    )
+    validation_inventory_sha256 = canonical_sha256(
+        tuple((item.example_id, item.checksum_sha256) for item in validation_examples)
+    )
+    sampling_metadata = (
+        tuple(
+            SamplingMetadataRecord(
+                example_id=item.example_id,
+                task_name=item.task_name,
+                classification_label=item.classification_label,
+                augmentation=item.augmentation,
+            )
+            for item in train_examples
+        )
+        if sampling_strategy == "task_class_balanced"
+        else None
+    )
+    targeted_binding = (
+        bind_targeted_sampling(
+            candidate_id=candidate_id,
+            training_config_sha256=canonical_sha256(
+                training.model_dump(mode="json", round_trip=True)
+            ),
+            train_inventory_sha256=train_inventory_sha256,
+            train_tokenized_sha256=tokenized_inventory_sha256(tokenized_train),
+            sampling_metadata_inventory_sha256=sampling_metadata_inventory_sha256(
+                sampling_metadata
+            ),
+        )
+        if sampling_metadata is not None
+        else None
+    )
     state_root = context.attempt_directory / "training-state" / candidate_id
     state_root.mkdir(parents=True, mode=0o750)
     if state_root.is_symlink() or not state_root.is_dir():
@@ -2747,6 +3160,7 @@ def _run_training(
         candidate_id=candidate_id,
         destination_root=state_root,
         state_upper_bound_bytes=state_upper_bound,
+        targeted_binding=targeted_binding,
     )
     existing_state_count = 0 if resume_state is None else 1
     guard.enforce_projected_write(
@@ -2770,12 +3184,8 @@ def _run_training(
         tokenizer_manifest=inputs.tokenizer.manifest,
         train_examples=tokenized_train,
         validation_examples=tokenized_validation,
-        train_inventory_sha256=canonical_sha256(
-            tuple((item.example_id, item.checksum_sha256) for item in train_examples)
-        ),
-        validation_inventory_sha256=canonical_sha256(
-            tuple((item.example_id, item.checksum_sha256) for item in validation_examples)
-        ),
+        train_inventory_sha256=train_inventory_sha256,
+        validation_inventory_sha256=validation_inventory_sha256,
         output_directory=checkpoint_directory,
         durable_state_root=state_root,
         source_commit=context.source_commit,
@@ -2783,6 +3193,7 @@ def _run_training(
         evaluation_callback=evaluation_callback,
         progress_callback=_training_progress_callback(context, candidate_id),
         stop_requested=stop_requested,
+        sampling_metadata=sampling_metadata,
     )
     result_path = context.attempt_directory / f"training-{candidate_id}.json"
     _write_contract(result_path, cast(ContractModel, outcome))
@@ -2792,6 +3203,16 @@ def _run_training(
         raise TypeError("training returned an unsupported outcome contract")
     artifacts = (
         _artifact_reference(result_path, run_directory=context.run_directory),
+        *(
+            (
+                _artifact_reference(
+                    state_root / TARGETED_SAMPLING_BINDING_FILENAME,
+                    run_directory=context.run_directory,
+                ),
+            )
+            if targeted_binding is not None
+            else ()
+        ),
         *_directory_artifacts(
             checkpoint_directory,
             run_directory=context.run_directory,
@@ -2801,10 +3222,25 @@ def _run_training(
 
 
 def _load_training_result(attempt: Path, candidate_id: str) -> CompactTrainingResult:
-    return _read_contract(
+    result = _read_contract(
         attempt / f"training-{candidate_id}.json",
         CompactTrainingResult,
     )
+    binding_path = attempt / "training-state" / candidate_id / TARGETED_SAMPLING_BINDING_FILENAME
+    if result.sampling_strategy == "task_class_balanced":
+        binding = load_targeted_sampling_binding(binding_path.parent)
+        if (
+            binding.candidate_id != result.candidate_id
+            or binding.training_config_sha256 != result.training_config_sha256
+            or binding.train_inventory_sha256 != result.train_inventory_sha256
+            or binding.train_tokenized_sha256 != result.train_tokenized_sha256
+        ):
+            raise PipelineExecutionError(
+                "targeted sampling binding differs from the completed training result"
+            )
+    elif binding_path.exists() or binding_path.is_symlink():
+        raise PipelineExecutionError("historical training result has a targeted sampling binding")
+    return result
 
 
 def _load_candidate_checkpoint(
@@ -3077,6 +3513,7 @@ def _evaluate_candidate_view(
     checkpoint_manifest: CheckpointManifest,
     device: torch.device,
     stem: str,
+    confidence_transform: Callable[[float], float] | None = None,
 ) -> tuple[
     SemanticEvaluationReport,
     RemediationBaselineReport,
@@ -3158,6 +3595,7 @@ def _evaluate_candidate_view(
         predictions=predictions,
         baseline_report=baseline,
         artifacts=binding,
+        confidence_transform=confidence_transform,
     )
     evaluation_artifact = _contract_artifact(
         context,
@@ -3220,6 +3658,7 @@ class _PipelineRuntime:
 
     def preflight(self, context: StageContext) -> StageOutcome:
         runner_commit = self._start(context)
+        verify_v02_prefix_reuse(self.project_root, self.config)
         draft = ExecutionPreflightReport.model_construct(
             runner_source_commit=runner_commit,
             runner_worktree_clean=True,
@@ -3248,6 +3687,10 @@ class _PipelineRuntime:
 
     def v02_inventory_and_caps(self, context: StageContext) -> StageOutcome:
         self._start(context)
+        if self.config.reuse_v02_prefix is not None:
+            return self._finish(
+                context, _v02_reuse_outcome(context, self.config, "v02_inventory_and_caps")
+            )
         dataset = build_safe_development_dataset(
             self.inputs.v02_dataset_config,
             source_commit=self.inputs.frozen_data_source_commit,
@@ -3284,6 +3727,8 @@ class _PipelineRuntime:
 
     def v02_smoke(self, context: StageContext) -> StageOutcome:
         self._start(context)
+        if self.config.reuse_v02_prefix is not None:
+            return self._finish(context, _v02_reuse_outcome(context, self.config, "v02_smoke"))
         dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
         train, validation = _smoke_examples(dataset)
         result, artifacts = _run_training(
@@ -3321,6 +3766,10 @@ class _PipelineRuntime:
 
     def v02_development_training(self, context: StageContext) -> StageOutcome:
         self._start(context)
+        if self.config.reuse_v02_prefix is not None:
+            return self._finish(
+                context, _v02_reuse_outcome(context, self.config, "v02_development_training")
+            )
         dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
         train = tuple(item for item in dataset.examples if item.view is RemediationView.IID_TRAIN)
         validation = tuple(
@@ -3369,6 +3818,10 @@ class _PipelineRuntime:
 
     def v02_development_gate(self, context: StageContext) -> StageOutcome:
         self._start(context)
+        if self.config.reuse_v02_prefix is not None:
+            return self._finish(
+                context, _v02_reuse_outcome(context, self.config, "v02_development_gate")
+            )
         dataset = _load_stage_dataset(context, self.config, "v02_inventory_and_caps", "dataset-v02")
         training_attempt = _upstream_attempt(context, self.config, "v02_development_training")
         result = _load_training_result(training_attempt, "v02-development")
@@ -3516,6 +3969,12 @@ class _PipelineRuntime:
             deduplicated_cap=deduplicated_cap,
         )
         selection = build_semantic_selection_manifest(dataset, self.inputs.v03)
+        calibration_selection = (
+            build_calibration_selection_manifest(dataset, self.inputs.v03, selection)
+            if isinstance(self.inputs.v03, V03Config)
+            and self.inputs.v03.targeted_policy is not None
+            else None
+        )
         artifacts = (
             *_directory_artifacts(dataset_directory, run_directory=context.run_directory),
             _contract_artifact(context, "v03-development-audit.json", audit),
@@ -3536,6 +3995,17 @@ class _PipelineRuntime:
                 cap_compatibility,
             ),
             _contract_artifact(context, "v03-semantic-selection.json", selection),
+            *(
+                (
+                    _contract_artifact(
+                        context,
+                        "v03-calibration-selection.json",
+                        calibration_selection,
+                    ),
+                )
+                if calibration_selection is not None
+                else ()
+            ),
         )
         return self._finish(
             context,
@@ -3551,6 +4021,17 @@ class _PipelineRuntime:
                         name="semantic_selection_examples",
                         value=float(selection.selected_example_count),
                         unit="examples",
+                    ),
+                    *(
+                        (
+                            StageMetric(
+                                name="calibration_selection_examples",
+                                value=float(calibration_selection.selected_example_count),
+                                unit="examples",
+                            ),
+                        )
+                        if calibration_selection is not None
+                        else ()
                     ),
                     StageMetric(
                         name="deduplicated_exact_prompt_rows",
@@ -3745,32 +4226,125 @@ class _PipelineRuntime:
             selected_result,
             self.inputs.tokenizer,
         )
-        _full_evaluation, _full_baseline, _full_predictions, full_artifacts = (
-            _evaluate_candidate_view(
+        gate_examples = full_iid_validation
+        calibration_report = None
+        if isinstance(self.inputs.v03, V03Config) and self.inputs.v03.targeted_policy is not None:
+            calibration_manifest = _read_contract(
+                audit_attempt / "v03-calibration-selection.json", CalibrationSelectionManifest
+            )
+            calibration_examples = resolve_calibration_selection_examples(
+                dataset, self.inputs.v03, selection, calibration_manifest
+            )
+            calibration_predictions = _guarded_decode_examples(
+                context,
+                guard=self.guard,
+                model=selected_model,
+                tokenizer=self.inputs.tokenizer,
+                examples=calibration_examples,
+                generation_caps=self.inputs.generation_caps,
+                device=selected_device,
+                progress_message="v0.3 calibration decoding in progress.",
+            )
+            calibration_prediction_manifest, calibration_prediction_artifacts = _write_predictions(
+                context,
+                stem="v03-calibration-predictions",
+                view=RemediationView.IID_VALIDATION,
+                examples=calibration_examples,
+                predictions=calibration_predictions,
+            )
+            artifacts.extend(calibration_prediction_artifacts)
+            observations = tuple(
+                CalibrationObservation(
+                    example_id=example.example_id,
+                    raw_confidence=float(
+                        prediction.constrained.selected_token_geometric_mean_probability
+                    ),
+                    exact_match=prediction.constrained.canonical_target_json
+                    == example.canonical_target_json,
+                )
+                for example, prediction in zip(
+                    calibration_examples, calibration_predictions, strict=True
+                )
+            )
+            calibration_report = fit_temperature(
+                observations,
+                calibration_selection_manifest_sha256=calibration_manifest.checksum_sha256,
+                calibration_prediction_manifest_sha256=(
+                    calibration_prediction_manifest.checksum_sha256
+                ),
+                calibration_predictions_sha256=calibration_prediction_manifest.predictions_sha256,
+                selected_checkpoint_manifest_sha256=selected_manifest.checksum_sha256,
+            )
+            artifacts.append(
+                _contract_artifact(context, "v03-temperature-calibration.json", calibration_report)
+            )
+            excluded = {item.example_id for item in (*selected_examples, *calibration_examples)}
+            gate_examples = tuple(
+                item for item in full_iid_validation if item.example_id not in excluded
+            )
+            if len(gate_examples) != 427:
+                raise PipelineExecutionError("targeted v0.3 gate partition is not 48+56+427")
+        full_artifacts: tuple[ArtifactReference, ...]
+        if calibration_report is not None:
+            raw_evaluation, raw_baseline, raw_predictions, raw_artifacts = _evaluate_candidate_view(
                 context,
                 guard=self.guard,
                 inputs=self.inputs,
                 config_sha256_value=config_sha256(self.inputs.v03),
                 dataset=dataset,
                 train_examples=train_examples,
-                evaluation_examples=full_iid_validation,
+                evaluation_examples=gate_examples,
                 view=RemediationView.IID_VALIDATION,
                 model=selected_model,
                 checkpoint_manifest=selected_manifest,
                 device=selected_device,
-                stem="v03-selected-full-iid",
+                stem="v03-selected-gate-iid-raw",
             )
-        )
+            artifacts.extend(raw_artifacts)
+            full_evaluation = evaluate_semantic_predictions(
+                view=RemediationView.IID_VALIDATION,
+                examples=gate_examples,
+                predictions=raw_predictions,
+                baseline_report=raw_baseline,
+                artifacts=raw_evaluation.view_metrics.artifacts,
+                confidence_transform=lambda value: apply_temperature(
+                    value, calibration_report.selected_temperature
+                ),
+            )
+            full_artifacts = (
+                _contract_artifact(
+                    context,
+                    "v03-selected-gate-iid-semantic-evaluation.json",
+                    full_evaluation,
+                ),
+            )
+        else:
+            full_evaluation, _full_baseline, _full_predictions, full_artifacts = (
+                _evaluate_candidate_view(
+                    context,
+                    guard=self.guard,
+                    inputs=self.inputs,
+                    config_sha256_value=config_sha256(self.inputs.v03),
+                    dataset=dataset,
+                    train_examples=train_examples,
+                    evaluation_examples=gate_examples,
+                    view=RemediationView.IID_VALIDATION,
+                    model=selected_model,
+                    checkpoint_manifest=selected_manifest,
+                    device=selected_device,
+                    stem="v03-selected-full-iid",
+                )
+            )
         artifacts.extend(full_artifacts)
         return self._finish(
             context,
             _stage_outcome(
-                "v0.3 selected on the fixed subset, then evaluated the winner on full IID.",
+                "v0.3 selected raw, calibrated on a disjoint subset, then gated on IID remainder.",
                 artifacts=tuple(artifacts),
                 metrics=(
                     StageMetric(
                         name="full_iid_validation_examples",
-                        value=float(len(full_iid_validation)),
+                        value=float(len(gate_examples)),
                         unit="examples",
                     ),
                     StageMetric(
@@ -3932,18 +4506,86 @@ class _PipelineRuntime:
             != selection.selected_checkpoint_manifest_sha256
         ):
             raise PipelineExecutionError("v0.3 candidate ranking changed during gate verification")
+        targeted = (
+            isinstance(self.inputs.v03, V03Config) and self.inputs.v03.targeted_policy is not None
+        )
+        calibration: TemperatureCalibrationReport | None = None
+        calibration_selection: CalibrationSelectionManifest | None = None
+        calibration_prediction_manifest: PredictionArtifactManifest | None = None
+        calibration_predictions: tuple[DualPathCompactPrediction, ...] | None = None
+        calibration_examples: tuple[RemediationExample, ...] = ()
+        gate_examples = tuple(
+            item for item in iid_dataset.examples if item.view is RemediationView.IID_VALIDATION
+        )
+        if targeted:
+            calibration = _read_contract(
+                evaluation_attempt / "v03-temperature-calibration.json",
+                TemperatureCalibrationReport,
+            )
+            calibration_selection = _read_contract(
+                audit_attempt / "v03-calibration-selection.json",
+                CalibrationSelectionManifest,
+            )
+            calibration_examples = resolve_calibration_selection_examples(
+                iid_dataset,
+                self.inputs.v03,
+                frozen_selection,
+                calibration_selection,
+            )
+            calibration_prediction_manifest, calibration_predictions = _read_predictions(
+                manifest_path=evaluation_attempt / "v03-calibration-predictions-manifest.json",
+                predictions_path=evaluation_attempt / "v03-calibration-predictions.jsonl",
+                view=RemediationView.IID_VALIDATION,
+                examples=calibration_examples,
+            )
+            if (
+                calibration.observation_count != 56
+                or calibration.calibration_selection_manifest_sha256
+                != calibration_selection.checksum_sha256
+                or calibration.calibration_prediction_manifest_sha256
+                != calibration_prediction_manifest.checksum_sha256
+                or calibration.calibration_predictions_sha256
+                != calibration_prediction_manifest.predictions_sha256
+                or calibration.selected_checkpoint_manifest_sha256
+                != selection.selected_checkpoint_manifest_sha256
+            ):
+                raise PipelineExecutionError(
+                    "temperature calibration binding differs from its immutable evidence"
+                )
+            excluded = {item.example_id for item in (*selected_examples, *calibration_examples)}
+            gate_examples = tuple(
+                item
+                for item in iid_dataset.examples
+                if item.view is RemediationView.IID_VALIDATION and item.example_id not in excluded
+            )
+            if len(gate_examples) != 427:
+                raise PipelineExecutionError("targeted v0.3 gate partition is not 48+56+427")
         evaluation = _read_contract(
-            evaluation_attempt / "v03-selected-full-iid-semantic-evaluation.json",
+            evaluation_attempt
+            / (
+                "v03-selected-gate-iid-semantic-evaluation.json"
+                if targeted
+                else "v03-selected-full-iid-semantic-evaluation.json"
+            ),
             SemanticEvaluationReport,
         )
         full_artifacts = evaluation.view_metrics.artifacts
         if (
             evaluation.evaluation_view is not RemediationView.IID_VALIDATION
             or evaluation.view_metrics.view is not DevelopmentView.IID_VALIDATION
-            or evaluation.example_count != full_iid_validation_count
-            or evaluation.view_metrics.sample_count != full_iid_validation_count
+            or evaluation.example_count != (427 if targeted else full_iid_validation_count)
+            or evaluation.view_metrics.sample_count
+            != (427 if targeted else full_iid_validation_count)
             or evaluation.view_metrics.artifacts.dataset_manifest_sha256
-            != iid_dataset.manifest.checksum_sha256
+            != (
+                _subset_dataset(
+                    iid_dataset,
+                    (*train_examples, *gate_examples),
+                    dataset_version=iid_dataset.manifest.dataset_version,
+                ).manifest.checksum_sha256
+                if targeted
+                else iid_dataset.manifest.checksum_sha256
+            )
             or full_artifacts.source_commit != context.source_commit
             or full_artifacts.config_sha256 != expected_config_sha256
             or full_artifacts.tokenizer_manifest_sha256
@@ -3956,14 +4598,85 @@ class _PipelineRuntime:
             raise PipelineExecutionError(
                 "v0.3 full-IID evaluation differs from the selected checkpoint"
             )
-        acceptance = evaluate_v03_acceptance(evaluation.view_metrics)
+        raw_evaluation: SemanticEvaluationReport | None = None
+        targeted_acceptance: V03AcceptanceResult | None = None
+        targeted_binding: TargetedV03GateBinding | None = None
+        if targeted:
+            if (
+                calibration is None
+                or calibration_selection is None
+                or calibration_prediction_manifest is None
+                or calibration_predictions is None
+            ):
+                raise PipelineExecutionError("targeted calibration evidence disappeared")
+            raw_evaluation = _read_contract(
+                evaluation_attempt / "v03-selected-gate-iid-raw-semantic-evaluation.json",
+                SemanticEvaluationReport,
+            )
+            raw_baseline = _read_contract(
+                evaluation_attempt / "v03-selected-gate-iid-raw-baselines.json",
+                RemediationBaselineReport,
+            )
+            raw_prediction_manifest, raw_predictions = _read_predictions(
+                manifest_path=(
+                    evaluation_attempt / "v03-selected-gate-iid-raw-predictions-manifest.json"
+                ),
+                predictions_path=(
+                    evaluation_attempt / "v03-selected-gate-iid-raw-predictions.jsonl"
+                ),
+                view=RemediationView.IID_VALIDATION,
+                examples=gate_examples,
+            )
+            gate_dataset = _subset_dataset(
+                iid_dataset,
+                (*train_examples, *gate_examples),
+                dataset_version=iid_dataset.manifest.dataset_version,
+            )
+            reconstructed_binding = DevelopmentArtifactBinding(
+                source_commit=context.source_commit,
+                config_sha256=expected_config_sha256,
+                dataset_manifest_sha256=gate_dataset.manifest.checksum_sha256,
+                tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
+                output_contract_sha256=self.inputs.compact_contract_sha256,
+                checkpoint_sha256=selection.selected_checkpoint_manifest_sha256,
+                prediction_artifact_sha256=raw_prediction_manifest.predictions_sha256,
+                comparator_artifact_sha256=raw_baseline.checksum_sha256,
+            )
+            targeted_acceptance, targeted_binding = _reconstruct_targeted_v03_gate(
+                selection=selection,
+                calibration_selection=calibration_selection,
+                calibration=calibration,
+                calibration_examples=calibration_examples,
+                calibration_prediction_manifest=calibration_prediction_manifest,
+                calibration_predictions=calibration_predictions,
+                gate_examples=gate_examples,
+                raw_prediction_manifest=raw_prediction_manifest,
+                raw_predictions=raw_predictions,
+                raw_baseline=raw_baseline,
+                expected_artifacts=reconstructed_binding,
+                saved_raw_evaluation=raw_evaluation,
+                saved_calibrated_evaluation=evaluation,
+            )
+        acceptance = (
+            targeted_acceptance
+            if targeted_acceptance is not None
+            else evaluate_v03_acceptance(evaluation.view_metrics)
+        )
         artifact = _contract_artifact(context, "v03-acceptance.json", acceptance)
+        gate_artifacts: tuple[ArtifactReference, ...] = (artifact,)
+        if targeted:
+            if targeted_binding is None:
+                raise PipelineExecutionError("targeted calibration gate evidence disappeared")
+            gate_artifacts = (
+                artifact,
+                _contract_artifact(context, "v03-targeted-gate-binding.json", targeted_binding),
+            )
         return self._finish(
             context,
             _stage_outcome(
                 "v0.3 IID semantic acceptance gate evaluated with named preregistered checks.",
                 advancement_allowed=bool(acceptance.advancement_allowed),
-                artifacts=(artifact,),
+                artifacts=gate_artifacts,
             ),
         )
 

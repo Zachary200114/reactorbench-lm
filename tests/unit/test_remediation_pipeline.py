@@ -36,6 +36,7 @@ from reactorbench.remediation.config import (
     RemediationTraining,
     RemediationView,
     config_sha256,
+    load_pipeline_config,
 )
 from reactorbench.remediation.data import (
     FrozenV03IIDMaterial,
@@ -43,7 +44,11 @@ from reactorbench.remediation.data import (
     SafeDevelopmentDataset,
     TaskScopedStructuredFingerprint,
 )
-from reactorbench.remediation.decoding import DualPathCompactPrediction
+from reactorbench.remediation.decoding import (
+    CompactPathPrediction,
+    DecodePath,
+    DualPathCompactPrediction,
+)
 from reactorbench.remediation.inventory import (
     CompactInventoryReport,
     CounterfactualCapExtensionReport,
@@ -92,6 +97,24 @@ HASH_B = "b" * 64
 HASH_C = "c" * 64
 HASH_D = "d" * 64
 HASH_E = "e" * 64
+
+
+def test_targeted_v02_prefix_reuse_reopens_checksum_bound_evidence() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    config = load_pipeline_config(
+        project_root / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
+    )
+    evidence = pipeline.verify_v02_prefix_reuse(project_root, config)
+
+    assert len(evidence) == 21
+    assert len(evidence) == len(set(evidence))
+    assert all(path.is_file() and not path.is_symlink() for path in evidence)
+
+    assert config.reuse_v02_prefix is not None
+    bad_policy = config.reuse_v02_prefix.model_copy(update={"source_run_manifest_sha256": "0" * 64})
+    bad_config = config.model_copy(update={"reuse_v02_prefix": bad_policy})
+    with pytest.raises(pipeline.PipelineExecutionError, match="provenance"):
+        pipeline.verify_v02_prefix_reuse(project_root, bad_config)
 
 
 def _config(run_name: str = "pipeline-test") -> PipelineConfig:
@@ -1463,6 +1486,259 @@ def test_prediction_writer_uses_the_shared_canonical_byte_contract(tmp_path: Pat
     assert (attempt / "canonical-predictions.jsonl").read_bytes() == expected
     assert manifest.predictions_size_bytes == len(expected)
     assert manifest.predictions_sha256 == prediction_artifact_byte_sha256(ordered)
+
+
+def test_prediction_reader_reconstructs_exact_artifact_and_rejects_byte_drift(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "run"
+    attempt = run / "attempt"
+    attempt.mkdir(parents=True)
+    example = RemediationExample.model_construct(
+        example_id="example:calibration",
+        view=RemediationView.IID_VALIDATION,
+        task_name=TaskName.FAULT_FAMILY,
+        checksum_sha256=HASH_A,
+    )
+
+    def path_result(path: DecodePath) -> CompactPathPrediction:
+        values = {
+            "path": path,
+            "task_name": TaskName.FAULT_FAMILY,
+            "generation_cap": 16,
+            "prompt_token_count": 10,
+            "prompt_tokens_retained": 10,
+            "prompt_truncated": False,
+            "generated_token_ids": (4,),
+            "generated_token_count": 1,
+            "selected_token_count": 2,
+            "generated_text": "invalid",
+            "eos_emitted": True,
+            "generation_cap_exhausted": False,
+            "compact_parse_success": False,
+            "schema_valid": False,
+            "canonical_target_json": None,
+            "selected_token_geometric_mean_probability": 0.5,
+            "elapsed_seconds": 0.01,
+            "used_cache": True,
+        }
+        draft = CompactPathPrediction.model_construct(**values, checksum_sha256="0" * 64)
+        return CompactPathPrediction(
+            **values,
+            checksum_sha256=canonical_sha256(
+                draft.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+            ),
+        )
+
+    dual_values = {
+        "example_id": example.example_id,
+        "example_checksum_sha256": example.checksum_sha256,
+        "task_name": example.task_name,
+        "model_config_sha256": HASH_B,
+        "tokenizer_manifest_sha256": HASH_C,
+        "generation_caps_sha256": HASH_D,
+        "unconstrained": path_result(DecodePath.UNCONSTRAINED),
+        "constrained": path_result(DecodePath.CONSTRAINED),
+    }
+    dual_draft = DualPathCompactPrediction.model_construct(**dual_values, checksum_sha256="0" * 64)
+    prediction = DualPathCompactPrediction(
+        **dual_values,
+        checksum_sha256=canonical_sha256(
+            dual_draft.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        ),
+    )
+    context = cast(
+        StageContext,
+        SimpleNamespace(run_directory=run, attempt_directory=attempt),
+    )
+    pipeline._write_predictions(
+        context,
+        stem="calibration-predictions",
+        view=RemediationView.IID_VALIDATION,
+        examples=(example,),
+        predictions=(prediction,),
+    )
+    manifest, reopened = pipeline._read_predictions(
+        manifest_path=attempt / "calibration-predictions-manifest.json",
+        predictions_path=attempt / "calibration-predictions.jsonl",
+        view=RemediationView.IID_VALIDATION,
+        examples=(example,),
+    )
+    assert reopened == (prediction,)
+    assert manifest.predictions_sha256 == prediction_artifact_byte_sha256(reopened)
+
+    predictions_path = attempt / "calibration-predictions.jsonl"
+    predictions_path.write_bytes(predictions_path.read_bytes().replace(b"invalid", b"changed"))
+    with pytest.raises(pipeline.PipelineExecutionError, match="byte checksum"):
+        pipeline._read_predictions(
+            manifest_path=attempt / "calibration-predictions-manifest.json",
+            predictions_path=predictions_path,
+            view=RemediationView.IID_VALIDATION,
+            examples=(example,),
+        )
+
+
+def test_targeted_gate_reconstructs_acceptance_and_rejects_every_derived_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    score = pipeline.CandidateScore(
+        candidate_id="targeted",
+        checkpoint_manifest_sha256=HASH_A,
+        semantic_composite=0.75,
+        selected_validation_nll=0.2,
+        selected_step=100,
+        evaluation_report_sha256=HASH_B,
+    )
+    selection_draft = pipeline.CandidateSelectionReport.model_construct(
+        selection_manifest_sha256=HASH_C,
+        candidates=(score,),
+        selected_candidate_id="targeted",
+        selected_checkpoint_manifest_sha256=HASH_A,
+        checksum_sha256="0" * 64,
+    )
+    selection = pipeline._bound_model(selection_draft, pipeline.CandidateSelectionReport)
+    calibration_selection = SimpleNamespace(checksum_sha256=HASH_B)
+    calibration_manifest = SimpleNamespace(
+        checksum_sha256=HASH_C,
+        predictions_sha256=HASH_D,
+    )
+    calibration_examples = tuple(
+        SimpleNamespace(
+            example_id=f"calibration-{index:03d}",
+            canonical_target_json="target" if index % 2 else "other",
+        )
+        for index in range(56)
+    )
+    calibration_predictions = tuple(
+        SimpleNamespace(
+            constrained=SimpleNamespace(
+                selected_token_geometric_mean_probability=0.6,
+                canonical_target_json="target",
+            )
+        )
+        for _index in range(56)
+    )
+    observations = tuple(
+        pipeline.CalibrationObservation(
+            example_id=example.example_id,
+            raw_confidence=0.6,
+            exact_match=prediction.constrained.canonical_target_json
+            == example.canonical_target_json,
+        )
+        for example, prediction in zip(calibration_examples, calibration_predictions, strict=True)
+    )
+    calibration = pipeline.fit_temperature(
+        observations,
+        calibration_selection_manifest_sha256=HASH_B,
+        calibration_prediction_manifest_sha256=HASH_C,
+        calibration_predictions_sha256=HASH_D,
+        selected_checkpoint_manifest_sha256=HASH_A,
+    )
+    gate_examples = (SimpleNamespace(example_id="gate"),)
+    raw_manifest = SimpleNamespace(predictions_sha256=HASH_E)
+    raw_predictions = (SimpleNamespace(marker="original"),)
+    baseline = SimpleNamespace(checksum_sha256=HASH_B)
+    artifacts = DevelopmentArtifactBinding(
+        source_commit=SOURCE_COMMIT,
+        config_sha256=HASH_A,
+        dataset_manifest_sha256=HASH_B,
+        tokenizer_manifest_sha256=HASH_C,
+        output_contract_sha256=HASH_D,
+        checkpoint_sha256=HASH_A,
+        prediction_artifact_sha256=HASH_E,
+        comparator_artifact_sha256=HASH_B,
+    )
+    raw_metrics = SimpleNamespace(name="raw")
+    calibrated_metrics = SimpleNamespace(name="calibrated")
+    saved_raw = SimpleNamespace(
+        predictions_sha256=HASH_E,
+        checksum_sha256=HASH_C,
+        view_metrics=raw_metrics,
+    )
+    saved_calibrated = SimpleNamespace(
+        predictions_sha256=HASH_E,
+        checksum_sha256=HASH_D,
+        view_metrics=calibrated_metrics,
+    )
+    tampered = SimpleNamespace(
+        predictions_sha256=HASH_E,
+        checksum_sha256=HASH_A,
+        view_metrics=SimpleNamespace(name="tampered"),
+    )
+
+    def evaluate(*_args: object, **kwargs: object) -> object:
+        predictions = cast(tuple[SimpleNamespace, ...], kwargs["predictions"])
+        if predictions[0].marker != "original":
+            return tampered
+        return saved_calibrated if kwargs.get("confidence_transform") is not None else saved_raw
+
+    monkeypatch.setattr(pipeline, "evaluate_semantic_predictions", evaluate)
+    monkeypatch.setattr(
+        pipeline,
+        "_semantic_reports_differ_only_in_confidence",
+        lambda *_args: True,
+    )
+    acceptance = SimpleNamespace(advancement_allowed=True, checksum_sha256=HASH_E)
+    observed_acceptance_metrics: list[object] = []
+
+    def accept(metrics: object) -> object:
+        observed_acceptance_metrics.append(metrics)
+        return acceptance
+
+    monkeypatch.setattr(pipeline, "evaluate_v03_acceptance", accept)
+
+    def reconstruct(
+        *,
+        calibration_predictions_override: tuple[object, ...] = calibration_predictions,
+        raw_predictions_override: tuple[object, ...] = raw_predictions,
+        raw_report: object = saved_raw,
+        calibrated_report: object = saved_calibrated,
+    ) -> tuple[object, pipeline.TargetedV03GateBinding]:
+        return pipeline._reconstruct_targeted_v03_gate(
+            selection=selection,
+            calibration_selection=cast(object, calibration_selection),
+            calibration=calibration,
+            calibration_examples=cast(tuple[RemediationExample, ...], calibration_examples),
+            calibration_prediction_manifest=cast(
+                pipeline.PredictionArtifactManifest, calibration_manifest
+            ),
+            calibration_predictions=cast(
+                tuple[DualPathCompactPrediction, ...], calibration_predictions_override
+            ),
+            gate_examples=cast(tuple[RemediationExample, ...], gate_examples),
+            raw_prediction_manifest=cast(pipeline.PredictionArtifactManifest, raw_manifest),
+            raw_predictions=cast(tuple[DualPathCompactPrediction, ...], raw_predictions_override),
+            raw_baseline=cast(object, baseline),
+            expected_artifacts=artifacts,
+            saved_raw_evaluation=cast(SemanticEvaluationReport, raw_report),
+            saved_calibrated_evaluation=cast(SemanticEvaluationReport, calibrated_report),
+        )
+
+    reconstructed_acceptance, binding = reconstruct()
+    assert reconstructed_acceptance is acceptance
+    assert observed_acceptance_metrics == [calibrated_metrics]
+    assert binding.raw_prediction_artifact_sha256 == HASH_E
+    assert binding.calibrated_prediction_artifact_sha256 == HASH_E
+    assert binding.outputs_bit_exact is True
+    assert binding.thresholds_unchanged is True
+
+    changed_calibration = (
+        SimpleNamespace(
+            constrained=SimpleNamespace(
+                selected_token_geometric_mean_probability=0.99,
+                canonical_target_json="target",
+            )
+        ),
+        *calibration_predictions[1:],
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="temperature calibration differs"):
+        reconstruct(calibration_predictions_override=changed_calibration)
+    with pytest.raises(pipeline.PipelineExecutionError, match="gate reports differ"):
+        reconstruct(raw_predictions_override=(SimpleNamespace(marker="changed"),))
+    with pytest.raises(pipeline.PipelineExecutionError, match="gate reports differ"):
+        reconstruct(raw_report=tampered)
+    with pytest.raises(pipeline.PipelineExecutionError, match="gate reports differ"):
+        reconstruct(calibrated_report=tampered)
 
 
 def test_v03_development_evaluation_selects_on_subset_but_gates_on_full_iid(
@@ -4164,6 +4440,93 @@ def test_resume_copy_and_retirement_failures_leave_a_successor_or_source(
     assert source.is_dir()
     assert successor.is_dir()
     assert cast(str, progress.checkpoints[0]["checkpoint"]).endswith(source.name)
+
+
+def test_targeted_resume_publishes_binding_before_state_and_recovers_after_copy_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = tmp_path / "run"
+    stage = run / "stages/07-v03_candidate_training"
+    source_root = stage / "attempt-0001/training-state/targeted"
+    source_state = source_root / "state-step-00000003"
+    source_state.mkdir(parents=True)
+    (source_state / "state.json").write_text("{}\n", encoding="ascii")
+    binding = pipeline.bind_targeted_sampling(
+        candidate_id="targeted",
+        training_config_sha256=HASH_A,
+        train_inventory_sha256=HASH_B,
+        train_tokenized_sha256=HASH_C,
+        sampling_metadata_inventory_sha256=HASH_D,
+    )
+    pipeline.ensure_targeted_sampling_binding(source_root, binding, create_if_missing=True)
+
+    def latest_state(root: Path, *, candidate_id: str) -> Path | None:
+        assert candidate_id == "targeted"
+        candidate = root / "state-step-00000003"
+        return candidate.resolve(strict=True) if candidate.is_dir() else None
+
+    guard = cast(
+        pipeline._ResourceGuard,
+        SimpleNamespace(enforce_projected_write=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(pipeline, "latest_committed_training_state", latest_state)
+    monkeypatch.setattr(
+        pipeline,
+        "retire_superseded_training_states",
+        lambda *_args, **_kwargs: 0,
+    )
+    original_copy = pipeline._copy_resume_state
+    monkeypatch.setattr(
+        pipeline,
+        "_copy_resume_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("copy crash")),
+    )
+
+    failed_attempt = stage / "attempt-0002"
+    failed_destination = failed_attempt / "training-state/targeted"
+    failed_destination.mkdir(parents=True)
+    failed_context = cast(
+        StageContext,
+        SimpleNamespace(
+            run_directory=run,
+            attempt_directory=failed_attempt,
+            progress=_FakeProgress(),
+        ),
+    )
+    with pytest.raises(OSError, match="copy crash"):
+        pipeline._prepare_resume_state(
+            failed_context,
+            guard=guard,
+            candidate_id="targeted",
+            destination_root=failed_destination,
+            state_upper_bound_bytes=1024,
+            targeted_binding=binding,
+        )
+    assert (failed_destination / pipeline.TARGETED_SAMPLING_BINDING_FILENAME).is_file()
+    assert not tuple(failed_destination.glob("state-step-*"))
+
+    monkeypatch.setattr(pipeline, "_copy_resume_state", original_copy)
+    next_attempt = stage / "attempt-0003"
+    next_destination = next_attempt / "training-state/targeted"
+    next_destination.mkdir(parents=True)
+    next_context = cast(
+        StageContext,
+        SimpleNamespace(
+            run_directory=run,
+            attempt_directory=next_attempt,
+            progress=_FakeProgress(),
+        ),
+    )
+    copied = pipeline._prepare_resume_state(
+        next_context,
+        guard=guard,
+        candidate_id="targeted",
+        destination_root=next_destination,
+        state_upper_bound_bytes=1024,
+        targeted_binding=binding,
+    )
+    assert copied == (next_destination / source_state.name).resolve(strict=True)
 
 
 def test_dataset_tokenization_decode_smoke_and_checkpoint_helpers(

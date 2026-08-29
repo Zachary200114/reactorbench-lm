@@ -3644,14 +3644,26 @@ def _process_observation_event(
     related_event_ids: tuple[str, ...],
     spec: AsterVariantSpec,
 ) -> CanonicalEvent:
+    value_after = _observed_value(observations, tick=tick, variable=variable)
+    value_before = next(
+        (
+            prior
+            for prior_tick in range(tick - 1, -1, -1)
+            if (prior := _observed_value(observations, tick=prior_tick, variable=variable))
+            != value_after
+        ),
+        None,
+    )
+    if value_before is None:
+        raise ValueError("process observation event has no distinct prior observed value")
     return _event(
         events,
         sim_time=tick,
         event_type=EventType.OBSERVATION_CHANGED,
         subject_id=_first_channel_id(variable, spec=spec),
         variable=variable,
-        value_before=_observed_value(observations, tick=tick - 1, variable=variable),
-        value_after=_observed_value(observations, tick=tick, variable=variable),
+        value_before=value_before,
+        value_after=value_after,
         observation_status=status,
         evidence_slots=evidence_slots,
         related_event_ids=related_event_ids,

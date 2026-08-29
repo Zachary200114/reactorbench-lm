@@ -33,6 +33,20 @@ class SamplingRecord(Protocol):
     def group_id(self) -> str: ...
 
 
+class SamplingMetadataRecord(NamedTuple):
+    """Non-tokenized, permitted sampling metadata for one IID-train row.
+
+    This deliberately lives beside, rather than inside, ``CompactTokenizedExample``:
+    adding semantic fields to that frozen serialization would alter the preserved
+    tokenized-inventory checksum used by the v0.2 and historical v0.3 runs.
+    """
+
+    example_id: str
+    task_name: TaskName
+    classification_label: str | None
+    augmentation: str
+
+
 class TaskBalancedSamplingError(ValueError):
     """A validated inventory cannot satisfy a sampler invariant."""
 
@@ -280,13 +294,155 @@ def task_balanced_batch[RecordT: SamplingRecord](
     return tuple(records[index] for index in indices)
 
 
+def sampling_metadata_inventory_sha256(records: tuple[SamplingMetadataRecord, ...]) -> str:
+    """Return the canonical provenance hash for the separate sampler inventory."""
+
+    validated = _validated_sampling_metadata(records)
+    digest = hashlib.sha256()
+    for row in sorted(validated, key=lambda item: item.example_id):
+        for value in (
+            row.example_id,
+            row.task_name.value,
+            row.classification_label or "",
+            row.augmentation,
+        ):
+            encoded = value.encode("utf-8")
+            digest.update(len(encoded).to_bytes(4, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _validated_sampling_metadata(
+    records: tuple[SamplingMetadataRecord, ...],
+) -> tuple[SamplingMetadataRecord, ...]:
+    if type(records) is not tuple or not records or len(records) > MAX_INVENTORY_RECORDS:
+        raise ValueError("sampling metadata must be a bounded non-empty exact tuple")
+    identifiers: set[str] = set()
+    for index, row in enumerate(records):
+        if type(row) is not SamplingMetadataRecord:
+            raise TypeError("sampling metadata must use exact SamplingMetadataRecord rows")
+        if (
+            type(row.example_id) is not str
+            or not row.example_id
+            or row.example_id != row.example_id.strip()
+            or type(row.task_name) is not TaskName
+            or type(row.augmentation) is not str
+            or not row.augmentation
+            or row.augmentation != row.augmentation.strip()
+            or (row.classification_label is not None and type(row.classification_label) is not str)
+        ):
+            raise ValueError(f"sampling metadata row {index} is invalid")
+        if row.example_id in identifiers:
+            raise ValueError("sampling metadata example IDs must be unique")
+        identifiers.add(row.example_id)
+        classification = row.task_name in {
+            TaskName.FAULT_FAMILY,
+            TaskName.NEXT_ACTION,
+            TaskName.CONTINUE_LOG,
+        }
+        if classification != (
+            row.classification_label is not None and bool(row.classification_label)
+        ):
+            raise ValueError("sampling metadata label presence differs from task contract")
+    return records
+
+
+def task_class_balanced_batch_indices[RecordT: SamplingRecord](
+    records: tuple[RecordT, ...],
+    *,
+    metadata: tuple[SamplingMetadataRecord, ...],
+    batch_size: int,
+    seed: int,
+    step: int,
+) -> tuple[int, ...]:
+    """Choose a stateless task-and-stratum-balanced batch.
+
+    Task quotas use the existing rotating allocation.  A classification task's
+    stratum is its *already supervised* exact label; other tasks use augmentation.
+    Both level rotations are hash ranked and indexed from ``step`` so a resumed run
+    produces exactly the same next batch without consuming process RNG state.
+    """
+
+    batch_size = _bounded_integer(
+        batch_size, field_name="batch_size", minimum=1, maximum=MAX_BATCH_SIZE
+    )
+    seed = _bounded_integer(seed, field_name="seed", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    step = _bounded_integer(step, field_name="step", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    by_task = _validated_inventory(records)
+    rows = _validated_sampling_metadata(metadata)
+    position_by_id = {
+        getattr(record, "example_id", None): index for index, record in enumerate(records)
+    }
+    if None in position_by_id or len(position_by_id) != len(records):
+        raise ValueError("sampling records must expose unique example_id values")
+    if set(position_by_id) != {row.example_id for row in rows}:
+        raise ValueError("sampling metadata does not exactly cover the tokenized inventory")
+    metadata_by_position: dict[int, SamplingMetadataRecord] = {}
+    for row in rows:
+        position = position_by_id[row.example_id]
+        if records[position].task_name is not row.task_name:
+            raise ValueError("sampling metadata task differs from tokenized record")
+        metadata_by_position[position] = row
+    tasks = tuple(task for task in TaskName if task in by_task)
+    quotas = _task_quotas(tasks, batch_size=batch_size, seed=seed, step=step)
+    selected: list[tuple[int, TaskName, _ValidatedRecord]] = []
+    for task in tasks:
+        strata: dict[str, list[_ValidatedRecord]] = defaultdict(list)
+        for record in by_task[task]:
+            row = metadata_by_position[record.position]
+            stratum = (
+                row.classification_label
+                if row.classification_label is not None
+                else row.augmentation
+            )
+            strata[stratum].append(record)
+        ordered_strata = tuple(
+            sorted(
+                strata, key=lambda value: (_rank("stratum-order", seed, task.value, value), value)
+            )
+        )
+        if not ordered_strata:
+            raise TaskBalancedSamplingError("task-class sampler has an empty task stratum")
+        # Rotating by global step ensures each task's strata get the remainder fairly.
+        for draw in range(quotas[task]):
+            stratum = ordered_strata[(step + draw) % len(ordered_strata)]
+            ordered_rows = _ordered_task_records(tuple(strata[stratum]), seed=seed, task_name=task)
+            cursor = (step * max(1, quotas[task]) + draw) // len(ordered_strata)
+            selected.append((draw, task, ordered_rows[cursor % len(ordered_rows)]))
+    selected.sort(
+        key=lambda item: (
+            _rank(
+                "task-class-batch",
+                seed,
+                str(step),
+                item[1].value,
+                str(item[0]),
+                item[2].group_id,
+                str(item[2].position),
+            ),
+            item[1].value,
+            item[0],
+            item[2].position,
+        )
+    )
+    indices = tuple(item[2].position for item in selected)
+    if len(indices) != batch_size:
+        raise TaskBalancedSamplingError(
+            "task-class sampler violated its exact batch-size invariant"
+        )
+    return indices
+
+
 __all__ = [
     "MAX_BATCH_SIZE",
     "MAX_GROUP_ID_UTF8_BYTES",
     "MAX_INVENTORY_RECORDS",
     "MAX_SAMPLING_INTEGER",
+    "SamplingMetadataRecord",
     "SamplingRecord",
     "TaskBalancedSamplingError",
+    "sampling_metadata_inventory_sha256",
     "task_balanced_batch",
     "task_balanced_batch_indices",
+    "task_class_balanced_batch_indices",
 ]

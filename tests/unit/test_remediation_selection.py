@@ -21,6 +21,7 @@ from reactorbench.remediation.data import (
     SafeDevelopmentManifest,
 )
 from reactorbench.remediation.selection import (
+    CALIBRATION_SELECTION_EXAMPLE_COUNT,
     CONTEXT_STRATA,
     EXAMPLES_PER_TASK,
     EXAMPLES_PER_TASK_STRATUM,
@@ -28,8 +29,10 @@ from reactorbench.remediation.selection import (
     SELECTION_EXAMPLE_COUNT,
     ContextSizeStratum,
     SemanticSelectionManifest,
+    build_calibration_selection_manifest,
     build_semantic_selection_manifest,
     load_semantic_selection_manifest,
+    resolve_calibration_selection_examples,
     resolve_semantic_selection_examples,
     write_semantic_selection_manifest,
 )
@@ -38,10 +41,15 @@ from reactorbench.schemas.enums import SplitName, TaskName
 
 ROOT = Path(__file__).resolve().parents[2]
 V03_CONFIG_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.0.toml"
+TARGETED_V03_CONFIG_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.1-targeted.toml"
 
 
 def _config() -> V03Config:
     return load_v03_config(V03_CONFIG_PATH)
+
+
+def _targeted_config() -> V03Config:
+    return load_v03_config(TARGETED_V03_CONFIG_PATH)
 
 
 def _fact_refs(count: int) -> tuple[str, ...]:
@@ -236,6 +244,66 @@ def test_build_freezes_exact_task_and_context_balanced_subset() -> None:
         entry.example_id for entry in first.entries
     )
     assert all(example.view is RemediationView.IID_VALIDATION for example in resolved)
+
+
+def test_targeted_calibration_freeze_is_disjoint_balanced_and_exhaustive() -> None:
+    dataset = _dataset(per_task=20)
+    config = _targeted_config()
+    semantic = build_semantic_selection_manifest(dataset, config)
+    calibration = build_calibration_selection_manifest(dataset, config, semantic)
+    replay = build_calibration_selection_manifest(dataset, config, semantic)
+
+    assert replay == calibration
+    assert calibration.selected_example_count == CALIBRATION_SELECTION_EXAMPLE_COUNT == 56
+    semantic_ids = {item.example_id for item in semantic.entries}
+    calibration_ids = {item.example_id for item in calibration.entries}
+    iid_ids = {
+        item.example_id for item in dataset.examples if item.view is RemediationView.IID_VALIDATION
+    }
+    assert not semantic_ids & calibration_ids
+    assert len(semantic_ids | calibration_ids | (iid_ids - semantic_ids - calibration_ids)) == 120
+    assert Counter(item.task_name for item in calibration.entries) == {
+        task: (6 if task is TaskName.COUNTERFACTUAL_COMPARE else 10) for task in TaskName
+    }
+    assert Counter((item.task_name, item.context_stratum) for item in calibration.entries) == {
+        (task, stratum): (3 if task is TaskName.COUNTERFACTUAL_COMPARE else 5)
+        for task in TaskName
+        for stratum in CONTEXT_STRATA
+    }
+    resolved = resolve_calibration_selection_examples(dataset, config, semantic, calibration)
+    assert tuple(item.example_id for item in resolved) == tuple(
+        item.example_id for item in calibration.entries
+    )
+
+
+def test_targeted_calibration_selection_does_not_rank_by_hidden_target() -> None:
+    config = _targeted_config()
+    first_dataset = _dataset(per_task=20, hidden_variant="hidden-a")
+    second_dataset = _dataset(per_task=20, hidden_variant="hidden-b")
+    first_semantic = build_semantic_selection_manifest(first_dataset, config)
+    second_semantic = build_semantic_selection_manifest(second_dataset, config)
+    first = build_calibration_selection_manifest(first_dataset, config, first_semantic)
+    second = build_calibration_selection_manifest(second_dataset, config, second_semantic)
+
+    assert tuple(
+        (
+            item.task_name,
+            item.context_stratum,
+            item.prompt_sha256,
+            item.observable_selection_key_sha256,
+        )
+        for item in first.entries
+    ) == tuple(
+        (
+            item.task_name,
+            item.context_stratum,
+            item.prompt_sha256,
+            item.observable_selection_key_sha256,
+        )
+        for item in second.entries
+    )
+    assert first.selected_inventory_sha256 != second.selected_inventory_sha256
+    assert first.checksum_sha256 != second.checksum_sha256
 
 
 @settings(max_examples=12, deadline=None)
