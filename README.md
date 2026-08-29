@@ -78,7 +78,7 @@ inference/UI gate remains blocked until a behaviorally acceptable checkpoint exi
   cap-measurement inventory, then removes 24 same-task exact-prompt duplicates with
   identical targets; only the resulting 5,835 examples are written, audited, or
   trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
-  verification passed 1,095 tests with 85.73% branch coverage; two protected
+  verification passed 1,104 tests with 85.73% branch coverage; two protected
   historical final/golden readers were deliberately excluded from this
   remediation-only verification boundary. Rerun 02 completed v0.3 development
   training/evaluation in 2h 59m 32s. Its preserved full-IID evidence passes seven of

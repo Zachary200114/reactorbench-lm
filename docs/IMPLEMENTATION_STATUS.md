@@ -1,6 +1,6 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-24 America/New_York
+Last updated: 2026-08-29 America/New_York
 
 Current phase: **Phase 6 remediation rerun 02 preserved after a checksum-contract
 failure; the canonical fix and non-overwriting rerun 03 are prepared but not run**
@@ -217,16 +217,37 @@ scientific acceptance.
 
 ## Tests and checks run
 
-- Final permitted repository gate after the counterfactual fix and rerun-02 update:
+- Final permitted repository gate after the canonical checksum fix and rerun-03
+  update:
+  - Ruff format: 190 files passed.
+  - Ruff lint: passed.
+  - Strict mypy: 155 source files passed.
+  - Pytest: 1,104 passed and 2 deliberately deselected in 555.91 seconds.
+  - Branch coverage: 85.73%, above the required 85%.
+- The two deselections are the documented historical final/golden asset readers:
+  `test_resource_api_reads_the_root_reviewed_assets_without_drift` and
+  `test_approved_golden_packet_projects_sixty_examples`. No held-out or final
+  evaluation was run.
+- Focused checksum, pipeline, CLI, local-monitor, and package-resource verification:
+  126 passed and 1 protected resource-reader test was deselected in 2.46 seconds.
+- Native Swift/AppKit type checking, property-list lint, both GUI-wrapper Bash syntax
+  checks, and Git diff whitespace checks: passed.
+- Clean-source dry run passed at source commit
+  `366fb8208a780fcc67a4de14911639a85576595f`: config checksum
+  `f0e21fb7efff69be83a10de97f66b16681d535bd468c0eecf9cef8d498fe33b9`,
+  16 frozen stages, and no run creation.
+- GUI smoke and strict JSON snapshot passed: rerun 03, stage total 16, source commit
+  `366fb820...`, Start enabled, Stop/Resume/Finder disabled, and `Not started`.
+  The rerun-03 directory remained absent.
+- Source and wheel distributions rebuilt successfully. The isolated local wheel
+  install and packaged-artifact verifier passed, including rerun 03 and the updated
+  runbook. Nothing was published.
+- Previous permitted repository gate after the counterfactual fix and rerun-02 update:
   - Ruff format: 190 files passed.
   - Ruff lint: passed.
   - Strict mypy: 155 source files passed.
   - Pytest: 1,095 passed and 2 deliberately deselected in 565.60 seconds.
   - Branch coverage: 85.73%, above the required 85%.
-- The two deselections are the documented historical final/golden asset readers:
-  test_resource_api_reads_the_root_reviewed_assets_without_drift and
-  test_approved_golden_packet_projects_sixty_examples. No held-out or final evaluation
-  was run.
 - Focused decoder, diagnostic, packaging, CLI, and GUI checks: 135 passed and 1
   protected resource-reader test was deselected in 15.20 seconds.
 - Native Swift/AppKit type checking: passed. Property-list lint: passed. The GUI
@@ -402,10 +423,14 @@ successfully.
   3e70032d1767b4bee1a0e357cbbaca3b07b96eb3
 - Rerun-02 source commit:
   cf732307d1d1f756772af7a87214ffde8e9bf8b0
-- Canonical checksum/rerun-03 implementation commit: pending local checkpoint.
-- Status handoff commit: pending local checkpoint.
-- Uncommitted work: checksum fix, rerun-03 identity, tests, README, runbook, decision
-  log, packaging inventory, and this status update.
+- Canonical checksum/rerun-03 implementation commit:
+  c551fab316a2b7d5d5ec39a9f832b4b0cd0933c9
+- Initial status handoff commit:
+  366fb8208a780fcc67a4de14911639a85576595f
+- Final verification/status handoff is the current local `HEAD`; inspect it with
+  `git rev-parse HEAD` after resuming.
+- Uncommitted work after the final handoff commit: none; verify the clean tree on
+  resume.
 - All three failed run directories are preserved; the rerun-03 directory does not
   exist.
 - No fresh-final ledger/result was created or accessed.
