@@ -47,6 +47,10 @@ percentage was measured.
 - Temporary wheel and sdist inventories matched reviewed source assets, and an
   isolated no-network wheel installation passed.
 - Swift parse and full type-check passed; every shell wrapper passed `bash -n`.
+- Clean-source pipeline dry run passed at implementation commit
+  `3c9a6507c1086ba02bb4b45c6084f4c4142a1523`: config checksum
+  `46672289436a789e21e017c822f0dc831da6ef38b308abf6d271e223d1e782a7`,
+  16 frozen stages, and no run state created.
 - Alarm policy: one 45-second looping `Sosumi` alert at application volume 1.0, with
   a 23-beep fallback and once-per-session guard. This cannot override muted or low
   macOS system output or an incorrect output device.
@@ -625,6 +629,10 @@ successfully.
   `bdc86e2f3f40d3ab64885f706ce9f3a851ab9164`.
 - Terminal failure alert implementation commit:
   `6a63bea3b63fe317368a7212a6850e03b51cb3a7`.
+- Hierarchical targeted-03 implementation and verified source commit:
+  `3c9a6507c1086ba02bb4b45c6084f4c4142a1523`.
+- The final handoff commit is the commit containing this status update; verify it with
+  `git rev-parse HEAD` before pushing or starting the run.
 - Final verification and independent re-review disposition: ship, with no required
   corrections for targeted-01 preparation.
 - Targeted-02 is preserved as a scientific `blocked` run at source commit
@@ -639,8 +647,8 @@ successfully.
 
 ## Immediate next step
 
-After verification and a local checkpoint commit, confirm the tree is clean and the
-targeted-03 directory remains absent. Push the local commits when ready, then open the
+Confirm the tree is clean and the targeted-03 directory remains absent. Push the local
+commits when ready, then open the
 local monitor and confirm it reports `Not started` and
 `phase6-remediation-v0.4.0-targeted-03`. Check the Mac's output device and system
 volume, optionally run the non-mutating readiness check, and press `Start new rerun`
