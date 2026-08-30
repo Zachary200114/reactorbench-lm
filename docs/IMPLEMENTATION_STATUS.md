@@ -2,28 +2,69 @@
 
 Last updated: 2026-08-30 America/New_York
 
-Current phase: **Phase 6 targeted-03 preserved; policy-aware gate replay certified a
-scientific block at 9 of 10 unchanged checks**
+Current phase: **Phase 6 targeted-04 fault-margin remediation implemented, verified,
+and ready for its first owner-operated run**
 
-Current objective: preserve the targeted-03 source run and its separate replay
-certificate, then design a bounded next model-quality remediation focused only on the
-remaining fault-comparator margin miss. Do not lower thresholds, resume targeted-03,
-or begin v0.4/Phase 7 from this checkpoint.
+Current objective: run the new non-overwriting targeted-04 development experiment
+through the local monitor. Do not resume or overwrite targeted-03, lower any
+threshold, open final/golden evaluation, or begin Phase 7.
 
-Checkpoint reason: targeted-03 completed all 2,500 training steps and 427 gate
-evaluations, but its original gate attempt failed an integrity check because the
-consumer used the historical checkpoint score rather than the hierarchical policy.
-The shared scoring and candidate-reconstruction path was fixed and covered for both
-policies. A non-overwriting, checksum-bound replay reused the completed evidence with
-no retraining and certified nine of ten checks. Only fault-comparator margin failed:
-`-0.0344200013`, required at least `0.02`. No final/golden access, deployment, or push
-occurred.
+Checkpoint reason: targeted-03's certified 9/10 result missed only fault-comparator
+margin (`-0.0344200013`, required at least `0.02`). Targeted-04 preserves its
+complete six-task hierarchical anchor and adds one distinct, diagnosed-label-balanced
+fault row per batch. The experiment remains random-initialized, keeps 2,500 optimizer
+updates, every validation partition, and all ten unchanged thresholds. Its code,
+configs, monitor binding, tests, and clean-source dry run pass. No targeted-04 run
+directory, training, generated data, final/golden access, deployment, or push occurred.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
 
 Exact account usage is not observable in this environment. No account-level
 percentage was measured.
+
+## Current targeted-04 checkpoint
+
+- Implementation commit:
+  `99ef3d15ab42e83a6fe60d39346fde4dc007e66b`.
+- Run identity:
+  `phase6-remediation-v0.4.0-targeted-04`.
+- Run directory: absent, as required before the first Start.
+- v0.3 config:
+  `configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml`.
+- v0.3 canonical config SHA-256:
+  `d4de7abe3fab40822a7582f767d3fc06a0d536dbf2aa1c727af0bb92939f000a`.
+- Pipeline config:
+  `configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml`.
+- Pipeline canonical config SHA-256:
+  `508c5563de0030ae225fb2bdf6dfcc8b31f37fa5162dcf6804dff263899eadfe`.
+- Preregistration:
+  `docs/model/PHASE6_TARGETED04_PLAN.md`.
+- Training contract: one 15,179,520-parameter candidate, 2,500 steps, batch size
+  seven, two distinct fault-family rows and one row for every other task per update.
+- The additional fault row uses IID-train supervised-label metadata only and rotates
+  across all diagnosed labels. It does not consume validation errors, predictions,
+  latent state, final data, or golden answers.
+- Full permitted repository gate: 1,141 passed, exactly 2 protected historical
+  readers deselected, 85.01% branch coverage against the 85% floor, 567.20 seconds.
+- Focused targeted-04/config/training/CLI/pipeline/monitor/resource verification:
+  204 passed.
+- Ruff: passed. Strict mypy: 78 source modules passed. Bash syntax: passed.
+- Native Swift/AppKit type-check: passed with a private temporary module cache, the
+  same cache-isolation pattern used by the launcher.
+- Clean-source dry run: passed at implementation commit `99ef3d1`; 16 frozen
+  stages, config checksum `508c5563...`, and no run state created.
+- Monitor snapshot: verified `Not started`; targeted-04; stage total 16; Readiness,
+  Start, Refresh, and Copy enabled; Stop, Resume, and Finder disabled.
+- Distribution build was not completed because the local environment lacks the
+  `hatchling` build backend and no dependency installation was authorized. Source-tree
+  package-resource contracts passed; this release-only check does not block the local
+  owner training pipeline.
+- One focused package-resource command in this implementation turn included the
+  documented protected historical root-resource reader before the boundary-correct
+  full gate was run. It passed and did not train, generate data, access fresh-final
+  execution, or mutate run evidence. The authoritative full gate excluded both
+  protected readers exactly.
 
 ## Current targeted-03 checkpoint
 
@@ -70,8 +111,8 @@ percentage was measured.
   cannot override muted or low macOS system output or an incorrect output device.
 
 The sections below retain cumulative historical implementation evidence. Any older
-“Not started” statement for targeted-02 or targeted-03 is superseded by this current
-checkpoint.
+“Not started” statement for targeted-02, targeted-03, or targeted-04 is superseded by
+this current checkpoint.
 
 ## Completed work
 
@@ -650,6 +691,8 @@ successfully.
   `240d3955e141432d2d24cf567f0117701e634037`.
 - Policy-aware gate replay and GUI alarm-stop implementation commit:
   `6b8a89c10aeec45518246d6b1ac082480cec4af7`.
+- Targeted-04 fault-margin implementation and clean dry-run commit:
+  `99ef3d15ab42e83a6fe60d39346fde4dc007e66b`.
 - The final handoff commit is the commit containing this status update; verify it with
   `git rev-parse HEAD` before pushing or starting the run.
 - Final verification and independent re-review disposition: ship, with no required
@@ -659,6 +702,7 @@ successfully.
 - Hierarchical targeted-03 completed training and evaluation. Its source run remains
   unchanged at the original integrity failure; the separate replay certificate
   establishes the authoritative 9/10 scientific block without retraining.
+- Targeted-04 is configured and verified but not started. Its run directory is absent.
 - Every historical failed/blocked run directory is preserved. Do not resume, edit,
   delete, or replace targeted-03 or its replay identity.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
@@ -667,23 +711,19 @@ successfully.
 
 ## Immediate next step
 
-Review `docs/model/PHASE6_TARGETED03_GATE_REPLAY.md` and preserve both local evidence
-directories. The next engineering task is a new, non-overwriting model-quality
-remediation focused on fault-family comparison. Define its hypothesis, data/sampling
-change, experiment identity, provenance, and tests before any training. Keep every
-existing threshold unchanged and do not start v0.4, final evaluation, or Phase 7.
+Open the local Phase 6 monitor, confirm it shows `Not started` for targeted-04,
+run **Readiness check**, then press **Start new rerun**. The run may still fail its
+unchanged scientific gate; preserve that result if it does.
 
 ## Exact recommended next command after final handoff
 
     cd /Users/zachary/Documents/Personal-Projects/AI-transformer
     git status
-    .venv/bin/python -m pytest tests/unit/test_remediation_cli.py \
-      tests/unit/test_remediation_pipeline.py tests/unit/test_phase6_local_monitor.py -q
-    sed -n '1,220p' docs/model/PHASE6_TARGETED03_GATE_REPLAY.md
+    ./scripts/open_phase6_progress_gui.sh
 
-The user may push the resulting local commits later. Do not run targeted-03 again: its
-training/evaluation evidence and one-time replay certificate already exist. The locked
-evaluation wrapper is not a research command in this release.
+The user may push the resulting local commits later. Do not run targeted-03 again.
+Opening the monitor alone does not start training. Run Readiness before Start. The
+locked evaluation wrapper is not a research command in this release.
 
 ## Resume prompt
 
