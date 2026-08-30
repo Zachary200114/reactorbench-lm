@@ -35,9 +35,8 @@ V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.0.toml"
 TARGETED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.1-targeted.toml"
 FOCUSED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
 HIERARCHICAL_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml"
-FAULT_BOOSTED_V03_PATH = (
-    ROOT / "configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml"
-)
+FAULT_BOOSTED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml"
+TASK_WEIGHTED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml"
 TARGETED_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
 )
@@ -49,6 +48,9 @@ HIERARCHICAL_PIPELINE_PATH = (
 )
 FAULT_BOOSTED_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml"
+)
+TASK_WEIGHTED_PIPELINE_PATH = (
+    ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
 )
 V04_PATH = ROOT / "configs/experiments/phase6-remediation-v0.4.0.toml"
 
@@ -241,9 +243,7 @@ def test_hierarchical_sampling_and_checkpoint_policy_cannot_be_decoupled() -> No
 def test_fault_boosted_v03_is_bounded_and_preserves_every_threshold() -> None:
     config = load_v03_config(FAULT_BOOSTED_V03_PATH)
 
-    assert tuple(item.sampling for item in config.candidates) == (
-        "fault_boosted_hierarchical",
-    )
+    assert tuple(item.sampling for item in config.candidates) == ("fault_boosted_hierarchical",)
     assert tuple(item.seed for item in config.candidates) == (6701,)
     assert config.training.steps == 2500
     assert config.training.batch_size == 7
@@ -271,6 +271,60 @@ def test_fault_boosted_v03_is_bounded_and_preserves_every_threshold() -> None:
         pipeline.reuse_v02_prefix
         == PipelineConfig.model_validate(_raw(HIERARCHICAL_PIPELINE_PATH)).reuse_v02_prefix
     )
+
+
+def test_task_weighted_v03_restores_class_mix_and_adds_task_selection_floors() -> None:
+    config = load_v03_config(TASK_WEIGHTED_V03_PATH)
+
+    assert tuple(item.sampling for item in config.candidates) == ("task_weighted_hierarchical",)
+    assert tuple(item.seed for item in config.candidates) == (6801,)
+    assert config.training.steps == 2500
+    assert config.training.batch_size == 6
+    assert config.targeted_policy is not None
+    assert config.targeted_policy.policy_version == "0.3.5-task-weighted"
+    assert config.targeted_policy.calibration.policy_version == "0.3.5-task-weighted"
+    assert config.selection.metric == "task_floor_then_validation_nll"
+    assert config.selection.minimum_checkpoint_semantic_composite == 0.75
+    assert config.selection.minimum_checkpoint_fault_macro_f1 == 0.9
+    assert config.selection.minimum_checkpoint_continuation_macro_f1 == 0.9
+    assert config_sha256(config) == (
+        "87e1b5f9730d0ed2515607e1adf3cc5ae0d26448df563a577a2500cd5d79e04e"
+    )
+    assert (
+        config.selection.minimum_fault_margin,
+        config.selection.minimum_continuation_macro_f1,
+    ) == (0.02, 0.9)
+    pipeline = PipelineConfig.model_validate(_raw(TASK_WEIGHTED_PIPELINE_PATH))
+    assert pipeline.run_name == "phase6-remediation-v0.4.0-targeted-05"
+    assert pipeline.v03_config_sha256 == config_sha256(config)
+    assert config_sha256(pipeline) == (
+        "bfdb3833fce80fd31e018126b1ae225e04cf85d7fcbd9ef0fcada69a69f4a354"
+    )
+    assert (
+        pipeline.reuse_v02_prefix
+        == PipelineConfig.model_validate(_raw(FAULT_BOOSTED_PIPELINE_PATH)).reuse_v02_prefix
+    )
+
+
+def test_task_weighted_objective_and_selection_cannot_be_decoupled() -> None:
+    raw = _raw(TASK_WEIGHTED_V03_PATH)
+    changed = copy.deepcopy(raw)
+    changed["selection"]["metric"] = "semantic_floor_then_validation_nll"
+    changed["selection"].pop("minimum_checkpoint_fault_macro_f1")
+    changed["selection"].pop("minimum_checkpoint_continuation_macro_f1")
+    with pytest.raises(ValidationError, match="must match"):
+        V03Config.model_validate(changed)
+
+    changed = copy.deepcopy(raw)
+    changed["selection"]["minimum_checkpoint_fault_macro_f1"] = 0.89
+    with pytest.raises(ValidationError, match="differ from targeted-05"):
+        V03Config.model_validate(changed)
+
+    changed = copy.deepcopy(raw)
+    changed["candidates"][0]["sampling"] = "fault_boosted_hierarchical"
+    with pytest.raises(ValidationError, match="task-weighted candidate"):
+        V03Config.model_validate(changed)
+
 
 def test_committed_v04_contract_freezes_shadow_and_final_access_boundaries() -> None:
     config = load_v04_config(V04_PATH)

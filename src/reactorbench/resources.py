@@ -114,6 +114,17 @@ def phase6_remediation_fault_boosted_v03_config_resource() -> Traversable:
     )
 
 
+def phase6_remediation_task_weighted_v03_config_resource() -> Traversable:
+    """Return the reviewed task-weighted v0.3 semantic-remediation configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-v0.3.5-task-weighted.toml",
+        directory=False,
+    )
+
+
 def phase6_remediation_v04_config_resource() -> Traversable:
     """Return the reviewed Phase 6 v0.4 generalization configuration."""
 
@@ -173,6 +184,17 @@ def phase6_remediation_fault_boosted_pipeline_config_resource() -> Traversable:
         "configs",
         "experiments",
         "phase6-remediation-pipeline-v0.4.0-targeted-04.toml",
+        directory=False,
+    )
+
+
+def phase6_remediation_task_weighted_pipeline_config_resource() -> Traversable:
+    """Return the reviewed task-weighted Phase 6 remediation configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-pipeline-v0.4.0-targeted-05.toml",
         directory=False,
     )
 
@@ -274,6 +296,8 @@ __all__ = [
     "phase6_remediation_script_resource",
     "phase6_remediation_targeted_pipeline_config_resource",
     "phase6_remediation_targeted_v03_config_resource",
+    "phase6_remediation_task_weighted_pipeline_config_resource",
+    "phase6_remediation_task_weighted_v03_config_resource",
     "phase6_remediation_v02_config_resource",
     "phase6_remediation_v03_config_resource",
     "phase6_remediation_v04_config_resource",

@@ -24,10 +24,12 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 import torch
+import torch.nn.functional as functional
 from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 from safetensors.torch import load_file, save_file
 from torch import Tensor
 
+from reactorbench.model import shift_next_token_targets
 from reactorbench.model.checkpoint import load_checkpoint, save_checkpoint
 from reactorbench.model.config import TransformerConfig
 from reactorbench.model.transformer import (
@@ -36,6 +38,7 @@ from reactorbench.model.transformer import (
     initialized_model,
 )
 from reactorbench.schemas.base import ContractModel, canonical_json_bytes, canonical_sha256
+from reactorbench.schemas.enums import TaskName
 from reactorbench.tokenizer import TokenizerArtifactManifest
 
 from .config import RemediationTraining
@@ -93,6 +96,7 @@ type SamplingStrategy = Literal[
     "fault_continuation_focused",
     "hierarchical_task_label_balanced",
     "fault_boosted_hierarchical",
+    "task_weighted_hierarchical",
 ]
 type EvaluationCallback = Callable[[TransformerLM, int, float], float]
 type ProgressCallback = Callable[["TrainingProgress"], None]
@@ -112,12 +116,14 @@ class TargetedSamplingBinding(ContractModel):
         "0.3.2-focused",
         "0.3.3-hierarchical",
         "0.3.4-fault-boosted",
+        "0.3.5-task-weighted",
     ]
     sampling_strategy: Literal[
         "task_class_balanced",
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     ]
     candidate_id: CandidateId
     training_config_sha256: Sha256
@@ -133,6 +139,7 @@ class TargetedSamplingBinding(ContractModel):
             "fault_continuation_focused": "0.3.2-focused",
             "hierarchical_task_label_balanced": "0.3.3-hierarchical",
             "fault_boosted_hierarchical": "0.3.4-fault-boosted",
+            "task_weighted_hierarchical": "0.3.5-task-weighted",
         }[self.sampling_strategy]
         if self.contract_version != expected_version:
             raise ValueError("targeted sampling binding version differs from its strategy")
@@ -156,6 +163,7 @@ def bind_targeted_sampling(
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     ] = "task_class_balanced",
 ) -> TargetedSamplingBinding:
     """Create the checksum-bound sidecar without altering legacy artifacts."""
@@ -166,6 +174,7 @@ def bind_targeted_sampling(
             "fault_continuation_focused": "0.3.2-focused",
             "hierarchical_task_label_balanced": "0.3.3-hierarchical",
             "fault_boosted_hierarchical": "0.3.4-fault-boosted",
+            "task_weighted_hierarchical": "0.3.5-task-weighted",
         }[sampling_strategy],
         sampling_strategy=sampling_strategy,
         candidate_id=candidate_id,
@@ -588,9 +597,60 @@ def _validated_sampling_strategy(value: object) -> SamplingStrategy:
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     }:
         raise ValueError("sampling_strategy is not supported")
     return cast(SamplingStrategy, value)
+
+
+def task_weighted_supervised_causal_loss(
+    model: TransformerLM,
+    input_ids: Tensor,
+    attention_mask: Tensor,
+    target_mask: Tensor,
+    task_names: tuple[TaskName, ...],
+) -> Tensor:
+    """Weight fault and continuation target tokens without changing class sampling.
+
+    The exact targeted-05 objective doubles only the two development tasks that
+    missed across targeted-03/04.  It preserves the hierarchical sampler's
+    unresolved/no-fault/diagnosed mix and normalizes by the active weighted-token
+    mass, so padding and prompt tokens never affect the objective.
+    """
+
+    if type(model) is not TransformerLM:
+        raise TypeError("weighted objective requires an exact TransformerLM")
+    if type(task_names) is not tuple or len(task_names) != input_ids.shape[0]:
+        raise ValueError("weighted objective task inventory must match the batch")
+    if any(type(task_name) is not TaskName for task_name in task_names):
+        raise TypeError("weighted objective requires exact TaskName values")
+    if type(target_mask) is not Tensor or target_mask.dtype != torch.bool:
+        raise TypeError("target_mask must be a boolean tensor")
+    if target_mask.shape != input_ids.shape or torch.any(target_mask & ~attention_mask):
+        raise ValueError("target mask must align with visible input tokens")
+    shifted = shift_next_token_targets(input_ids, attention_mask)
+    selected_targets = target_mask[:, 1:] & shifted.target_mask
+    if not selected_targets.any():
+        raise ValueError("weighted supervised loss requires target tokens")
+    logits = model(shifted.input_ids, shifted.input_mask)
+    losses = functional.cross_entropy(
+        logits.reshape(-1, model.vocab_size),
+        shifted.target_ids.reshape(-1),
+        reduction="none",
+    ).view_as(shifted.target_ids)
+    row_weights = torch.tensor(
+        [
+            2.0 if task_name in {TaskName.FAULT_FAMILY, TaskName.CONTINUE_LOG} else 1.0
+            for task_name in task_names
+        ],
+        dtype=losses.dtype,
+        device=losses.device,
+    ).unsqueeze(1)
+    active_weights = selected_targets.to(dtype=losses.dtype) * row_weights
+    denominator = active_weights.sum()
+    if not torch.isfinite(denominator) or denominator.item() <= 0.0:
+        raise ValueError("weighted supervised loss has invalid active weight")
+    return (losses * active_weights).sum() / denominator
 
 
 def _rank(seed: int, epoch: int, example_id: str, index: int) -> tuple[int, str, int]:
@@ -1462,6 +1522,7 @@ def train_compact_model(
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     }
     if sampling_strategy in metadata_aware_strategies:
         if type(sampling_metadata) is not tuple:
@@ -1548,6 +1609,7 @@ def train_compact_model(
                     "fault_continuation_focused",
                     "hierarchical_task_label_balanced",
                     "fault_boosted_hierarchical",
+                    "task_weighted_hierarchical",
                 ],
                 sampling_strategy,
             ),
@@ -1738,10 +1800,20 @@ def train_compact_model(
                     seed=training.seed,
                     step=sampler_cursor // training.batch_size,
                 )
-            else:
+            elif sampling_strategy == "fault_boosted_hierarchical":
                 if sampling_metadata is None:
                     raise RuntimeError("fault-boosted sampler metadata disappeared")
                 indices = fault_boosted_hierarchical_batch_indices(
+                    train_examples,
+                    metadata=sampling_metadata,
+                    batch_size=training.batch_size,
+                    seed=training.seed,
+                    step=sampler_cursor // training.batch_size,
+                )
+            else:
+                if sampling_metadata is None:
+                    raise RuntimeError("task-weighted sampler metadata disappeared")
+                indices = hierarchical_task_label_balanced_batch_indices(
                     train_examples,
                     metadata=sampling_metadata,
                     batch_size=training.batch_size,
@@ -1754,12 +1826,21 @@ def train_compact_model(
             )
             scored_target_tokens += int(target_mask[:, 1:].sum().item())
             optimizer.zero_grad(set_to_none=True)
-            loss = supervised_causal_loss(
-                model,
-                input_ids.to(device),
-                attention_mask.to(device),
-                target_mask.to(device),
-            )
+            if sampling_strategy == "task_weighted_hierarchical":
+                loss = task_weighted_supervised_causal_loss(
+                    model,
+                    input_ids.to(device),
+                    attention_mask.to(device),
+                    target_mask.to(device),
+                    tuple(item.task_name for item in batch),
+                )
+            else:
+                loss = supervised_causal_loss(
+                    model,
+                    input_ids.to(device),
+                    attention_mask.to(device),
+                    target_mask.to(device),
+                )
             torch.autograd.backward(loss)
             torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip_norm)
             optimizer.step()

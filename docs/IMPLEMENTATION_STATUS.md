@@ -2,20 +2,27 @@
 
 Last updated: 2026-08-30 America/New_York
 
-Current phase: **Phase 6 targeted-04 fault-margin remediation implemented, verified,
-and ready for its first owner-operated run**
+Current phase: **Phase 6 targeted-05 task-weighted remediation implemented and
+verified; final clean-source dry run pending the implementation commit**
 
-Current objective: run the new non-overwriting targeted-04 development experiment
-through the local monitor. Do not resume or overwrite targeted-03, lower any
-threshold, open final/golden evaluation, or begin Phase 7.
+Current objective: commit the verified targeted-05 implementation, run the
+clean-source dry run and monitor smoke checks, and leave the new non-overwriting
+candidate ready for an owner-operated run. Do not resume or overwrite targeted-04,
+lower any threshold, open final/golden evaluation, or begin Phase 7.
 
-Checkpoint reason: targeted-03's certified 9/10 result missed only fault-comparator
-margin (`-0.0344200013`, required at least `0.02`). Targeted-04 preserves its
-complete six-task hierarchical anchor and adds one distinct, diagnosed-label-balanced
-fault row per batch. The experiment remains random-initialized, keeps 2,500 optimizer
-updates, every validation partition, and all ten unchanged thresholds. Its code,
-configs, monitor binding, tests, and clean-source dry run pass. No targeted-04 run
-directory, training, generated data, final/golden access, deployment, or push occurred.
+Checkpoint reason: targeted-04 was a genuine scientific block, not an engineering
+crash. It passed eight of ten unchanged checks. Fault-comparator margin regressed to
+`-0.0723480193` (required at least `0.02`) and continuation macro-F1 regressed to
+`0.8933333333` (required at least `0.90`). Its extra diagnosed fault row shifted the
+effective fault-task mix from 50% unresolved / 10% no-fault / 40% diagnosed to 25% /
+5% / 70%, causing overdiagnosis and label confusion. Its aggregate checkpoint floor
+also admitted a checkpoint whose separate 48-row fault macro-F1 was only `0.6875`.
+Targeted-05 restores the complete six-task hierarchical sampler, adds fault/continuation
+target-token weighting, and requires task-specific checkpoint floors before the
+existing validation-NLL tie-break. Model size, 2,500 optimizer updates, every
+validation partition, and all ten acceptance thresholds remain unchanged. No
+targeted-05 run directory, training, generated data, final/golden access, deployment,
+or push occurred.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -23,13 +30,48 @@ Project path:
 Exact account usage is not observable in this environment. No account-level
 percentage was measured.
 
-## Current targeted-04 checkpoint
+## Current targeted-05 checkpoint
+
+- Run identity:
+  `phase6-remediation-v0.4.0-targeted-05`.
+- Run directory: absent, as required before the first Start.
+- v0.3 config:
+  `configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml`.
+- v0.3 canonical config SHA-256:
+  `87e1b5f9730d0ed2515607e1adf3cc5ae0d26448df563a577a2500cd5d79e04e`.
+- Pipeline config:
+  `configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml`.
+- Pipeline canonical config SHA-256:
+  `bfdb3833fce80fd31e018126b1ae225e04cf85d7fcbd9ef0fcada69a69f4a354`.
+- Preregistration:
+  `docs/model/PHASE6_TARGETED05_PLAN.md`.
+- Training contract: one 15,179,520-parameter random-initialized candidate, 2,500
+  steps, batch size six, exactly one row per task per update, and the established
+  fault tier mix of 50% unresolved / 10% no-fault / 40% diagnosed.
+- Objective contract: prompt and padding tokens remain excluded; `FAULT_FAMILY` and
+  `CONTINUE_LOG` target tokens receive weight 2.0 and all other target tokens weight
+  1.0, normalized by total selected target-token weight.
+- Checkpoint contract: semantic composite at least 0.75, fault macro-F1 at least
+  0.90, and continuation macro-F1 at least 0.90 on the existing disjoint 48-row
+  selection subset; eligible checkpoints are then ranked by validation NLL and
+  earlier step.
+- Full permitted repository gate: 1,147 passed, exactly 2 protected historical
+  readers deselected, in 543.55 seconds.
+- Branch coverage: 85.06%, meeting the fixed 85% floor.
+- Ruff: passed. Strict mypy: all 78 source modules passed. Bash syntax: passed.
+- Native Swift/AppKit type-check: passed using a private temporary module cache.
+- Clean-source dry run and monitor smoke are pending the implementation commit.
+
+## Preserved targeted-04 checkpoint
 
 - Implementation commit:
   `99ef3d15ab42e83a6fe60d39346fde4dc007e66b`.
 - Run identity:
   `phase6-remediation-v0.4.0-targeted-04`.
-- Run directory: absent, as required before the first Start.
+- Preserved source run:
+  `runs/phase6-remediation-v0.4.0-targeted-04/`.
+- Result: blocked at stage 10 after completing training and all 427 development-gate
+  evaluations; eight of ten unchanged scientific checks passed.
 - v0.3 config:
   `configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml`.
 - v0.3 canonical config SHA-256:
@@ -52,9 +94,9 @@ percentage was measured.
 - Ruff: passed. Strict mypy: 78 source modules passed. Bash syntax: passed.
 - Native Swift/AppKit type-check: passed with a private temporary module cache, the
   same cache-isolation pattern used by the launcher.
-- Clean-source dry run: passed at implementation commit `99ef3d1`; 16 frozen
+- Original clean-source dry run: passed at implementation commit `99ef3d1`; 16 frozen
   stages, config checksum `508c5563...`, and no run state created.
-- Monitor snapshot: verified `Not started`; targeted-04; stage total 16; Readiness,
+- Original monitor snapshot: verified `Not started`; targeted-04; stage total 16; Readiness,
   Start, Refresh, and Copy enabled; Stop, Resume, and Finder disabled.
 - Distribution build was not completed because the local environment lacks the
   `hatchling` build backend and no dependency installation was authorized. Source-tree
@@ -364,6 +406,19 @@ the evidence-aligned training setup; they do not guarantee acceptance.
 
 ## Tests and checks run
 
+- Targeted-05 implementation verification on 2026-08-30:
+  - Read-only diagnosis used only targeted-03 replay and targeted-04 development
+    artifacts. No protected final/golden evaluation was accessed.
+  - Full permitted repository gate: 1,147 passed and exactly 2 protected historical
+    readers deliberately deselected in 543.55 seconds.
+  - Branch coverage: 85.06%, meeting the fixed 85% gate.
+  - Focused targeted-05/config/training/CLI/pipeline/monitor/resource verification:
+    268 passed and 1 protected historical reader deliberately deselected.
+  - Ruff formatting and lint: passed. Strict mypy: all 78 source modules passed.
+    Shell syntax and native Swift/AppKit type-check: passed.
+  - The targeted-05 run directory remained absent. No training, data generation,
+    final/golden execution, push, or deployment occurred.
+
 - Terminal-failure monitor alert verification on 2026-08-29:
   - Focused monitor and package-resource gate: 35 passed and 1 protected historical
     package-resource reader deliberately deselected in 0.79 seconds.
@@ -544,6 +599,10 @@ successfully.
   targeted resume publication binding-first.
 - D-090 preserves targeted-01, fixes identity-bound calibration reconstruction, and
   defines the single-candidate focused targeted-02 task mix without changing any gate.
+- D-091 preserves targeted-04 as negative scientific evidence and defines targeted-05:
+  restore the six-task hierarchical sampler; weight fault-family and continuation
+  target tokens 2.0; require 0.90 task-specific macro-F1 checkpoint floors alongside
+  the 0.75 semantic-composite floor; retain all ten downstream thresholds unchanged.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -565,6 +624,10 @@ successfully.
   v0.2 stages are verification-only and it trains one candidate rather than two, but
   v0.3 data audit, smoke, training, calibration, and gate evaluation remain real work.
   The focused sampler does not promise acceptance or guarantee a large metric gain.
+- Targeted-04 is terminal scientific evidence and must not be resumed or edited. Its
+  diagnosed-heavy sampler improved action/evidence behavior but caused fault-family
+  overdiagnosis and a small continuation regression. Targeted-05 addresses those
+  mechanisms, but its scientific outcome remains unknown until the owner runs it.
 - During final verification, one unrestricted coverage command mistakenly omitted
   the two recorded deselections and executed both protected historical tests. It
   passed 1,125 tests and did not start training, generate data, run the fresh-final
@@ -600,9 +663,14 @@ successfully.
 ## Files and artifact paths
 
 - Pipeline configuration:
-  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-02.toml
-- Focused v0.3 configuration:
-  configs/experiments/phase6-remediation-v0.3.2-focused.toml
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml
+- Current v0.3 configuration:
+  configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml
+- Current preregistration:
+  docs/model/PHASE6_TARGETED05_PLAN.md
+- Preserved targeted-04 configurations:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml,
+  configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml
 - Preserved targeted-01 configurations:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml,
   configs/experiments/phase6-remediation-v0.3.1-targeted.toml
@@ -641,24 +709,25 @@ successfully.
   runs/phase6-remediation-v0.4.0-local-rerun-02/
 - Preserved failed targeted-01:
   runs/phase6-remediation-v0.4.0-targeted-01/
-- Focused targeted-02 run root (currently absent):
-  runs/phase6-remediation-v0.4.0-targeted-02/
+- Current targeted-05 run root (currently absent):
+  runs/phase6-remediation-v0.4.0-targeted-05/
 - Canonical live status after start:
-  runs/phase6-remediation-v0.4.0-targeted-02/status.json
+  runs/phase6-remediation-v0.4.0-targeted-05/status.json
 
-### Focused v0.3 preparation (Not started)
+### Targeted-05 preparation (Not started)
 
-- Default identity: `phase6-remediation-v0.4.0-targeted-02`.
-- The new v0.3 config trains exactly one fault/continuation-focused candidate. It
+- Default identity: `phase6-remediation-v0.4.0-targeted-05`.
+- The new v0.3 config trains exactly one task-weighted hierarchical candidate. It
   freezes the same 48-example raw semantic selection subset, then the same disjoint
   56-example validation-only calibration subset; the IID gate inventory remains the
   other 427 rows of the current 531-row validation inventory.
-- Thresholds, model size, teacher-forced exposure, and 2,000 training steps are
-  unchanged. Temperature calibration affects only confidence-based gate metrics.
+- Thresholds, model size, teacher-forced exposure, and 2,500 training steps are
+  unchanged from targeted-04. Temperature calibration affects only confidence-based
+  gate metrics.
 - The targeted run directory is intentionally absent. No training or data generation
   has been started, and the expected result is unknown.
 - Append-only progress after start:
-  runs/phase6-remediation-v0.4.0-targeted-02/progress.jsonl
+  runs/phase6-remediation-v0.4.0-targeted-05/progress.jsonl
 
 ## Repository state
 
@@ -693,6 +762,7 @@ successfully.
   `6b8a89c10aeec45518246d6b1ac082480cec4af7`.
 - Targeted-04 fault-margin implementation and clean dry-run commit:
   `99ef3d15ab42e83a6fe60d39346fde4dc007e66b`.
+- Targeted-05 implementation commit: pending the local checkpoint commit.
 - The final handoff commit is the commit containing this status update; verify it with
   `git rev-parse HEAD` before pushing or starting the run.
 - Final verification and independent re-review disposition: ship, with no required
@@ -702,7 +772,8 @@ successfully.
 - Hierarchical targeted-03 completed training and evaluation. Its source run remains
   unchanged at the original integrity failure; the separate replay certificate
   establishes the authoritative 9/10 scientific block without retraining.
-- Targeted-04 is configured and verified but not started. Its run directory is absent.
+- Targeted-04 is preserved as a scientific `blocked` run. Targeted-05 is configured
+  and verified but not started; its run directory is absent.
 - Every historical failed/blocked run directory is preserved. Do not resume, edit,
   delete, or replace targeted-03 or its replay identity.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
@@ -711,7 +782,8 @@ successfully.
 
 ## Immediate next step
 
-Open the local Phase 6 monitor, confirm it shows `Not started` for targeted-04,
+After the implementation commit and clean-source dry-run verification, open the local
+Phase 6 monitor, confirm it shows `Not started` for targeted-05,
 run **Readiness check**, then press **Start new rerun**. The run may still fail its
 unchanged scientific gate; preserve that result if it does.
 
@@ -721,7 +793,7 @@ unchanged scientific gate; preserve that result if it does.
     git status
     ./scripts/open_phase6_progress_gui.sh
 
-The user may push the resulting local commits later. Do not run targeted-03 again.
+The user may push the resulting local commits later. Do not run targeted-04 again.
 Opening the monitor alone does not start training. Run Readiness before Start. The
 locked evaluation wrapper is not a research command in this release.
 

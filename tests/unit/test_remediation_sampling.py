@@ -325,9 +325,7 @@ def test_fault_boosted_sampler_rejects_wrong_shape_and_missing_diagnosed_labels(
         else row
         for row in metadata
     )
-    with pytest.raises(
-        TaskBalancedSamplingError, match=r"unsupported label tier|lacks diagnosed"
-    ):
+    with pytest.raises(TaskBalancedSamplingError, match=r"unsupported label tier|lacks diagnosed"):
         fault_boosted_hierarchical_batch_indices(
             records, metadata=no_diagnosed, batch_size=7, seed=1, step=0
         )

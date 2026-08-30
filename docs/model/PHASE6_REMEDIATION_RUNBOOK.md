@@ -1,7 +1,7 @@
 # Phase 6 remediation local runbook
 
-Status: **targeted-04 fault-margin remediation implemented and awaiting its first
-owner-operated run**
+Status: **targeted-04 preserved as an 8/10 negative result; targeted-05 implemented
+and awaiting verification/owner operation**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -149,7 +149,7 @@ unchanged scientific gate passes nine of ten checks and misses only fault-compar
 margin (`-0.0344200`, required `>= 0.02`). Do not delete that identity to rerun it.
 See `docs/model/PHASE6_TARGETED03_GATE_REPLAY.md` for exact metrics and checksums.
 
-The current default is the new, non-overwriting targeted-04 identity:
+The targeted-04 negative result is preserved at:
 
 ```text
 configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml
@@ -157,12 +157,26 @@ configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml
 runs/phase6-remediation-v0.4.0-targeted-04/
 ```
 
-Targeted-04 has not been trained. It preserves the exact six-task hierarchical anchor
-and adds one distinct diagnosed-fault row, producing a seven-row batch with two fault
-rows and one row for every other task. The extra row rotates uniformly across
-diagnosed labels. Training remains 2,500 steps with the same architecture,
-optimization, 48/56/427 validation partition, calibration policy, and ten unchanged
-thresholds. See `docs/model/PHASE6_TARGETED04_PLAN.md`.
+Targeted-04 completed 2,500 steps and 427 gate predictions, then stopped correctly at
+stage 10. It passed eight of ten checks. Fault margin fell to `-0.0723480` and
+continuation macro-F1 fell to `0.8933333`. The diagnosed-only extra row shifted the
+fault mix to 70% diagnosed, introduced seven false diagnoses on unresolved cases, and
+created new pump/sensor confusions. Do not delete, rename, resume, or edit this run.
+
+The current default is the new, non-overwriting targeted-05 identity:
+
+```text
+configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml
+configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml
+runs/phase6-remediation-v0.4.0-targeted-05/
+```
+
+Targeted-05 restores the exact targeted-03 six-task hierarchical sampler and class
+mix. It doubles target-token loss weight for fault-family and continuation while
+leaving every other task at weight 1.0. Its disjoint 48-row checkpoint selector now
+requires semantic composite, fault F1, and continuation F1 floors before lower NLL
+can break a tie. Architecture, 2,500 steps, 56/427 calibration/gate partitions, and
+all ten thresholds remain unchanged. See `docs/model/PHASE6_TARGETED05_PLAN.md`.
 
 Checkpoint consumers now return the model's actual parameter device after verifying
 that its device type and any explicitly requested index match. A real CPU/MPS or
@@ -170,9 +184,8 @@ explicit-index mismatch still fails closed. The exact preserved checkpoint opera
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers and local monitor now select targeted-04. Targeted-01,
-targeted-02, and targeted-03 remain historical evidence and are not valid restart
-targets. The
+The ordinary wrappers and local monitor now select targeted-05. Targeted-01 through
+targeted-04 remain historical evidence and are not valid restart targets. The
 original run is bound to source
 commit `2aafcd1661ec7c3640a385621db171041532e547`, rerun 01 is bound to
 `034b41cca07b999f701850986a67a692b40d8c30`, and rerun 02 is bound to
@@ -231,7 +244,7 @@ if necessary; an optional foreground form is:
 caffeinate -i ./scripts/run_phase6_pipeline.sh
 ```
 
-The runner retains the frozen 16-stage interface. For targeted-04, preflight and the
+The runner retains the frozen 16-stage interface. For targeted-05, preflight and the
 four v0.2 stages verify the preserved rerun-02 manifest, completion prefix, outcomes,
 and all referenced artifacts by canonical contract, size, SHA-256, source, config,
 path containment, and non-symlink checks. The targeted configuration externally pins
@@ -244,15 +257,16 @@ when v0.3 passes, it runs the permitted v0.4 pilot, candidate, shadow evaluation
 policy freeze, and review-bundle stages. A failed scientific gate stops later work
 cleanly instead of weakening a threshold.
 
-Fault-boosted hierarchical v0.3 trains exactly one candidate from random
-initialization. Each seven-row batch retains one row from every task, then adds one
-distinct diagnosed-fault row. Continuation and next-action labels rotate uniformly.
-The anchor fault draw preserves a 50% unresolved, 10% no-fault, and 40% diagnosed
-hierarchy; the extra fault draw rotates uniformly across diagnosed families. Model
-size, teacher-forced exposure, 2,500 training steps, and every acceptance threshold
-are unchanged from targeted-03. Checkpoint selection uses the same
-target-independent 48-example subset as an eligibility check: semantic composite must
-reach 0.75, then lower validation NLL and earlier step choose the checkpoint. A separate
+Task-weighted hierarchical v0.3 trains exactly one candidate from random
+initialization. Each six-row batch contains one row from every task. The fault draw
+preserves a 50% unresolved, 10% no-fault, and 40% diagnosed hierarchy; classification
+labels rotate uniformly inside their frozen strata. Fault and continuation target
+tokens receive weight 2.0, all other task target tokens weight 1.0, and prompts/padding
+remain excluded. Model size, teacher-forced exposure, 2,500 training steps, and every
+acceptance threshold are unchanged. Checkpoint selection uses the same independent
+48-example subset: semantic composite, fault macro-F1, and continuation macro-F1 must
+reach 0.75, 0.90, and 0.90 respectively before lower validation NLL and earlier step
+choose the checkpoint. A separate
 target-independent 56-example validation subset is decoded only after selection to
 fit a scalar temperature on the fixed 0.50–5.00 grid. The remaining 427 IID rows form
 the gate. Calibration changes only confidence used for ECE and selective risk; raw
@@ -366,8 +380,8 @@ when those fields are available. The machine-readable heartbeat and append-only 
 log are:
 
 ```text
-runs/phase6-remediation-v0.4.0-targeted-04/status.json
-runs/phase6-remediation-v0.4.0-targeted-04/progress.jsonl
+runs/phase6-remediation-v0.4.0-targeted-05/status.json
+runs/phase6-remediation-v0.4.0-targeted-05/progress.jsonl
 ```
 
 ### Optional local progress window
@@ -381,7 +395,7 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ```
 
 Opening the monitor does not start training. It identifies the fixed
-`phase6-remediation-v0.4.0-targeted-04` run, refreshes through the existing
+`phase6-remediation-v0.4.0-targeted-05` run, refreshes through the existing
 strictly validated status command, and exposes only controls allowed by verified run
 state. Before the run exists, Readiness and Start are available; after creation,
 controls follow its strictly verified state. The activity log

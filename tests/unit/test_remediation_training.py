@@ -14,10 +14,14 @@ import pytest
 import torch
 from pydantic import ValidationError
 
-from reactorbench.model import TransformerConfig, TransformerLM
+from reactorbench.model import TransformerConfig, TransformerLM, initialized_model
 from reactorbench.remediation.config import RemediationTraining
 from reactorbench.remediation.sampling import SamplingMetadataRecord
-from reactorbench.remediation.serialization import CompactTokenizedExample
+from reactorbench.remediation.serialization import (
+    CompactTokenizedExample,
+    compact_batch_tensors,
+    supervised_causal_loss,
+)
 from reactorbench.remediation.training import (
     MAX_RETAINED_DURABLE_STATES,
     TARGETED_SAMPLING_BINDING_FILENAME,
@@ -37,6 +41,7 @@ from reactorbench.remediation.training import (
     resolve_training_device,
     retire_superseded_training_states,
     selected_checkpoint_upper_bound_bytes,
+    task_weighted_supervised_causal_loss,
     tokenized_inventory_sha256,
     train_compact_model,
     uniform_control_batch_indices,
@@ -143,6 +148,76 @@ def test_tokenized_inventory_checksum_has_one_frozen_canonical_representation() 
     assert tokenized_inventory_sha256(_examples(2)) == (
         "c179599253cb31a080744332887cdc6c9515d27b2059882ce7105885686b408b"
     )
+
+
+def test_task_weighted_objective_doubles_only_fault_and_continuation_target_mass() -> None:
+    first, second = _examples(2)
+    batch = (
+        replace(first, task_name=TaskName.FAULT_FAMILY),
+        replace(second, task_name=TaskName.NEXT_ACTION),
+    )
+    input_ids, attention_mask, target_mask = compact_batch_tensors(batch, context_length=8)
+    model = initialized_model(_model_config(), vocab_size=512, seed=41)
+    model.eval()
+    observed = task_weighted_supervised_causal_loss(
+        model,
+        input_ids,
+        attention_mask,
+        target_mask,
+        tuple(item.task_name for item in batch),
+    )
+    fault = supervised_causal_loss(
+        model,
+        input_ids[:1],
+        attention_mask[:1],
+        target_mask[:1],
+    )
+    action = supervised_causal_loss(
+        model,
+        input_ids[1:],
+        attention_mask[1:],
+        target_mask[1:],
+    )
+    assert torch.allclose(observed, (2.0 * fault + action) / 3.0)
+
+
+def test_task_weighted_objective_rejects_malformed_boundaries() -> None:
+    batch = _examples(2)
+    input_ids, attention_mask, target_mask = compact_batch_tensors(batch, context_length=8)
+    model = initialized_model(_model_config(), vocab_size=512, seed=43)
+    tasks = tuple(item.task_name for item in batch)
+    with pytest.raises(TypeError, match="exact TransformerLM"):
+        task_weighted_supervised_causal_loss(
+            cast(TransformerLM, object()), input_ids, attention_mask, target_mask, tasks
+        )
+    with pytest.raises(ValueError, match="task inventory"):
+        task_weighted_supervised_causal_loss(
+            model, input_ids, attention_mask, target_mask, tasks[:1]
+        )
+    with pytest.raises(TypeError, match="exact TaskName"):
+        task_weighted_supervised_causal_loss(
+            model,
+            input_ids,
+            attention_mask,
+            target_mask,
+            cast(tuple[TaskName, ...], ("fault_family", "next_action")),
+        )
+    with pytest.raises(TypeError, match="boolean tensor"):
+        task_weighted_supervised_causal_loss(
+            model, input_ids, attention_mask, target_mask.to(dtype=torch.long), tasks
+        )
+    invalid_mask = target_mask.clone()
+    invalid_mask[:, 0] = True
+    invalid_attention = attention_mask.clone()
+    invalid_attention[:, 0] = False
+    with pytest.raises(ValueError, match="align with visible"):
+        task_weighted_supervised_causal_loss(
+            model, input_ids, invalid_attention, invalid_mask, tasks
+        )
+    with pytest.raises(ValueError, match="requires target tokens"):
+        task_weighted_supervised_causal_loss(
+            model, input_ids, attention_mask, torch.zeros_like(target_mask), tasks
+        )
 
 
 def test_targeted_sampler_binding_is_required_and_resume_bound(tmp_path: Path) -> None:
@@ -956,6 +1031,34 @@ def test_fault_boosted_training_candidate_executes_and_binds_its_sampler(
     )
     assert binding.contract_version == "0.3.4-fault-boosted"
     assert binding.sampling_strategy == "fault_boosted_hierarchical"
+
+
+def test_task_weighted_training_candidate_executes_and_binds_its_objective(
+    tmp_path: Path,
+) -> None:
+    examples = _examples(18)
+    result = _run(
+        tmp_path / "task-weighted",
+        sampling="task_weighted_hierarchical",
+        train_examples=examples,
+        sampling_metadata=_hierarchical_sampling_metadata(examples),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    assert result.sampling_strategy == "task_weighted_hierarchical"
+    binding = TargetedSamplingBinding.model_validate_json(
+        (tmp_path / "task-weighted" / "states" / TARGETED_SAMPLING_BINDING_FILENAME).read_bytes(),
+        strict=True,
+    )
+    assert binding.contract_version == "0.3.5-task-weighted"
+    assert binding.sampling_strategy == "task_weighted_hierarchical"
+    payload = binding.model_dump(mode="json", round_trip=True)
+    payload["contract_version"] = "0.3.4-fault-boosted"
+    with pytest.raises(ValidationError, match="version differs"):
+        TargetedSamplingBinding.model_validate(payload)
+    payload = binding.model_dump(mode="json", round_trip=True)
+    payload["checksum_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="checksum mismatch"):
+        TargetedSamplingBinding.model_validate(payload)
 
 
 def test_device_resolution_has_explicit_fallback_and_error(

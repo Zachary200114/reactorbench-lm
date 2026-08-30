@@ -697,9 +697,7 @@ def fault_boosted_hierarchical_batch_indices[RecordT: SamplingRecord](
     task or using validation outcomes, target text, or hidden simulator state.
     """
 
-    batch_size = _bounded_integer(
-        batch_size, field_name="batch_size", minimum=7, maximum=7
-    )
+    batch_size = _bounded_integer(batch_size, field_name="batch_size", minimum=7, maximum=7)
     seed = _bounded_integer(seed, field_name="seed", minimum=0, maximum=MAX_SAMPLING_INTEGER)
     step = _bounded_integer(step, field_name="step", minimum=0, maximum=MAX_SAMPLING_INTEGER)
     anchor = hierarchical_task_label_balanced_batch_indices(

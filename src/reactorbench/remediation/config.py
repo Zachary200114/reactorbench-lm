@@ -242,6 +242,7 @@ class CandidatePolicy(StrictConfigModel):
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     ]
     exposure: Literal["teacher_forced_only"]
     enabled: Literal[True]
@@ -258,10 +259,13 @@ class SemanticSelectionPolicy(StrictConfigModel):
     metric: Literal[
         "frozen_semantic_composite",
         "semantic_floor_then_validation_nll",
+        "task_floor_then_validation_nll",
     ]
     tie_break: Literal["lower_validation_nll_then_earlier_step"]
     checkpoint_selection_uses_test: Literal[False]
     minimum_checkpoint_semantic_composite: Probability | None = None
+    minimum_checkpoint_fault_macro_f1: Probability | None = None
+    minimum_checkpoint_continuation_macro_f1: Probability | None = None
     constrained_schema_validity: Probability
     minimum_fault_margin: Probability
     minimum_action_margin: Probability
@@ -292,7 +296,12 @@ class SemanticSelectionPolicy(StrictConfigModel):
             raise ValueError("semantic thresholds must be exact floats")
         return value
 
-    @field_validator("minimum_checkpoint_semantic_composite", mode="before")
+    @field_validator(
+        "minimum_checkpoint_semantic_composite",
+        "minimum_checkpoint_fault_macro_f1",
+        "minimum_checkpoint_continuation_macro_f1",
+        mode="before",
+    )
     @classmethod
     def checkpoint_floor_is_an_exact_optional_float(cls, value: object) -> object:
         if value is not None and type(value) is not float:
@@ -317,10 +326,28 @@ class SemanticSelectionPolicy(StrictConfigModel):
         if observed != expected:
             raise ValueError("v0.3 semantic thresholds differ from the preregistration")
         if self.metric == "frozen_semantic_composite":
-            if self.minimum_checkpoint_semantic_composite is not None:
+            if any(
+                value is not None
+                for value in (
+                    self.minimum_checkpoint_semantic_composite,
+                    self.minimum_checkpoint_fault_macro_f1,
+                    self.minimum_checkpoint_continuation_macro_f1,
+                )
+            ):
                 raise ValueError("historical semantic selection cannot add a checkpoint floor")
-        elif self.minimum_checkpoint_semantic_composite != 0.75:
-            raise ValueError("hierarchical checkpoint semantic floor must remain 0.75")
+        elif self.metric == "semantic_floor_then_validation_nll":
+            if (
+                self.minimum_checkpoint_semantic_composite != 0.75
+                or self.minimum_checkpoint_fault_macro_f1 is not None
+                or self.minimum_checkpoint_continuation_macro_f1 is not None
+            ):
+                raise ValueError("hierarchical checkpoint semantic floor must remain 0.75")
+        elif (
+            self.minimum_checkpoint_semantic_composite,
+            self.minimum_checkpoint_fault_macro_f1,
+            self.minimum_checkpoint_continuation_macro_f1,
+        ) != (0.75, 0.9, 0.9):
+            raise ValueError("task-aware checkpoint floors differ from targeted-05")
         return self
 
 
@@ -332,6 +359,7 @@ class CalibrationPolicy(StrictConfigModel):
         "0.3.2-focused",
         "0.3.3-hierarchical",
         "0.3.4-fault-boosted",
+        "0.3.5-task-weighted",
     ]
     calibration_example_limit: Literal[56]
     grid_start: StrictFloat
@@ -355,6 +383,7 @@ class TargetedV03Policy(StrictConfigModel):
         "0.3.2-focused",
         "0.3.3-hierarchical",
         "0.3.4-fault-boosted",
+        "0.3.5-task-weighted",
     ]
     sampling_metadata_required: Literal[True]
     calibration: CalibrationPolicy
@@ -412,6 +441,7 @@ class V03Config(StrictConfigModel):
         focused = ("fault_continuation_focused",)
         hierarchical = ("hierarchical_task_label_balanced",)
         fault_boosted = ("fault_boosted_hierarchical",)
+        task_weighted = ("task_weighted_hierarchical",)
         sampling = tuple(item.sampling for item in self.candidates)
         if self.targeted_policy is None and sampling != historical:
             raise ValueError("historical v0.3 freezes the control and task-balanced candidates")
@@ -441,16 +471,30 @@ class V03Config(StrictConfigModel):
             and sampling != fault_boosted
         ):
             raise ValueError("fault-boosted v0.3 requires exactly one fault-boosted candidate")
+        if (
+            self.targeted_policy is not None
+            and self.targeted_policy.policy_version == "0.3.5-task-weighted"
+            and sampling != task_weighted
+        ):
+            raise ValueError("task-weighted v0.3 requires exactly one task-weighted candidate")
         if self.targeted_policy is not None:
             hierarchical_policy = self.targeted_policy.policy_version in {
                 "0.3.3-hierarchical",
                 "0.3.4-fault-boosted",
+                "0.3.5-task-weighted",
             }
-            hierarchical_selection = self.selection.metric == "semantic_floor_then_validation_nll"
+            hierarchical_selection = self.selection.metric in {
+                "semantic_floor_then_validation_nll",
+                "task_floor_then_validation_nll",
+            }
             if hierarchical_policy != hierarchical_selection:
                 raise ValueError(
                     "hierarchical sampling and checkpoint selection must be enabled together"
                 )
+            if (self.targeted_policy.policy_version == "0.3.5-task-weighted") != (
+                self.selection.metric == "task_floor_then_validation_nll"
+            ):
+                raise ValueError("task-weighted objective and task-aware selection must match")
         return self
 
 

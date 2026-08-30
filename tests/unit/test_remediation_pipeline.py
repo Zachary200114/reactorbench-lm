@@ -109,10 +109,30 @@ def test_semantic_checkpoint_selector_uses_floor_before_validation_nll() -> None
     hierarchical = load_v03_config(
         root / "configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml"
     ).selection
+    task_weighted = load_v03_config(
+        root / "configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml"
+    ).selection
 
     assert pipeline._semantic_checkpoint_selection_score(historical, composite=0.75) == 0.25
     assert pipeline._semantic_checkpoint_selection_score(hierarchical, composite=0.80) == 0.0
     assert pipeline._semantic_checkpoint_selection_score(hierarchical, composite=0.70) == 1.05
+    assert (
+        pipeline._semantic_checkpoint_selection_score(
+            task_weighted,
+            composite=0.80,
+            fault_macro_f1=0.95,
+            continuation_macro_f1=0.95,
+        )
+        == 0.0
+    )
+    assert pipeline._semantic_checkpoint_selection_score(
+        task_weighted,
+        composite=0.80,
+        fault_macro_f1=0.80,
+        continuation_macro_f1=0.85,
+    ) == pytest.approx(1.15)
+    with pytest.raises(ValueError, match="lacks finite task metrics"):
+        pipeline._semantic_checkpoint_selection_score(task_weighted, composite=0.80)
 
     historical_candidates = (
         pipeline.CandidateScore(

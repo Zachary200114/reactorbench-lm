@@ -103,6 +103,7 @@ from .inventory import (
 from .metrics import (
     SemanticEvaluationReport,
     canonical_prediction_jsonl_bytes,
+    classification_macro_f1_score,
     evaluate_semantic_predictions,
     prediction_artifact_byte_sha256,
     semantic_composite_score,
@@ -185,6 +186,8 @@ def _semantic_checkpoint_selection_score(
     policy: SemanticSelectionPolicy,
     *,
     composite: float,
+    fault_macro_f1: float | None = None,
+    continuation_macro_f1: float | None = None,
 ) -> float:
     """Convert semantic evidence to the checkpoint selector's minimized score."""
 
@@ -197,7 +200,23 @@ def _semantic_checkpoint_selection_score(
     floor = policy.minimum_checkpoint_semantic_composite
     if floor is None:
         raise PipelineExecutionError("semantic-floor checkpoint selection lacks its frozen floor")
-    return 0.0 if composite >= floor else 1.0 + (floor - composite)
+    if policy.metric == "semantic_floor_then_validation_nll":
+        return 0.0 if composite >= floor else 1.0 + (floor - composite)
+    fault_floor = policy.minimum_checkpoint_fault_macro_f1
+    continuation_floor = policy.minimum_checkpoint_continuation_macro_f1
+    task_scores = (fault_macro_f1, continuation_macro_f1)
+    task_floors = (fault_floor, continuation_floor)
+    if any(
+        type(score) is not float or not math.isfinite(score) or not 0.0 <= score <= 1.0
+        for score in task_scores
+    ) or any(type(value) is not float for value in task_floors):
+        raise ValueError("task-aware checkpoint selection lacks finite task metrics")
+    deficits = (
+        max(0.0, floor - composite),
+        max(0.0, cast(float, fault_floor) - cast(float, fault_macro_f1)),
+        max(0.0, cast(float, continuation_floor) - cast(float, continuation_macro_f1)),
+    )
+    return 0.0 if not any(deficits) else 1.0 + sum(deficits)
 
 
 def _select_v03_candidate(
@@ -210,7 +229,7 @@ def _select_v03_candidate(
         raise TypeError("candidate selection requires the exact semantic policy")
     if not candidates:
         raise PipelineExecutionError("v0.3 candidate selection inventory is empty")
-    if policy.metric == "semantic_floor_then_validation_nll" and len(candidates) != 1:
+    if policy.metric != "frozen_semantic_composite" and len(candidates) != 1:
         raise PipelineExecutionError(
             "hierarchical v0.3 selection requires its single frozen candidate"
         )
@@ -224,6 +243,8 @@ def _select_v03_candidate(
                 item.candidate_id,
             ),
         )
+    if policy.metric == "task_floor_then_validation_nll":
+        return candidates[0]
     return min(
         candidates,
         key=lambda item: (
@@ -3214,6 +3235,7 @@ def _run_training(
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     ],
     model_config: TransformerConfig,
     training: RemediationTraining,
@@ -3256,6 +3278,7 @@ def _run_training(
             "fault_continuation_focused",
             "hierarchical_task_label_balanced",
             "fault_boosted_hierarchical",
+            "task_weighted_hierarchical",
         }
         else None
     )
@@ -3276,6 +3299,7 @@ def _run_training(
                     "fault_continuation_focused",
                     "hierarchical_task_label_balanced",
                     "fault_boosted_hierarchical",
+                    "task_weighted_hierarchical",
                 ],
                 sampling_strategy,
             ),
@@ -3373,6 +3397,7 @@ def _load_training_result(attempt: Path, candidate_id: str) -> CompactTrainingRe
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
+        "task_weighted_hierarchical",
     }:
         binding = load_targeted_sampling_binding(binding_path.parent)
         if (
@@ -4258,9 +4283,28 @@ class _PipelineRuntime:
                     progress_message="v0.3 checkpoint-selection decoding in progress.",
                 )
                 composite = semantic_composite_score(selected, predictions)
+                task_aware = self.inputs.v03.selection.metric == "task_floor_then_validation_nll"
                 return _semantic_checkpoint_selection_score(
                     self.inputs.v03.selection,
                     composite=composite,
+                    fault_macro_f1=(
+                        classification_macro_f1_score(
+                            selected,
+                            predictions,
+                            task_name=TaskName.FAULT_FAMILY,
+                        )
+                        if task_aware
+                        else None
+                    ),
+                    continuation_macro_f1=(
+                        classification_macro_f1_score(
+                            selected,
+                            predictions,
+                            task_name=TaskName.CONTINUE_LOG,
+                        )
+                        if task_aware
+                        else None
+                    ),
                 )
 
             _result, candidate_artifacts = _run_training(
@@ -4602,6 +4646,16 @@ class _PipelineRuntime:
                 != _semantic_checkpoint_selection_score(
                     self.inputs.v03.selection,
                     composite=selection_composite,
+                    fault_macro_f1=(
+                        selection_evaluation.view_metrics.metrics.fault_family_macro_f1.estimate
+                        if self.inputs.v03.selection.metric == "task_floor_then_validation_nll"
+                        else None
+                    ),
+                    continuation_macro_f1=(
+                        selection_evaluation.view_metrics.metrics.continuation_macro_f1.estimate
+                        if self.inputs.v03.selection.metric == "task_floor_then_validation_nll"
+                        else None
+                    ),
                 )
                 or not _training_checkpoint_matches_result(
                     result,

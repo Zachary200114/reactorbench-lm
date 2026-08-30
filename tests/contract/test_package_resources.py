@@ -30,6 +30,8 @@ from reactorbench.resources import (
     phase6_remediation_script_resource,
     phase6_remediation_targeted_pipeline_config_resource,
     phase6_remediation_targeted_v03_config_resource,
+    phase6_remediation_task_weighted_pipeline_config_resource,
+    phase6_remediation_task_weighted_v03_config_resource,
     phase6_remediation_v02_config_resource,
     phase6_remediation_v03_config_resource,
     phase6_remediation_v04_config_resource,
@@ -157,6 +159,16 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
         ).read_bytes()
     )
     assert (
+        phase6_remediation_task_weighted_v03_config_resource().read_bytes()
+        == (ROOT / "configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml").read_bytes()
+    )
+    assert (
+        phase6_remediation_task_weighted_pipeline_config_resource().read_bytes()
+        == (
+            ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
+        ).read_bytes()
+    )
+    assert (
         phase6_v02_inventory_report_resource().read_bytes()
         == (ROOT / "docs/model/PHASE6_V02_INVENTORY.json").read_bytes()
     )
@@ -281,6 +293,9 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml"
         ),
+        "configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml": (
+            "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml"
+        ),
         "configs/experiments/phase6-remediation-v0.4.0.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-v0.4.0.toml"
         ),
@@ -314,6 +329,10 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml": (
             "reactorbench/_data/configs/experiments/"
             "phase6-remediation-pipeline-v0.4.0-targeted-04.toml"
+        ),
+        "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml": (
+            "reactorbench/_data/configs/experiments/"
+            "phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
         ),
         "docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
             "reactorbench/_data/docs/model/PHASE6_REMEDIATION_RUNBOOK.md"

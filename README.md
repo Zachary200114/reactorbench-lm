@@ -106,6 +106,10 @@ at immutable targeted-03 evidence.
   missed fault margin and continuation F1. Targeted-02 fixed continuation but failed
   six of ten checks. Targeted-03 completed training/evaluation and its corrected,
   no-training gate replay passes nine of ten checks, missing only fault margin.
+  Targeted-04's diagnosed-only oversampling regressed to eight of ten: fault margin
+  fell to -0.072348 and continuation macro-F1 to 0.893333. The result is preserved;
+  targeted-05 now restores hierarchical class balance, applies a task-weighted
+  objective, and adds disjoint task-level checkpoint floors. It has not been trained.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
@@ -126,6 +130,7 @@ Measured Phase 4 evidence and exact hashes are recorded in
 [the targeted-02 diagnosis](docs/model/PHASE6_TARGETED02_DIAGNOSIS.md) and
 [the targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md) and
 [the targeted-04 preregistration](docs/model/PHASE6_TARGETED04_PLAN.md) and
+[the targeted-05 diagnosis and preregistration](docs/model/PHASE6_TARGETED05_PLAN.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -262,7 +267,7 @@ window:
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. The current default is
-`phase6-remediation-v0.4.0-targeted-03`; do not resume or modify any preserved
+`phase6-remediation-v0.4.0-targeted-05`; do not resume or modify any preserved
 failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
 the current version, and exact current-task work when the runner reports it. The
 entire-rerun bar is stage-based rather than a wall-clock estimate. Keep the monitor

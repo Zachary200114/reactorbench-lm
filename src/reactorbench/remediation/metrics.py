@@ -487,6 +487,52 @@ def semantic_composite_score(
     return score
 
 
+def classification_macro_f1_score(
+    examples: tuple[RemediationExample, ...],
+    predictions: tuple[DualPathCompactPrediction, ...],
+    *,
+    task_name: TaskName,
+) -> float:
+    """Return one provenance-checked constrained classification-task macro F1."""
+
+    classification_tasks = {
+        TaskName.FAULT_FAMILY,
+        TaskName.NEXT_ACTION,
+        TaskName.CONTINUE_LOG,
+    }
+    if type(task_name) is not TaskName or task_name not in classification_tasks:
+        raise ValueError("macro F1 selection requires a classification task")
+    if (
+        type(examples) is not tuple
+        or type(predictions) is not tuple
+        or not examples
+        or len(examples) != len(predictions)
+    ):
+        raise ValueError("macro F1 selection requires aligned non-empty tuples")
+    ordered_examples = tuple(sorted(examples, key=lambda item: item.example_id))
+    ordered_predictions = tuple(sorted(predictions, key=lambda item: item.example_id))
+    if any(
+        example.example_id != prediction.example_id
+        or example.checksum_sha256 != prediction.example_checksum_sha256
+        for example, prediction in zip(ordered_examples, ordered_predictions, strict=True)
+    ):
+        raise ValueError("macro F1 selection prediction provenance mismatch")
+    positions = tuple(
+        index for index, example in enumerate(ordered_examples) if example.task_name is task_name
+    )
+    if not positions:
+        raise ValueError("macro F1 selection task has no examples")
+    predicted_targets = tuple(
+        _prediction_target(example, prediction.constrained)
+        for example, prediction in zip(ordered_examples, ordered_predictions, strict=True)
+    )
+    truth = tuple(str(ordered_examples[index].classification_label) for index in positions)
+    predicted = tuple(
+        _optional_target_label(predicted_targets[index]) or "__INVALID__" for index in positions
+    )
+    return _macro_f1(truth, predicted)
+
+
 def evaluate_semantic_predictions(
     *,
     view: RemediationView,
@@ -762,6 +808,7 @@ __all__ = [
     "SemanticEvaluationReport",
     "TaskBehaviorMetrics",
     "canonical_prediction_jsonl_bytes",
+    "classification_macro_f1_score",
     "compact_output_contract_byte_sha256",
     "evaluate_semantic_predictions",
     "prediction_artifact_byte_sha256",

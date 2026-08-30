@@ -36,6 +36,7 @@ from reactorbench.remediation.metrics import (
     BOOTSTRAP_SEED,
     SemanticEvaluationReport,
     canonical_prediction_jsonl_bytes,
+    classification_macro_f1_score,
     compact_output_contract_byte_sha256,
     evaluate_semantic_predictions,
     prediction_artifact_byte_sha256,
@@ -414,6 +415,22 @@ def test_perfect_dual_predictions_score_every_supported_metric_and_bootstrap() -
         "unconstrained_invalid_schema": len(examples)
     }
     assert semantic_composite_score(examples, predictions) == 1.0
+    assert (
+        classification_macro_f1_score(
+            examples,
+            predictions,
+            task_name=TaskName.FAULT_FAMILY,
+        )
+        == 1.0
+    )
+    assert (
+        classification_macro_f1_score(
+            examples,
+            predictions,
+            task_name=TaskName.CONTINUE_LOG,
+        )
+        == 1.0
+    )
     assert state_before[0] == state_after[0]
     assert np.array_equal(state_before[1], state_after[1])
     assert state_before[2:] == state_after[2:]
@@ -423,6 +440,33 @@ def test_perfect_dual_predictions_score_every_supported_metric_and_bootstrap() -
     constrained["exact_match_rate"] = 0.0
     with pytest.raises(ValidationError, match="checksum"):
         SemanticEvaluationReport.model_validate(payload)
+
+
+def test_task_macro_f1_selector_rejects_invalid_scope_and_provenance() -> None:
+    examples = _examples()
+    predictions = _perfect_predictions(examples)
+    with pytest.raises(ValueError, match="classification task"):
+        classification_macro_f1_score(
+            examples,
+            predictions,
+            task_name=TaskName.INCIDENT_SUMMARY,
+        )
+    with pytest.raises(ValueError, match="aligned non-empty"):
+        classification_macro_f1_score((), (), task_name=TaskName.FAULT_FAMILY)
+    changed = predictions[0].model_copy(update={"example_checksum_sha256": "0" * 64})
+    with pytest.raises(ValueError, match="provenance mismatch"):
+        classification_macro_f1_score(
+            examples,
+            (changed, *predictions[1:]),
+            task_name=TaskName.FAULT_FAMILY,
+        )
+    fault_examples = examples[:2]
+    with pytest.raises(ValueError, match="has no examples"):
+        classification_macro_f1_score(
+            fault_examples,
+            predictions[:2],
+            task_name=TaskName.CONTINUE_LOG,
+        )
 
 
 def test_wrong_valid_predictions_expose_errors_abstention_and_calibration() -> None:

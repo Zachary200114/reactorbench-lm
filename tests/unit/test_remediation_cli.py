@@ -970,10 +970,10 @@ def test_default_committed_pipeline_config_and_references_are_strictly_bound() -
     root = Path(__file__).resolve().parents[2]
     loaded = cli._load_configuration(root, cli.DEFAULT_PIPELINE_CONFIG)
     assert loaded.config.pipeline_version == "0.4.0"
-    assert loaded.config.run_name == "phase6-remediation-v0.4.0-targeted-04"
+    assert loaded.config.run_name == "phase6-remediation-v0.4.0-targeted-05"
     assert loaded.config.stop_before_final_evaluation is True
     assert loaded.checksum_sha256 == config_sha256(loaded.config)
-    assert loaded.config.v03_config_path.endswith("phase6-remediation-v0.3.4-fault-boosted.toml")
+    assert loaded.config.v03_config_path.endswith("phase6-remediation-v0.3.5-task-weighted.toml")
     assert loaded.config.reuse_v02_prefix is not None
 
 
