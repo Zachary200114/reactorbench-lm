@@ -286,6 +286,10 @@ the evidence-aligned training setup; they do not guarantee acceptance.
   - No live failure was manufactured and no audible sound was triggered during
     verification. The source contract freezes three beeps, both terminal failure
     states, critical macOS attention, and a once-only session guard.
+  - Clean-source targeted-02 dry run passed with the alert at source commit
+    `6a63bea3b63fe317368a7212a6850e03b51cb3a7`: configuration checksum
+    `12c5dd4b43eaf90c459990f2bd1cfe2e79b17fb12e72b74ce691bed97c67daeb`,
+    16 frozen stages, and no run creation.
 
 - Focused targeted-02 implementation verification on 2026-08-29:
   - Identity-bound read-only replay of targeted-01: 56 observations, temperature
@@ -589,6 +593,8 @@ successfully.
   `0e38874c83ad20a9af41547a959bd959c595278a`.
 - Focused targeted-02 implementation commit:
   `bdc86e2f3f40d3ab64885f706ce9f3a851ab9164`.
+- Terminal failure alert implementation commit:
+  `6a63bea3b63fe317368a7212a6850e03b51cb3a7`.
 - Final verification and independent re-review disposition: ship, with no required
   corrections for targeted-01 preparation.
 - Focused targeted-02 remediation is locally checkpointed; verify the final clean
