@@ -2,13 +2,12 @@
 
 Last updated: 2026-08-30 America/New_York
 
-Current phase: **Phase 6 targeted-05 task-weighted remediation implemented and
-verified; final clean-source dry run pending the implementation commit**
+Current phase: **Phase 6 targeted-05 task-weighted remediation implemented,
+verified, and ready for its first owner-operated run**
 
-Current objective: commit the verified targeted-05 implementation, run the
-clean-source dry run and monitor smoke checks, and leave the new non-overwriting
-candidate ready for an owner-operated run. Do not resume or overwrite targeted-04,
-lower any threshold, open final/golden evaluation, or begin Phase 7.
+Current objective: run the new non-overwriting targeted-05 development experiment
+through the local monitor. Do not resume or overwrite targeted-04, lower any
+threshold, open final/golden evaluation, or begin Phase 7.
 
 Checkpoint reason: targeted-04 was a genuine scientific block, not an engineering
 crash. It passed eight of ten unchanged checks. Fault-comparator margin regressed to
@@ -34,6 +33,8 @@ percentage was measured.
 
 - Run identity:
   `phase6-remediation-v0.4.0-targeted-05`.
+- Implementation commit:
+  `69be80e09804cf796824379de5f23435d6a74b29`.
 - Run directory: absent, as required before the first Start.
 - v0.3 config:
   `configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml`.
@@ -60,7 +61,11 @@ percentage was measured.
 - Branch coverage: 85.06%, meeting the fixed 85% floor.
 - Ruff: passed. Strict mypy: all 78 source modules passed. Bash syntax: passed.
 - Native Swift/AppKit type-check: passed using a private temporary module cache.
-- Clean-source dry run and monitor smoke are pending the implementation commit.
+- Clean-source dry run: passed at implementation commit `69be80e`; 16 frozen stages,
+  config checksum `bfdb3833...`, and no run state created.
+- Monitor smoke and strict JSON snapshot: passed; verified `Not started`, targeted-05,
+  stage total 16, source commit `69be80e...`, Start/Refresh/Copy enabled, and
+  Stop/Resume/Finder disabled.
 
 ## Preserved targeted-04 checkpoint
 
@@ -416,6 +421,8 @@ the evidence-aligned training setup; they do not guarantee acceptance.
     268 passed and 1 protected historical reader deliberately deselected.
   - Ruff formatting and lint: passed. Strict mypy: all 78 source modules passed.
     Shell syntax and native Swift/AppKit type-check: passed.
+  - Clean-source pipeline dry run, non-window monitor smoke, and strict JSON status
+    snapshot passed at implementation commit `69be80e09804cf796824379de5f23435d6a74b29`.
   - The targeted-05 run directory remained absent. No training, data generation,
     final/golden execution, push, or deployment occurred.
 
@@ -762,7 +769,8 @@ successfully.
   `6b8a89c10aeec45518246d6b1ac082480cec4af7`.
 - Targeted-04 fault-margin implementation and clean dry-run commit:
   `99ef3d15ab42e83a6fe60d39346fde4dc007e66b`.
-- Targeted-05 implementation commit: pending the local checkpoint commit.
+- Targeted-05 implementation and clean-source dry-run commit:
+  `69be80e09804cf796824379de5f23435d6a74b29`.
 - The final handoff commit is the commit containing this status update; verify it with
   `git rev-parse HEAD` before pushing or starting the run.
 - Final verification and independent re-review disposition: ship, with no required
@@ -782,8 +790,7 @@ successfully.
 
 ## Immediate next step
 
-After the implementation commit and clean-source dry-run verification, open the local
-Phase 6 monitor, confirm it shows `Not started` for targeted-05,
+Open the local Phase 6 monitor, confirm it shows `Not started` for targeted-05,
 run **Readiness check**, then press **Start new rerun**. The run may still fail its
 unchanged scientific gate; preserve that result if it does.
 
