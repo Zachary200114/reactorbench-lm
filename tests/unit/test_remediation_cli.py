@@ -37,6 +37,7 @@ SCRIPTS = (
     "check_phase6_status.sh",
     "resume_phase6_pipeline.sh",
     "stop_phase6_pipeline.sh",
+    "replay_phase6_targeted03_gate.sh",
     "run_phase6_evaluation.sh",
 )
 

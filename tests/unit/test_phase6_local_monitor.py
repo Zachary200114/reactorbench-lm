@@ -382,6 +382,10 @@ def test_native_monitor_sounds_one_sustained_alarm_for_terminal_failure() -> Non
     assert "terminalFailureAlarm = alarm" in source
     assert "NSSound.beep()" in source
     assert "requestUserAttention(.criticalRequest)" in source
+    assert 'silenceAlarmButton = NSButton(title: "Stop alarm"' in source
+    assert "silenceTerminalFailureAlarm(recordActivity: true)" in source
+    assert "terminalFailureAlarmWorkItems.forEach { $0.cancel() }" in source
+    assert "silenceAlarmButton.isEnabled = terminalFailureAlarmActive" in source
 
 
 def test_json_operation_uses_safe_message_without_echoing_command_output(

@@ -36,6 +36,7 @@ include = [
   "/scripts/check_phase6_status.sh",
   "/scripts/open_phase6_progress_gui.sh",
   "/scripts/phase6_monitor_controller.sh",
+  "/scripts/replay_phase6_targeted03_gate.sh",
   "/scripts/resume_phase6_pipeline.sh",
   "/scripts/run_phase6_evaluation.sh",
   "/scripts/run_phase6_pipeline.sh",
@@ -79,6 +80,7 @@ packages = ["src/reactorbench"]
 "scripts/check_phase6_status.sh" = "reactorbench/_data/scripts/check_phase6_status.sh"
 "scripts/open_phase6_progress_gui.sh" = "reactorbench/_data/scripts/open_phase6_progress_gui.sh"
 "scripts/phase6_monitor_controller.sh" = "reactorbench/_data/scripts/phase6_monitor_controller.sh"
+"scripts/replay_phase6_targeted03_gate.sh" = "reactorbench/_data/scripts/replay_phase6_targeted03_gate.sh"
 "scripts/resume_phase6_pipeline.sh" = "reactorbench/_data/scripts/resume_phase6_pipeline.sh"
 "scripts/run_phase6_evaluation.sh" = "reactorbench/_data/scripts/run_phase6_evaluation.sh"
 "scripts/run_phase6_pipeline.sh" = "reactorbench/_data/scripts/run_phase6_pipeline.sh"

@@ -133,6 +133,28 @@ class FinalEvaluationRunner(Protocol):
     ) -> object: ...
 
 
+class GateReplayCheck(Protocol):
+    passed: bool
+
+
+class GateReplayAcceptance(Protocol):
+    checks: Sequence[GateReplayCheck]
+
+
+class GateReplayCertification(Protocol):
+    advancement_allowed: bool
+
+
+class GateReplayRunner(Protocol):
+    def __call__(
+        self,
+        *,
+        project_root: Path,
+        config: PipelineConfig,
+        replay_source_commit: str,
+    ) -> tuple[Path, GateReplayCertification, GateReplayAcceptance]: ...
+
+
 def _safe_relative_argument(value: str) -> str:
     if (
         type(value) is not str
@@ -406,6 +428,31 @@ def _run_final_evaluation(
                 ExitCode.FINAL_EVALUATION_LOCKED,
             ) from None
         raise CliFailure("Final evaluation failed safely.", ExitCode.STATE) from None
+
+
+def _replay_v03_gate(
+    *,
+    project_root: Path,
+    loaded: LoadedPipeline,
+    source_commit: str,
+    output: TextIO,
+) -> ExitCode:
+    runner = cast(
+        GateReplayRunner,
+        getattr(_pipeline_module(), "replay_targeted_v03_gate", None),
+    )
+    if not callable(runner):
+        raise CliFailure("Gate replay implementation is unavailable.", ExitCode.CONFIGURATION)
+    replay_root, certification, acceptance = runner(
+        project_root=project_root,
+        config=loaded.config,
+        replay_source_commit=source_commit,
+    )
+    passed = sum(check.passed for check in acceptance.checks)
+    print(f"Gate replay certified {passed} of {len(acceptance.checks)} checks.", file=output)
+    print(f"Certification: {replay_root / 'gate-replay-certification.json'}", file=output)
+    print("No training or final evaluation was run.", file=output)
+    return ExitCode.OK if certification.advancement_allowed else ExitCode.BLOCKED
 
 
 def _stop_requested(path: Path) -> bool:
@@ -875,6 +922,8 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("start", "status", "resume", "stop", "dry-run"):
         command = subparsers.add_parser(name)
         command.add_argument("--config", default=DEFAULT_PIPELINE_CONFIG)
+    replay = subparsers.add_parser("replay-v03-gate")
+    replay.add_argument("--config", default=DEFAULT_PIPELINE_CONFIG)
     evaluation = subparsers.add_parser("final-evaluation")
     evaluation.add_argument("--config", default=DEFAULT_PIPELINE_CONFIG)
     evaluation.add_argument("--confirm-final-evaluation", action="store_true")
@@ -928,6 +977,13 @@ def main(
             )
         elif command == "dry-run":
             code = _dry_run(
+                project_root=root,
+                loaded=loaded,
+                source_commit=source_commit,
+                output=output,
+            )
+        elif command == "replay-v03-gate":
+            code = _replay_v03_gate(
                 project_root=root,
                 loaded=loaded,
                 source_commit=source_commit,

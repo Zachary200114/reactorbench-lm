@@ -114,6 +114,35 @@ def test_semantic_checkpoint_selector_uses_floor_before_validation_nll() -> None
     assert pipeline._semantic_checkpoint_selection_score(hierarchical, composite=0.80) == 0.0
     assert pipeline._semantic_checkpoint_selection_score(hierarchical, composite=0.70) == 1.05
 
+    historical_candidates = (
+        pipeline.CandidateScore(
+            candidate_id="higher-semantic",
+            checkpoint_manifest_sha256=HASH_A,
+            semantic_composite=0.80,
+            selected_validation_nll=0.40,
+            selected_step=10,
+            evaluation_report_sha256=HASH_B,
+        ),
+        pipeline.CandidateScore(
+            candidate_id="lower-nll",
+            checkpoint_manifest_sha256=HASH_C,
+            semantic_composite=0.79,
+            selected_validation_nll=0.10,
+            selected_step=5,
+            evaluation_report_sha256=HASH_D,
+        ),
+    )
+    assert (
+        pipeline._select_v03_candidate(historical, historical_candidates).candidate_id
+        == "higher-semantic"
+    )
+    assert (
+        pipeline._select_v03_candidate(hierarchical, historical_candidates[:1]).candidate_id
+        == "higher-semantic"
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="single frozen candidate"):
+        pipeline._select_v03_candidate(hierarchical, historical_candidates)
+
     missing_floor = SemanticSelectionPolicy.model_construct(
         **hierarchical.model_dump(mode="python", exclude={"minimum_checkpoint_semantic_composite"}),
         minimum_checkpoint_semantic_composite=None,
@@ -1789,7 +1818,13 @@ def test_v03_development_evaluation_selects_on_subset_but_gates_on_full_iid(
         SimpleNamespace(candidate_id="balanced"),
     )
     inputs = SimpleNamespace(
-        v03=SimpleNamespace(candidates=candidates),
+        v03=SimpleNamespace(
+            candidates=candidates,
+            selection=load_v03_config(
+                Path(__file__).resolve().parents[2]
+                / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
+            ).selection,
+        ),
         tokenizer=object(),
     )
     runtime = pipeline._PipelineRuntime(
@@ -1907,7 +1942,14 @@ def test_v03_gate_rederives_complete_candidate_ranking_provenance(
         pipeline._ExecutionInputs,
         SimpleNamespace(
             v02=SimpleNamespace(model=model),
-            v03=SimpleNamespace(training=training, candidates=candidate_policies),
+                v03=SimpleNamespace(
+                    training=training,
+                    candidates=candidate_policies,
+                    selection=load_v03_config(
+                        Path(__file__).resolve().parents[2]
+                        / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
+                    ).selection,
+                ),
             tokenizer=SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_C)),
             generation_caps={},
             compact_contract_sha256=HASH_D,

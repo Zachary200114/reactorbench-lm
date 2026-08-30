@@ -200,6 +200,41 @@ def _semantic_checkpoint_selection_score(
     return 0.0 if composite >= floor else 1.0 + (floor - composite)
 
 
+def _select_v03_candidate(
+    policy: SemanticSelectionPolicy,
+    candidates: tuple[CandidateScore, ...],
+) -> CandidateScore:
+    """Reconstruct the frozen candidate decision under the configured policy."""
+
+    if type(policy) is not SemanticSelectionPolicy:
+        raise TypeError("candidate selection requires the exact semantic policy")
+    if not candidates:
+        raise PipelineExecutionError("v0.3 candidate selection inventory is empty")
+    if policy.metric == "semantic_floor_then_validation_nll" and len(candidates) != 1:
+        raise PipelineExecutionError(
+            "hierarchical v0.3 selection requires its single frozen candidate"
+        )
+    if policy.metric == "frozen_semantic_composite":
+        return min(
+            candidates,
+            key=lambda item: (
+                -item.semantic_composite,
+                item.selected_validation_nll,
+                item.selected_step,
+                item.candidate_id,
+            ),
+        )
+    return min(
+        candidates,
+        key=lambda item: (
+            _semantic_checkpoint_selection_score(policy, composite=item.semantic_composite),
+            item.selected_validation_nll,
+            item.selected_step,
+            item.candidate_id,
+        ),
+    )
+
+
 TRUSTED_GIT = "/usr/bin/git"
 
 _DEVELOPMENT_VIEW_BY_REMEDIATION: Mapping[RemediationView, DevelopmentView] = MappingProxyType(
@@ -660,6 +695,42 @@ class TargetedV03GateBinding(ContractModel):
         )
         if self.checksum_sha256 != expected:
             raise ValueError("targeted v0.3 gate binding checksum mismatch")
+        return self
+
+
+class V03GateReplayCertification(ContractModel):
+    """Immutable certificate for a no-training reconstruction of a preserved gate."""
+
+    report_version: Literal["0.4.1-gate-replay"] = "0.4.1-gate-replay"
+    source_run_name: Literal["phase6-remediation-v0.4.0-targeted-03"]
+    replay_name: Literal["phase6-remediation-v0.4.0-targeted-03-gate-replay-01"]
+    source_run_manifest_sha256: Sha256
+    source_pipeline_state_file_sha256: Sha256
+    source_pipeline_state_contract_sha256: Sha256
+    source_commit: GitCommit
+    replay_source_commit: GitCommit
+    pipeline_config_sha256: Sha256
+    training_completion_marker_sha256: Sha256
+    evaluation_completion_marker_sha256: Sha256
+    acceptance_sha256: Sha256
+    targeted_gate_binding_sha256: Sha256
+    passed_check_count: StrictInt = Field(ge=0, le=10)
+    total_check_count: Literal[10]
+    advancement_allowed: StrictBool
+    thresholds_unchanged: Literal[True]
+    retraining_performed: Literal[False]
+    final_evaluation_accessed: Literal[False]
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def certification_matches(self) -> V03GateReplayCertification:
+        if self.advancement_allowed is not (self.passed_check_count == self.total_check_count):
+            raise ValueError("gate replay advancement differs from reconstructed checks")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("gate replay certification checksum mismatch")
         return self
 
 
@@ -4269,15 +4340,7 @@ class _PipelineRuntime:
                 )
             )
         ordered_scores = tuple(sorted(scores, key=lambda item: item.candidate_id))
-        selected = min(
-            ordered_scores,
-            key=lambda item: (
-                -item.semantic_composite,
-                item.selected_validation_nll,
-                item.selected_step,
-                item.candidate_id,
-            ),
-        )
+        selected = _select_v03_candidate(self.inputs.v03.selection, ordered_scores)
         draft = CandidateSelectionReport.model_construct(
             selection_manifest_sha256=selection.checksum_sha256,
             candidates=ordered_scores,
@@ -4423,8 +4486,12 @@ class _PipelineRuntime:
             ),
         )
 
-    def v03_gate(self, context: StageContext) -> StageOutcome:
-        self._start(context)
+    def _reconstruct_v03_gate_evidence(
+        self,
+        context: StageContext,
+    ) -> tuple[V03AcceptanceResult, TargetedV03GateBinding | None]:
+        """Reopen and reconstruct v0.3 evidence without publishing stage state."""
+
         iid_dataset = _load_stage_dataset(
             context,
             self.config,
@@ -4527,7 +4594,11 @@ class _PipelineRuntime:
                 or result.validation_tokenized_sha256 != expected_selection_tokenized_sha256
                 or result.selected_validation_nll != score.selected_validation_nll
                 or result.selected_step != score.selected_step
-                or result.selected_score != 1.0 - selection_composite
+                or result.selected_score
+                != _semantic_checkpoint_selection_score(
+                    self.inputs.v03.selection,
+                    composite=selection_composite,
+                )
                 or not _training_checkpoint_matches_result(
                     result,
                     checkpoint,
@@ -4558,14 +4629,9 @@ class _PipelineRuntime:
                 raise PipelineExecutionError(
                     "v0.3 candidate ranking differs from immutable training/evaluation evidence"
                 )
-        verified_selected = min(
+        verified_selected = _select_v03_candidate(
+            self.inputs.v03.selection,
             selection.candidates,
-            key=lambda item: (
-                -item.semantic_composite,
-                item.selected_validation_nll,
-                item.selected_step,
-                item.candidate_id,
-            ),
         )
         if (
             verified_selected.candidate_id != selection.selected_candidate_id
@@ -4729,11 +4795,14 @@ class _PipelineRuntime:
             if targeted_acceptance is not None
             else evaluate_v03_acceptance(evaluation.view_metrics)
         )
+        return acceptance, targeted_binding
+
+    def v03_gate(self, context: StageContext) -> StageOutcome:
+        self._start(context)
+        acceptance, targeted_binding = self._reconstruct_v03_gate_evidence(context)
         artifact = _contract_artifact(context, "v03-acceptance.json", acceptance)
         gate_artifacts: tuple[ArtifactReference, ...] = (artifact,)
-        if targeted:
-            if targeted_binding is None:
-                raise PipelineExecutionError("targeted calibration gate evidence disappeared")
+        if targeted_binding is not None:
             gate_artifacts = (
                 artifact,
                 _contract_artifact(context, "v03-targeted-gate-binding.json", targeted_binding),
@@ -6078,6 +6147,184 @@ def write_terminal_review_bundle(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _GateEvidenceContext:
+    run_directory: Path
+    source_commit: str
+
+
+def _verified_replay_reference(root: Path, reference: ArtifactReference) -> Path:
+    path = root / reference.relative_path
+    cursor = root
+    for part in Path(reference.relative_path).parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise PipelineExecutionError("gate replay evidence traverses a symbolic link")
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not path.resolve(strict=True).is_relative_to(root.resolve(strict=True))
+        or path.stat().st_size != reference.size_bytes
+        or _sha256(path) != reference.sha256
+    ):
+        raise PipelineExecutionError("gate replay artifact checksum or size differs")
+    return path
+
+
+def replay_targeted_v03_gate(
+    *,
+    project_root: Path,
+    config: PipelineConfig,
+    replay_source_commit: str,
+) -> tuple[Path, V03GateReplayCertification, V03AcceptanceResult]:
+    """Certify targeted-03 from immutable completed evidence without retraining."""
+
+    source_name = "phase6-remediation-v0.4.0-targeted-03"
+    replay_name = "phase6-remediation-v0.4.0-targeted-03-gate-replay-01"
+    if (
+        not isinstance(project_root, Path)
+        or type(config) is not PipelineConfig
+        or not re.fullmatch(r"[0-9a-f]{40,64}", replay_source_commit)
+        or config.run_name != source_name
+    ):
+        raise TypeError("targeted v0.3 gate replay requires its exact frozen bindings")
+    root = project_root.resolve(strict=True)
+    if _verify_runner_source(
+        root,
+        source_commit=replay_source_commit,
+        run_root=config.run_root,
+    ) != replay_source_commit:
+        raise PipelineExecutionError("gate replay source binding differs from the clean checkout")
+    source_root = root / config.run_root / source_name
+    if source_root.is_symlink() or not source_root.is_dir():
+        raise PipelineExecutionError("preserved targeted-03 run is unavailable or unsafe")
+    store = PipelineStore(source_root, maximum_state_bytes=config.maximum_status_bytes)
+    manifest = store.load_manifest()
+    state = store.load_state()
+    pipeline_checksum = config_sha256(config)
+    manifest_path = source_root / "run-manifest.json"
+    state_path = source_root / "pipeline-state.json"
+    original_manifest_file_sha256 = _sha256(manifest_path)
+    original_state_file_sha256 = _sha256(state_path)
+    if (
+        manifest.run_name != source_name
+        or state.run_name != source_name
+        or manifest.pipeline_config_sha256 != pipeline_checksum
+        or state.pipeline_config_sha256 != pipeline_checksum
+        or state.source_commit != manifest.source_commit
+        or manifest.v02_config_sha256 != config.v02_config_sha256
+        or manifest.v03_config_sha256 != config.v03_config_sha256
+        or manifest.v04_config_sha256 != config.v04_config_sha256
+        or state.status != "failed"
+        or any(record.status is not StageStatus.COMPLETED for record in state.stages[:9])
+        or state.stages[9].status is not StageStatus.FAILED
+        or any(record.status is not StageStatus.PENDING for record in state.stages[10:])
+    ):
+        raise PipelineExecutionError("preserved targeted-03 state differs from the replay policy")
+
+    completion_hashes: dict[int, str] = {}
+    for ordinal, record in enumerate(state.stages[:9]):
+        marker_path = source_root / "stages" / f"{ordinal:02d}-{record.name}" / "completed.json"
+        marker = _read_contract(
+            marker_path,
+            StageCompletionMarker,
+            maximum_bytes=config.maximum_status_bytes,
+        )
+        if (
+            marker.run_name != source_name
+            or marker.pipeline_config_sha256 != pipeline_checksum
+            or marker.source_commit != manifest.source_commit
+            or marker.stage != record.name
+            or marker.ordinal != ordinal
+            or marker.attempt != record.attempt_count
+            or marker.attempt_relative_path != record.latest_attempt_path
+        ):
+            raise PipelineExecutionError("gate replay completion marker binding differs")
+        outcome_path = _verified_replay_reference(source_root, marker.outcome)
+        outcome = _read_contract(
+            outcome_path,
+            StageOutcome,
+            maximum_bytes=config.maximum_status_bytes,
+        )
+        if (
+            len(outcome.artifacts) != record.artifact_count
+            or len(outcome.metrics) != record.metric_count
+            or outcome.summary != record.summary
+            or outcome.advancement_allowed is not record.advancement_allowed
+        ):
+            raise PipelineExecutionError("gate replay stage outcome differs from durable state")
+        for reference in outcome.artifacts:
+            _verified_replay_reference(source_root, reference)
+        completion_hashes[ordinal] = _sha256(marker_path)
+
+    inputs = _load_execution_inputs(project_root=root, config=config)
+    runtime = _PipelineRuntime(
+        project_root=root,
+        config=config,
+        source_commit=manifest.source_commit,
+        inputs=inputs,
+    )
+    evidence_context = _GateEvidenceContext(
+        run_directory=source_root,
+        source_commit=manifest.source_commit,
+    )
+    acceptance, binding = runtime._reconstruct_v03_gate_evidence(
+        cast(StageContext, evidence_context)
+    )
+    if binding is None or len(acceptance.checks) != 10:
+        raise PipelineExecutionError("targeted gate replay did not reconstruct complete evidence")
+    if (
+        _sha256(manifest_path) != original_manifest_file_sha256
+        or _sha256(state_path) != original_state_file_sha256
+        or store.load_manifest() != manifest
+        or store.load_state() != state
+    ):
+        raise PipelineExecutionError("source run changed during gate replay")
+
+    replay_root = root / config.run_root / replay_name
+    if replay_root.exists() or replay_root.is_symlink():
+        raise FileExistsError("gate replay identity already exists")
+    replay_root.mkdir(mode=0o750)
+    _write_contract(replay_root / "v03-acceptance.json", acceptance)
+    _write_contract(replay_root / "v03-targeted-gate-binding.json", binding)
+    passed_count = sum(check.passed for check in acceptance.checks)
+    draft = V03GateReplayCertification.model_construct(
+        source_run_name=source_name,
+        replay_name=replay_name,
+        source_run_manifest_sha256=manifest.checksum_sha256,
+        source_pipeline_state_file_sha256=original_state_file_sha256,
+        source_pipeline_state_contract_sha256=state.checksum_sha256,
+        source_commit=manifest.source_commit,
+        replay_source_commit=replay_source_commit,
+        pipeline_config_sha256=pipeline_checksum,
+        training_completion_marker_sha256=completion_hashes[7],
+        evaluation_completion_marker_sha256=completion_hashes[8],
+        acceptance_sha256=acceptance.checksum_sha256,
+        targeted_gate_binding_sha256=binding.checksum_sha256,
+        passed_check_count=passed_count,
+        total_check_count=10,
+        advancement_allowed=acceptance.advancement_allowed,
+        thresholds_unchanged=True,
+        retraining_performed=False,
+        final_evaluation_accessed=False,
+        checksum_sha256="0" * 64,
+    )
+    certification = _bound_model(draft, V03GateReplayCertification)
+    certification_path = replay_root / "gate-replay-certification.json"
+    _write_contract(certification_path, certification)
+    if (
+        _read_contract(certification_path, V03GateReplayCertification) != certification
+        or _read_contract(replay_root / "v03-acceptance.json", V03AcceptanceResult)
+        != acceptance
+        or _read_contract(
+            replay_root / "v03-targeted-gate-binding.json", TargetedV03GateBinding
+        )
+        != binding
+    ):
+        raise PipelineExecutionError("gate replay publication failed strict verification")
+    return replay_root, certification, acceptance
+
+
 def build_stage_actions(
     project_root: Path,
     config: PipelineConfig,
@@ -6177,6 +6424,7 @@ __all__ = [
     "build_stage_actions",
     "build_stop_requested",
     "pipeline_stop_file",
+    "replay_targeted_v03_gate",
     "request_pipeline_stop",
     "run_final_evaluation",
     "verify_final_evaluation_prerequisites",

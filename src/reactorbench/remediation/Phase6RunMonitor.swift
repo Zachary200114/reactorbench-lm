@@ -166,6 +166,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private let resumeButton = NSButton(title: "Resume stopped rerun", target: nil, action: nil)
     private let finderButton = NSButton(title: "Open run folder", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy status", target: nil, action: nil)
+    private let silenceAlarmButton = NSButton(title: "Stop alarm", target: nil, action: nil)
     private let closeButton = NSButton(title: "Close", target: nil, action: nil)
 
     private var latestStatus: StatusPayload?
@@ -177,6 +178,8 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private var lastStatusSignature: String?
     private var terminalFailureAlertIssued = false
     private var terminalFailureAlarm: NSSound?
+    private var terminalFailureAlarmActive = false
+    private var terminalFailureAlarmWorkItems: [DispatchWorkItem] = []
 
     static func make() throws -> MonitorWindowController {
         var root = URL(fileURLWithPath: #filePath)
@@ -319,14 +322,15 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
 
         configureButtons()
         let buttonRows: [[NSView]] = [
-            [readinessButton, startButton, refreshButton, stopButton],
-            [resumeButton, finderButton, copyButton, closeButton],
+            [readinessButton, startButton, refreshButton],
+            [stopButton, resumeButton, silenceAlarmButton],
+            [finderButton, copyButton, closeButton],
         ]
         let buttonGrid = NSGridView(views: buttonRows)
         buttonGrid.rowSpacing = 7
         buttonGrid.columnSpacing = 7
-        for column in 0 ..< 4 {
-            buttonGrid.column(at: column).width = 210
+        for column in 0 ..< 3 {
+            buttonGrid.column(at: column).width = 280
         }
         let controlsBox = makeBox(title: "Owner controls", content: buttonGrid)
         stack.addArrangedSubview(controlsBox)
@@ -387,6 +391,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             (resumeButton, #selector(resumePressed)),
             (finderButton, #selector(finderPressed)),
             (copyButton, #selector(copyPressed)),
+            (silenceAlarmButton, #selector(silenceAlarmPressed)),
             (closeButton, #selector(closePressed)),
         ]
         for (button, action) in specifications {
@@ -453,6 +458,10 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
 
     @objc private func closePressed() {
         window?.performClose(nil)
+    }
+
+    @objc private func silenceAlarmPressed() {
+        silenceTerminalFailureAlarm(recordActivity: true)
     }
 
     private func confirm(title: String, message: String, confirmTitle: String) -> Bool {
@@ -627,6 +636,8 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             !terminalFailureAlertIssued
         else { return }
         terminalFailureAlertIssued = true
+        terminalFailureAlarmActive = true
+        applyButtonState()
         appendActivity("Terminal failure detected. Maximum-volume audible alarm started.")
         NSApplication.shared.requestUserAttention(.criticalRequest)
         if let alarm = NSSound(
@@ -637,22 +648,41 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             alarm.loops = true
             terminalFailureAlarm = alarm
             alarm.play()
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + terminalFailureAlarmDurationSeconds
-            ) { [weak self] in
-                self?.terminalFailureAlarm?.stop()
-                self?.terminalFailureAlarm = nil
+            let stopItem = DispatchWorkItem { [weak self] in
+                self?.silenceTerminalFailureAlarm(recordActivity: false)
             }
+            terminalFailureAlarmWorkItems.append(stopItem)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + terminalFailureAlarmDurationSeconds,
+                execute: stopItem
+            )
         } else {
             for beepIndex in 0 ..< terminalFailureFallbackBeepCount {
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now()
-                        + (Double(beepIndex) * terminalFailureFallbackBeepSpacingSeconds)
-                ) {
+                let beepItem = DispatchWorkItem { [weak self] in
+                    guard self?.terminalFailureAlarmActive == true else { return }
                     NSSound.beep()
                 }
+                terminalFailureAlarmWorkItems.append(beepItem)
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now()
+                        + (Double(beepIndex) * terminalFailureFallbackBeepSpacingSeconds),
+                    execute: beepItem
+                )
             }
         }
+    }
+
+    private func silenceTerminalFailureAlarm(recordActivity: Bool) {
+        let wasActive = terminalFailureAlarmActive
+        terminalFailureAlarm?.stop()
+        terminalFailureAlarm = nil
+        terminalFailureAlarmWorkItems.forEach { $0.cancel() }
+        terminalFailureAlarmWorkItems.removeAll()
+        terminalFailureAlarmActive = false
+        if recordActivity && wasActive {
+            appendActivity("Terminal failure alarm stopped by the owner.")
+        }
+        applyButtonState()
     }
 
     private func formatDuration(_ seconds: Double?) -> String {
@@ -680,6 +710,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             resumeButton.isEnabled = false
             finderButton.isEnabled = false
             copyButton.isEnabled = false
+            silenceAlarmButton.isEnabled = terminalFailureAlarmActive
             closeButton.isEnabled = true
             return
         }
@@ -692,6 +723,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             !busy && !detachedLaunchPending
         finderButton.isEnabled = status.policy.openFinder && status.runExists && !busy
         copyButton.isEnabled = status.policy.copyStatus && !busy
+        silenceAlarmButton.isEnabled = terminalFailureAlarmActive
         closeButton.isEnabled = true
     }
 
