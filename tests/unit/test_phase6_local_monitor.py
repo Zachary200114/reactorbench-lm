@@ -365,16 +365,21 @@ def test_native_window_payload_contains_exact_safe_policy_and_no_arbitrary_paths
     assert "path" not in " ".join(payload)
 
 
-def test_native_monitor_sounds_one_three_beep_alert_for_terminal_failure() -> None:
+def test_native_monitor_sounds_one_sustained_alarm_for_terminal_failure() -> None:
     source = (PROJECT_ROOT / "src/reactorbench/remediation/Phase6RunMonitor.swift").read_text(
         encoding="utf-8"
     )
 
     assert 'terminalFailureStates: Set<String> = ["Blocked", "Failed"]' in source
-    assert "terminalFailureBeepCount = 3" in source
+    assert "terminalFailureAlarmDurationSeconds = 45.0" in source
+    assert "terminalFailureFallbackBeepCount = 23" in source
+    assert 'terminalFailureSoundPath = "/System/Library/Sounds/Sosumi.aiff"' in source
     assert "!terminalFailureAlertIssued" in source
     assert "terminalFailureAlertIssued = true" in source
     assert "alertForTerminalFailureIfNeeded(status)" in source
+    assert "alarm.volume = 1.0" in source
+    assert "alarm.loops = true" in source
+    assert "terminalFailureAlarm = alarm" in source
     assert "NSSound.beep()" in source
     assert "requestUserAttention(.criticalRequest)" in source
 

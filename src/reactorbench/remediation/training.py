@@ -42,6 +42,7 @@ from .config import RemediationTraining
 from .sampling import (
     SamplingMetadataRecord,
     fault_continuation_focused_batch_indices,
+    hierarchical_task_label_balanced_batch_indices,
     sampling_metadata_inventory_sha256,
     task_balanced_batch_indices,
     task_class_balanced_batch_indices,
@@ -89,6 +90,7 @@ type SamplingStrategy = Literal[
     "task_balanced",
     "task_class_balanced",
     "fault_continuation_focused",
+    "hierarchical_task_label_balanced",
 ]
 type EvaluationCallback = Callable[[TransformerLM, int, float], float]
 type ProgressCallback = Callable[["TrainingProgress"], None]
@@ -103,8 +105,12 @@ class TrainingError(RuntimeError):
 class TargetedSamplingBinding(ContractModel):
     """Required sidecar provenance for samplers that consume semantic metadata."""
 
-    contract_version: Literal["0.3.1-targeted", "0.3.2-focused"]
-    sampling_strategy: Literal["task_class_balanced", "fault_continuation_focused"]
+    contract_version: Literal["0.3.1-targeted", "0.3.2-focused", "0.3.3-hierarchical"]
+    sampling_strategy: Literal[
+        "task_class_balanced",
+        "fault_continuation_focused",
+        "hierarchical_task_label_balanced",
+    ]
     candidate_id: CandidateId
     training_config_sha256: Sha256
     train_inventory_sha256: Sha256
@@ -114,9 +120,11 @@ class TargetedSamplingBinding(ContractModel):
 
     @model_validator(mode="after")
     def checksum_matches(self) -> TargetedSamplingBinding:
-        expected_version = (
-            "0.3.1-targeted" if self.sampling_strategy == "task_class_balanced" else "0.3.2-focused"
-        )
+        expected_version = {
+            "task_class_balanced": "0.3.1-targeted",
+            "fault_continuation_focused": "0.3.2-focused",
+            "hierarchical_task_label_balanced": "0.3.3-hierarchical",
+        }[self.sampling_strategy]
         if self.contract_version != expected_version:
             raise ValueError("targeted sampling binding version differs from its strategy")
         expected = canonical_sha256(
@@ -135,15 +143,19 @@ def bind_targeted_sampling(
     train_tokenized_sha256: str,
     sampling_metadata_inventory_sha256: str,
     sampling_strategy: Literal[
-        "task_class_balanced", "fault_continuation_focused"
+        "task_class_balanced",
+        "fault_continuation_focused",
+        "hierarchical_task_label_balanced",
     ] = "task_class_balanced",
 ) -> TargetedSamplingBinding:
     """Create the checksum-bound sidecar without altering legacy artifacts."""
 
     draft = TargetedSamplingBinding.model_construct(
-        contract_version=(
-            "0.3.1-targeted" if sampling_strategy == "task_class_balanced" else "0.3.2-focused"
-        ),
+        contract_version={
+            "task_class_balanced": "0.3.1-targeted",
+            "fault_continuation_focused": "0.3.2-focused",
+            "hierarchical_task_label_balanced": "0.3.3-hierarchical",
+        }[sampling_strategy],
         sampling_strategy=sampling_strategy,
         candidate_id=candidate_id,
         training_config_sha256=training_config_sha256,
@@ -563,6 +575,7 @@ def _validated_sampling_strategy(value: object) -> SamplingStrategy:
         "task_balanced",
         "task_class_balanced",
         "fault_continuation_focused",
+        "hierarchical_task_label_balanced",
     }:
         raise ValueError("sampling_strategy is not supported")
     return cast(SamplingStrategy, value)
@@ -1432,7 +1445,12 @@ def train_compact_model(
     if type(tokenizer_manifest) is not TokenizerArtifactManifest:
         raise TypeError("training requires an exact tokenizer manifest")
     sampling_strategy = _validated_sampling_strategy(sampling_strategy)
-    if sampling_strategy in {"task_class_balanced", "fault_continuation_focused"}:
+    metadata_aware_strategies = {
+        "task_class_balanced",
+        "fault_continuation_focused",
+        "hierarchical_task_label_balanced",
+    }
+    if sampling_strategy in metadata_aware_strategies:
         if type(sampling_metadata) is not tuple:
             raise ValueError("metadata-aware training requires exact sampling metadata")
     elif sampling_metadata is not None:
@@ -1512,11 +1530,15 @@ def train_compact_model(
                 cast(tuple[SamplingMetadataRecord, ...], sampling_metadata)
             ),
             sampling_strategy=cast(
-                Literal["task_class_balanced", "fault_continuation_focused"],
+                Literal[
+                    "task_class_balanced",
+                    "fault_continuation_focused",
+                    "hierarchical_task_label_balanced",
+                ],
                 sampling_strategy,
             ),
         )
-        if sampling_strategy in {"task_class_balanced", "fault_continuation_focused"}
+        if sampling_strategy in metadata_aware_strategies
         else None
     )
     committed_states = _committed_training_states(state_root, candidate_id=candidate_id)
@@ -1682,10 +1704,20 @@ def train_compact_model(
                     seed=training.seed,
                     step=sampler_cursor // training.batch_size,
                 )
-            else:
+            elif sampling_strategy == "fault_continuation_focused":
                 if sampling_metadata is None:
                     raise RuntimeError("focused sampler metadata disappeared")
                 indices = fault_continuation_focused_batch_indices(
+                    train_examples,
+                    metadata=sampling_metadata,
+                    batch_size=training.batch_size,
+                    seed=training.seed,
+                    step=sampler_cursor // training.batch_size,
+                )
+            else:
+                if sampling_metadata is None:
+                    raise RuntimeError("hierarchical sampler metadata disappeared")
+                indices = hierarchical_task_label_balanced_batch_indices(
                     train_examples,
                     metadata=sampling_metadata,
                     batch_size=training.batch_size,

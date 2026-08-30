@@ -2,13 +2,15 @@ import AppKit
 import Foundation
 
 private let applicationTitle = "ReactorBench-LM — Phase 6 Run Monitor"
-private let expectedRunName = "phase6-remediation-v0.4.0-targeted-02"
+private let expectedRunName = "phase6-remediation-v0.4.0-targeted-03"
 private let maximumHelperOutputBytes = 32 * 1024
 private let maximumActivityEntries = 100
 private let maximumActivityCharacters = 32 * 1024
 private let terminalFailureStates: Set<String> = ["Blocked", "Failed"]
-private let terminalFailureBeepCount = 3
-private let terminalFailureBeepSpacingSeconds = 0.7
+private let terminalFailureAlarmDurationSeconds = 45.0
+private let terminalFailureFallbackBeepCount = 23
+private let terminalFailureFallbackBeepSpacingSeconds = 2.0
+private let terminalFailureSoundPath = "/System/Library/Sounds/Sosumi.aiff"
 
 private enum HelperAction: String {
     case snapshot = "--snapshot-json"
@@ -174,6 +176,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private var refreshTimer: Timer?
     private var lastStatusSignature: String?
     private var terminalFailureAlertIssued = false
+    private var terminalFailureAlarm: NSSound?
 
     static func make() throws -> MonitorWindowController {
         var root = URL(fileURLWithPath: #filePath)
@@ -624,13 +627,30 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             !terminalFailureAlertIssued
         else { return }
         terminalFailureAlertIssued = true
-        appendActivity("Terminal failure detected. Audible alert sounded three times.")
+        appendActivity("Terminal failure detected. Maximum-volume audible alarm started.")
         NSApplication.shared.requestUserAttention(.criticalRequest)
-        for beepIndex in 0 ..< terminalFailureBeepCount {
+        if let alarm = NSSound(
+            contentsOfFile: terminalFailureSoundPath,
+            byReference: true
+        ) {
+            alarm.volume = 1.0
+            alarm.loops = true
+            terminalFailureAlarm = alarm
+            alarm.play()
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + (Double(beepIndex) * terminalFailureBeepSpacingSeconds)
-            ) {
-                NSSound.beep()
+                deadline: .now() + terminalFailureAlarmDurationSeconds
+            ) { [weak self] in
+                self?.terminalFailureAlarm?.stop()
+                self?.terminalFailureAlarm = nil
+            }
+        } else {
+            for beepIndex in 0 ..< terminalFailureFallbackBeepCount {
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now()
+                        + (Double(beepIndex) * terminalFailureFallbackBeepSpacingSeconds)
+                ) {
+                    NSSound.beep()
+                }
             }
         }
     }

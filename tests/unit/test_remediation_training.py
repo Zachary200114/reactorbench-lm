@@ -291,6 +291,34 @@ def _sampling_metadata(
     )
 
 
+def _hierarchical_sampling_metadata(
+    examples: tuple[CompactTokenizedExample, ...],
+) -> tuple[SamplingMetadataRecord, ...]:
+    positions = Counter[TaskName]()
+    records: list[SamplingMetadataRecord] = []
+    for item in examples:
+        position = positions[item.task_name]
+        positions[item.task_name] += 1
+        label: str | None = None
+        if item.task_name is TaskName.FAULT_FAMILY:
+            label = ("UNRESOLVED", "NO_FAULT", "DIAGNOSED:FLOW_PATH_DEGRADATION")[position % 3]
+        elif item.task_name is TaskName.CONTINUE_LOG:
+            label = ("COMMAND_POSITION_ALIGNED", "BENIGN_NOTE", "STATE_CHANGE")[position % 3]
+        elif item.task_name is TaskName.NEXT_ACTION:
+            label = ("INSUFFICIENT_EVIDENCE", "REDUCE_LOAD", "VERIFY_COMMAND_POSITION")[
+                position % 3
+            ]
+        records.append(
+            SamplingMetadataRecord(
+                example_id=item.example_id,
+                task_name=item.task_name,
+                classification_label=label,
+                augmentation=f"augmentation-{position % 2}",
+            )
+        )
+    return tuple(records)
+
+
 def _state_manifest(path: Path) -> TrainingStateManifest:
     return TrainingStateManifest.model_validate_json(
         (path / "manifest.json").read_bytes(), strict=True
@@ -889,6 +917,24 @@ def test_focused_training_candidate_executes_and_binds_its_sampler(tmp_path: Pat
     )
     assert binding.contract_version == "0.3.2-focused"
     assert binding.sampling_strategy == "fault_continuation_focused"
+
+
+def test_hierarchical_training_candidate_executes_and_binds_its_sampler(tmp_path: Path) -> None:
+    examples = _examples(18)
+    result = _run(
+        tmp_path / "hierarchical",
+        sampling="hierarchical_task_label_balanced",
+        train_examples=examples,
+        sampling_metadata=_hierarchical_sampling_metadata(examples),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    assert result.sampling_strategy == "hierarchical_task_label_balanced"
+    binding = TargetedSamplingBinding.model_validate_json(
+        (tmp_path / "hierarchical" / "states" / TARGETED_SAMPLING_BINDING_FILENAME).read_bytes(),
+        strict=True,
+    )
+    assert binding.contract_version == "0.3.3-hierarchical"
+    assert binding.sampling_strategy == "hierarchical_task_label_balanced"
 
 
 def test_device_resolution_has_explicit_fallback_and_error(

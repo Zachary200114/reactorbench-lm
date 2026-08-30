@@ -21,6 +21,7 @@ from reactorbench.remediation.sampling import (
     SamplingRecord,
     TaskBalancedSamplingError,
     fault_continuation_focused_batch_indices,
+    hierarchical_task_label_balanced_batch_indices,
     sampling_metadata_inventory_sha256,
     task_balanced_batch,
     task_balanced_batch_indices,
@@ -184,6 +185,98 @@ def test_focused_sampler_rejects_non_frozen_batch_shape() -> None:
     records, metadata = _class_inventory()
     with pytest.raises(ValueError, match="batch_size"):
         fault_continuation_focused_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=8,
+            seed=1,
+            step=0,
+        )
+
+
+def _hierarchical_inventory() -> tuple[
+    tuple[_ClassRecord, ...], tuple[SamplingMetadataRecord, ...]
+]:
+    labels = {
+        TaskName.FAULT_FAMILY: (
+            "UNRESOLVED",
+            "NO_FAULT",
+            *(f"DIAGNOSED:FAULT_{index}" for index in range(9)),
+        ),
+        TaskName.CONTINUE_LOG: tuple(f"EVENT_{index}" for index in range(5)),
+        TaskName.NEXT_ACTION: tuple(f"ACTION_{index}" for index in range(9)),
+    }
+    records: list[_ClassRecord] = []
+    metadata: list[SamplingMetadataRecord] = []
+    for task in TaskName:
+        task_labels = labels.get(task, (None,) * 6)
+        for label_index, label in enumerate(task_labels):
+            for repeat in range(2):
+                example_id = f"{task.value}:{label_index}:{repeat}"
+                records.append(_ClassRecord(example_id, task, f"group:{example_id}"))
+                metadata.append(
+                    SamplingMetadataRecord(
+                        example_id=example_id,
+                        task_name=task,
+                        classification_label=label,
+                        augmentation=f"augmentation-{repeat}",
+                    )
+                )
+    return tuple(records), tuple(metadata)
+
+
+def test_hierarchical_sampler_preserves_every_task_and_frozen_label_mix() -> None:
+    records, metadata = _hierarchical_inventory()
+    batches = tuple(
+        hierarchical_task_label_balanced_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=6,
+            seed=101,
+            step=step,
+        )
+        for step in range(100)
+    )
+    assert batches == tuple(
+        hierarchical_task_label_balanced_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=6,
+            seed=101,
+            step=step,
+        )
+        for step in range(100)
+    )
+    assert all(
+        Counter(records[index].task_name for index in batch) == Counter(TaskName)
+        for batch in batches
+    )
+
+    metadata_by_id = {row.example_id: row for row in metadata}
+    selected_labels: dict[TaskName, Counter[str]] = {
+        task: Counter(
+            cast(str, metadata_by_id[records[index].example_id].classification_label)
+            for batch in batches
+            for index in batch
+            if records[index].task_name is task
+        )
+        for task in (TaskName.FAULT_FAMILY, TaskName.CONTINUE_LOG, TaskName.NEXT_ACTION)
+    }
+    fault = selected_labels[TaskName.FAULT_FAMILY]
+    assert fault["UNRESOLVED"] == 50
+    assert fault["NO_FAULT"] == 10
+    diagnosed = tuple(count for label, count in fault.items() if label.startswith("DIAGNOSED:"))
+    assert sum(diagnosed) == 40
+    assert max(diagnosed) - min(diagnosed) <= 1
+    assert set(selected_labels[TaskName.CONTINUE_LOG].values()) == {20}
+    action_counts = tuple(selected_labels[TaskName.NEXT_ACTION].values())
+    assert sum(action_counts) == 100
+    assert max(action_counts) - min(action_counts) <= 1
+
+
+def test_hierarchical_sampler_rejects_non_frozen_batch_shape() -> None:
+    records, metadata = _hierarchical_inventory()
+    with pytest.raises(ValueError, match="batch_size"):
+        hierarchical_task_label_balanced_batch_indices(
             records,
             metadata=metadata,
             batch_size=8,

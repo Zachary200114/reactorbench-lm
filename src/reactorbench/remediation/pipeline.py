@@ -69,6 +69,7 @@ from .config import (
     PipelineConfig,
     RemediationTraining,
     RemediationView,
+    SemanticSelectionPolicy,
     V02Config,
     V03Config,
     V04Config,
@@ -178,6 +179,27 @@ FINAL_REVIEW_FILENAME = "FINAL_EVALUATION_REVIEW.md"
 TERMINAL_REVIEW_DIRECTORY = "terminal-reviews"
 TERMINAL_REVIEW_MANIFEST_FILENAME = "terminal-review-bundle.json"
 TERMINAL_REVIEW_SUMMARY_FILENAME = "TERMINAL_REVIEW.md"
+
+
+def _semantic_checkpoint_selection_score(
+    policy: SemanticSelectionPolicy,
+    *,
+    composite: float,
+) -> float:
+    """Convert semantic evidence to the checkpoint selector's minimized score."""
+
+    if type(policy) is not SemanticSelectionPolicy:
+        raise TypeError("checkpoint selection requires the exact semantic policy")
+    if type(composite) is not float or not math.isfinite(composite) or not 0.0 <= composite <= 1.0:
+        raise ValueError("semantic checkpoint composite must be a finite probability")
+    if policy.metric == "frozen_semantic_composite":
+        return 1.0 - composite
+    floor = policy.minimum_checkpoint_semantic_composite
+    if floor is None:
+        raise PipelineExecutionError("semantic-floor checkpoint selection lacks its frozen floor")
+    return 0.0 if composite >= floor else 1.0 + (floor - composite)
+
+
 TRUSTED_GIT = "/usr/bin/git"
 
 _DEVELOPMENT_VIEW_BY_REMEDIATION: Mapping[RemediationView, DevelopmentView] = MappingProxyType(
@@ -3119,6 +3141,7 @@ def _run_training(
         "task_balanced",
         "task_class_balanced",
         "fault_continuation_focused",
+        "hierarchical_task_label_balanced",
     ],
     model_config: TransformerConfig,
     training: RemediationTraining,
@@ -3155,7 +3178,12 @@ def _run_training(
             )
             for item in train_examples
         )
-        if sampling_strategy in {"task_class_balanced", "fault_continuation_focused"}
+        if sampling_strategy
+        in {
+            "task_class_balanced",
+            "fault_continuation_focused",
+            "hierarchical_task_label_balanced",
+        }
         else None
     )
     targeted_binding = (
@@ -3170,7 +3198,11 @@ def _run_training(
                 sampling_metadata
             ),
             sampling_strategy=cast(
-                Literal["task_class_balanced", "fault_continuation_focused"],
+                Literal[
+                    "task_class_balanced",
+                    "fault_continuation_focused",
+                    "hierarchical_task_label_balanced",
+                ],
                 sampling_strategy,
             ),
         )
@@ -3262,7 +3294,11 @@ def _load_training_result(attempt: Path, candidate_id: str) -> CompactTrainingRe
         CompactTrainingResult,
     )
     binding_path = attempt / "training-state" / candidate_id / TARGETED_SAMPLING_BINDING_FILENAME
-    if result.sampling_strategy in {"task_class_balanced", "fault_continuation_focused"}:
+    if result.sampling_strategy in {
+        "task_class_balanced",
+        "fault_continuation_focused",
+        "hierarchical_task_label_balanced",
+    }:
         binding = load_targeted_sampling_binding(binding_path.parent)
         if (
             binding.sampling_strategy != result.sampling_strategy
@@ -4146,7 +4182,11 @@ class _PipelineRuntime:
                     device=device,
                     progress_message="v0.3 checkpoint-selection decoding in progress.",
                 )
-                return 1.0 - semantic_composite_score(selected, predictions)
+                composite = semantic_composite_score(selected, predictions)
+                return _semantic_checkpoint_selection_score(
+                    self.inputs.v03.selection,
+                    composite=composite,
+                )
 
             _result, candidate_artifacts = _run_training(
                 context,

@@ -29,24 +29,23 @@ hashed the same tokenized inventory through different tuple/dictionary represent
 All other reconstructed candidate bindings passed. One shared canonical checksum
 function now serves both paths. Targeted-01 subsequently completed one task-balanced
 control, one task-and-class-balanced candidate, calibration decoding, and all 427 IID
-gate predictions. It failed before publishing acceptance because the independent gate
-reopened predictions in canonical example-ID order but paired them with calibration
-examples in selection order. The preserved prediction-level evidence is intact. An
-identity-bound join now reproduces its 56-row temperature report bit-for-bit. The next
-non-overwriting `phase6-remediation-v0.4.0-targeted-02` attempt remains **Not started**.
-It retains every frozen threshold, trains one candidate from random initialization,
-and focuses two of each six batch rows on fault diagnosis and two on continuation.
-Continuation labels rotate evenly, while fault labels retain their empirical training
-distribution. Reused v0.2 evidence remains externally pinned to an exact 21-file
-SHA-256 inventory rather than trusted by summary.
+gate predictions. Its independent gate exposed an example-order join bug, which was
+corrected without changing the preserved predictions. Targeted-02 then completed
+through the v0.3 gate and produced a valid scientific block: continuation macro-F1
+reached 0.9418, but six of ten unchanged checks failed. The focused batches starved
+other tasks, next-action macro-F1 fell to 0.2421, evidence F1 reached only 0.6778, and
+five of nine no-fault examples became false positives. Its small semantic selector
+also chose step 1,200 even though validation NLL continued improving through step
+2,000. All targeted-02 artifacts remain preserved; no final or golden evaluation was
+opened.
 
-Targeted-01's preserved development report passes eight of ten checks. Validation-only
-temperature scaling reduced expected calibration error from the earlier 0.1855 to
-0.08746 and passes its 0.15 threshold. Continuation macro-F1 improved only from 0.7182
-to 0.7396 against a required 0.90, while fault-comparator margin regressed to -0.04544
-against a required +0.02. The fully class-balanced candidate also lost checkpoint
-selection to the task-balanced control. Targeted-02 therefore avoids flattening the
-fault distribution and spends only one candidate's training compute. Phase 7 remains
+The next non-overwriting `phase6-remediation-v0.4.0-targeted-03` attempt is prepared but
+**Not started**. Each six-row batch restores one row from every task, rotates
+continuation and next-action labels evenly, and balances fault examples through a
+50% unresolved / 10% no-fault / 40% diagnosed hierarchy. A frozen 0.75 semantic floor
+now makes checkpoints eligible before validation NLL selects among them. The model
+architecture, 48/56/427 development partitions, calibration grid, externally pinned
+21-file v0.2 prefix, and all ten acceptance thresholds are unchanged. Phase 7 remains
 blocked until a behaviorally acceptable checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
@@ -90,12 +89,13 @@ blocked until a behaviorally acceptable checkpoint exists.
   cap-measurement inventory, then removes 24 same-task exact-prompt duplicates with
   identical targets; only the resulting 5,835 examples are written, audited, or
   trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
-  verification passed 1,123 tests with 85.29% coverage; two protected
+  verification now passes 1,134 tests with 85.25% coverage; two protected
   historical final/golden readers were deliberately excluded from this
   remediation-only verification boundary. Rerun 02 completed v0.3 development
   training/evaluation in 2h 59m 32s. Its preserved full-IID evidence passes seven of
   ten reconstructed semantic checks. Targeted-01 later fixed calibration but still
-  missed fault margin and continuation F1; targeted-02 is prepared and Not started.
+  missed fault margin and continuation F1. Targeted-02 fixed continuation but failed
+  six of ten checks; targeted-03 is prepared and Not started.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
@@ -103,7 +103,7 @@ inference service or web interface, and the current checkpoint must not be prese
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
 progress, safe stop/resume, and review evidence. The versioned local rerun remains
-pending under the `phase6-remediation-v0.4.0-targeted-02` identity, and the separate fresh final-evaluation executor
+pending under the `phase6-remediation-v0.4.0-targeted-03` identity, and the separate fresh final-evaluation executor
 is intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
@@ -112,6 +112,7 @@ Measured Phase 4 evidence and exact hashes are recorded in
 [the Phase 6 pre-test freeze](docs/model/PHASE6_PRETEST.md) and
 [the Phase 6 main result](docs/model/PHASE6_MAIN.md) and
 [the Phase 6 remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md) and
+[the targeted-02 diagnosis](docs/model/PHASE6_TARGETED02_DIAGNOSIS.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -236,13 +237,16 @@ window:
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. The current default is
-`phase6-remediation-v0.4.0-targeted-02`; do not resume or modify any preserved
+`phase6-remediation-v0.4.0-targeted-03`; do not resume or modify any preserved
 failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
 the current version, and exact current-task work when the runner reports it. The
 entire-rerun bar is stage-based rather than a wall-clock estimate. Keep the monitor
 open while the pipeline runs: when a verified run first enters `Failed` or `Blocked`,
-the monitor requests macOS attention and sounds three system-alert beeps. It alerts
-only once per monitor session, so routine status refreshes do not repeat the sound.
+the monitor requests macOS attention and loops the system `Sosumi` alert at application
+volume 1.0 for 45 seconds, with a 23-beep fallback if the sound file is unavailable.
+It alerts only once per monitor session, so routine status refreshes do not repeat the
+sound. The alarm cannot override muted or low system volume or an incorrect output
+device; verify those macOS settings before leaving a run unattended.
 
 Infrastructure availability is not a positive model result. The routine pipeline
 cannot open the frozen final evaluation, and the historical G01–G15 packet is

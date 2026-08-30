@@ -34,11 +34,15 @@ V02_PATH = ROOT / "configs/experiments/phase6-remediation-v0.2.0.toml"
 V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.0.toml"
 TARGETED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.1-targeted.toml"
 FOCUSED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
+HIERARCHICAL_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml"
 TARGETED_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
 )
 FOCUSED_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-02.toml"
+)
+HIERARCHICAL_PIPELINE_PATH = (
+    ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-03.toml"
 )
 V04_PATH = ROOT / "configs/experiments/phase6-remediation-v0.4.0.toml"
 
@@ -178,7 +182,55 @@ def test_focused_v03_is_candidate_only_and_preserves_every_threshold() -> None:
     pipeline = PipelineConfig.model_validate(_raw(FOCUSED_PIPELINE_PATH))
     assert pipeline.run_name == "phase6-remediation-v0.4.0-targeted-02"
     assert pipeline.v03_config_sha256 == config_sha256(config)
-    assert pipeline.reuse_v02_prefix is not None
+
+
+def test_hierarchical_v03_restores_every_task_and_preserves_every_threshold() -> None:
+    config = load_v03_config(HIERARCHICAL_V03_PATH)
+
+    assert tuple(item.sampling for item in config.candidates) == (
+        "hierarchical_task_label_balanced",
+    )
+    assert tuple(item.seed for item in config.candidates) == (6501,)
+    assert config.training.steps == 2500
+    assert config.training.batch_size == 6
+    assert config.targeted_policy is not None
+    assert config.targeted_policy.policy_version == "0.3.3-hierarchical"
+    assert config.targeted_policy.calibration.policy_version == "0.3.3-hierarchical"
+    assert config.selection.metric == "semantic_floor_then_validation_nll"
+    assert config.selection.minimum_checkpoint_semantic_composite == 0.75
+    assert (
+        config.selection.constrained_schema_validity,
+        config.selection.minimum_fault_margin,
+        config.selection.minimum_action_margin,
+        config.selection.minimum_continuation_macro_f1,
+        config.selection.minimum_evidence_f1,
+        config.selection.minimum_required_abstention_accuracy,
+        config.selection.maximum_no_fault_false_positive_rate,
+        config.selection.maximum_expected_calibration_error,
+        config.selection.selective_risk_coverage,
+        config.selection.maximum_selective_risk,
+    ) == (1.0, 0.02, 0.02, 0.9, 0.7, 0.8, 0.1, 0.15, 0.8, 0.2)
+    pipeline = PipelineConfig.model_validate(_raw(HIERARCHICAL_PIPELINE_PATH))
+    assert pipeline.run_name == "phase6-remediation-v0.4.0-targeted-03"
+    assert pipeline.v03_config_sha256 == config_sha256(config)
+    assert (
+        pipeline.reuse_v02_prefix
+        == PipelineConfig.model_validate(_raw(FOCUSED_PIPELINE_PATH)).reuse_v02_prefix
+    )
+
+
+def test_hierarchical_sampling_and_checkpoint_policy_cannot_be_decoupled() -> None:
+    raw = _raw(HIERARCHICAL_V03_PATH)
+    changed = copy.deepcopy(raw)
+    changed["selection"]["metric"] = "frozen_semantic_composite"
+    changed["selection"].pop("minimum_checkpoint_semantic_composite")
+    with pytest.raises(ValidationError, match="enabled together"):
+        V03Config.model_validate(changed)
+
+    changed = copy.deepcopy(raw)
+    changed["selection"]["metric"] = "frozen_semantic_composite"
+    with pytest.raises(ValidationError, match="cannot add a checkpoint floor"):
+        V03Config.model_validate(changed)
 
 
 def test_committed_v04_contract_freezes_shadow_and_final_access_boundaries() -> None:

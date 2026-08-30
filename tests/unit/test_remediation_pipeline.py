@@ -35,8 +35,10 @@ from reactorbench.remediation.config import (
     PipelineConfig,
     RemediationTraining,
     RemediationView,
+    SemanticSelectionPolicy,
     config_sha256,
     load_pipeline_config,
+    load_v03_config,
 )
 from reactorbench.remediation.data import (
     FrozenV03IIDMaterial,
@@ -97,6 +99,33 @@ HASH_B = "b" * 64
 HASH_C = "c" * 64
 HASH_D = "d" * 64
 HASH_E = "e" * 64
+
+
+def test_semantic_checkpoint_selector_uses_floor_before_validation_nll() -> None:
+    root = Path(__file__).resolve().parents[2]
+    historical = load_v03_config(
+        root / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
+    ).selection
+    hierarchical = load_v03_config(
+        root / "configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml"
+    ).selection
+
+    assert pipeline._semantic_checkpoint_selection_score(historical, composite=0.75) == 0.25
+    assert pipeline._semantic_checkpoint_selection_score(hierarchical, composite=0.80) == 0.0
+    assert pipeline._semantic_checkpoint_selection_score(hierarchical, composite=0.70) == 1.05
+
+    missing_floor = SemanticSelectionPolicy.model_construct(
+        **hierarchical.model_dump(mode="python", exclude={"minimum_checkpoint_semantic_composite"}),
+        minimum_checkpoint_semantic_composite=None,
+    )
+    with pytest.raises(pipeline.PipelineExecutionError, match="lacks its frozen floor"):
+        pipeline._semantic_checkpoint_selection_score(missing_floor, composite=0.75)
+    with pytest.raises(ValueError, match="finite probability"):
+        pipeline._semantic_checkpoint_selection_score(hierarchical, composite=float("nan"))
+    with pytest.raises(TypeError, match="exact semantic policy"):
+        pipeline._semantic_checkpoint_selection_score(
+            cast(SemanticSelectionPolicy, object()), composite=0.75
+        )
 
 
 def test_targeted_v02_prefix_reuse_reopens_checksum_bound_evidence() -> None:
@@ -2863,6 +2892,10 @@ def test_runtime_executes_v02_v03_and_shadow_freeze_happy_paths(
             v03=SimpleNamespace(
                 training=object(),
                 candidates=(candidate,),
+                selection=load_v03_config(
+                    Path(__file__).resolve().parents[2]
+                    / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
+                ).selection,
                 augmentation=SimpleNamespace(
                     train_template_families=("a",),
                     train_alias_families=("b",),

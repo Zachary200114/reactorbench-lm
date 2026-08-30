@@ -542,6 +542,144 @@ def fault_continuation_focused_batch_indices[RecordT: SamplingRecord](
     return indices
 
 
+def hierarchical_task_label_balanced_batch_indices[RecordT: SamplingRecord](
+    records: tuple[RecordT, ...],
+    *,
+    metadata: tuple[SamplingMetadataRecord, ...],
+    batch_size: int,
+    seed: int,
+    step: int,
+) -> tuple[int, ...]:
+    """Choose one row per task with bounded label-aware classification cycles.
+
+    Continuation and action labels rotate uniformly. Fault diagnosis preserves the
+    high-level 50% unresolved, 10% no-fault, and 40% diagnosed mix while rotating
+    diagnosed fault labels uniformly inside the diagnosed tier. This prevents the
+    global class flattening that damaged abstention while restoring every task to
+    every six-row batch.
+    """
+
+    batch_size = _bounded_integer(batch_size, field_name="batch_size", minimum=6, maximum=6)
+    seed = _bounded_integer(seed, field_name="seed", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    step = _bounded_integer(step, field_name="step", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    by_task = _validated_inventory(records)
+    if set(by_task) != set(TaskName):
+        raise TaskBalancedSamplingError("hierarchical sampler requires all six task inventories")
+    rows = _validated_sampling_metadata(metadata)
+    position_by_id = {
+        getattr(record, "example_id", None): index for index, record in enumerate(records)
+    }
+    if None in position_by_id or len(position_by_id) != len(records):
+        raise ValueError("sampling records must expose unique example_id values")
+    if set(position_by_id) != {row.example_id for row in rows}:
+        raise ValueError("sampling metadata does not exactly cover the tokenized inventory")
+    metadata_by_position: dict[int, SamplingMetadataRecord] = {}
+    for row in rows:
+        position = position_by_id[row.example_id]
+        if records[position].task_name is not row.task_name:
+            raise ValueError("sampling metadata task differs from tokenized record")
+        metadata_by_position[position] = row
+
+    def label_strata(task: TaskName) -> dict[str, tuple[_ValidatedRecord, ...]]:
+        mutable: dict[str, list[_ValidatedRecord]] = defaultdict(list)
+        for record in by_task[task]:
+            label = metadata_by_position[record.position].classification_label
+            if label is None:
+                raise TaskBalancedSamplingError(
+                    f"hierarchical {task.value} metadata lacks its classification label"
+                )
+            mutable[label].append(record)
+        return {label: tuple(values) for label, values in mutable.items()}
+
+    def selected_from_label(
+        task: TaskName,
+        strata: dict[str, tuple[_ValidatedRecord, ...]],
+        label: str,
+        occurrence: int,
+    ) -> _ValidatedRecord:
+        candidates = strata.get(label)
+        if not candidates:
+            raise TaskBalancedSamplingError(
+                f"hierarchical {task.value} metadata lacks required label {label}"
+            )
+        ordered = _ordered_task_records(candidates, seed=seed, task_name=task)
+        return ordered[occurrence % len(ordered)]
+
+    selected: list[tuple[int, TaskName, _ValidatedRecord]] = []
+    for task in TaskName:
+        if task in {TaskName.CONTINUE_LOG, TaskName.NEXT_ACTION}:
+            strata = label_strata(task)
+            ordered_labels = tuple(
+                sorted(
+                    strata,
+                    key=lambda value: (
+                        _rank("hierarchical-label", seed, task.value, value),
+                        value,
+                    ),
+                )
+            )
+            label_position = step % len(ordered_labels)
+            label = ordered_labels[label_position]
+            record = selected_from_label(
+                task,
+                strata,
+                label,
+                step // len(ordered_labels),
+            )
+        elif task is TaskName.FAULT_FAMILY:
+            strata = label_strata(task)
+            diagnosed_labels = tuple(
+                sorted(
+                    (label for label in strata if label.startswith("DIAGNOSED:")),
+                    key=lambda value: (_rank("hierarchical-fault-label", seed, value), value),
+                )
+            )
+            if set(strata) != {"UNRESOLVED", "NO_FAULT", *diagnosed_labels}:
+                raise TaskBalancedSamplingError(
+                    "hierarchical fault metadata contains an unsupported label tier"
+                )
+            if not diagnosed_labels:
+                raise TaskBalancedSamplingError(
+                    "hierarchical fault metadata lacks diagnosed labels"
+                )
+            cycle = step % 10
+            block = step // 10
+            if cycle < 5:
+                label = "UNRESOLVED"
+                occurrence = block * 5 + cycle
+            elif cycle == 5:
+                label = "NO_FAULT"
+                occurrence = block
+            else:
+                diagnosed_position = block * 4 + (cycle - 6)
+                label = diagnosed_labels[diagnosed_position % len(diagnosed_labels)]
+                occurrence = diagnosed_position // len(diagnosed_labels)
+            record = selected_from_label(task, strata, label, occurrence)
+        else:
+            ordered = _ordered_task_records(by_task[task], seed=seed, task_name=task)
+            record = ordered[step % len(ordered)]
+        selected.append((0, task, record))
+
+    selected.sort(
+        key=lambda item: (
+            _rank(
+                "hierarchical-batch-record",
+                seed,
+                str(step),
+                item[1].value,
+                item[2].group_id,
+                str(item[2].position),
+            ),
+            item[1].value,
+            item[2].position,
+        )
+    )
+    indices = tuple(item[2].position for item in selected)
+    if len(indices) != 6 or {records[index].task_name for index in indices} != set(TaskName):
+        raise TaskBalancedSamplingError("hierarchical sampler violated its six-task invariant")
+    return indices
+
+
 __all__ = [
     "MAX_BATCH_SIZE",
     "MAX_GROUP_ID_UTF8_BYTES",
@@ -551,6 +689,7 @@ __all__ = [
     "SamplingRecord",
     "TaskBalancedSamplingError",
     "fault_continuation_focused_batch_indices",
+    "hierarchical_task_label_balanced_batch_indices",
     "sampling_metadata_inventory_sha256",
     "task_balanced_batch",
     "task_balanced_batch_indices",

@@ -1,0 +1,53 @@
+pipeline_version = "0.4.0"
+run_name = "phase6-remediation-v0.4.0-targeted-03"
+run_root = "runs"
+v02_config_path = "configs/experiments/phase6-remediation-v0.2.0.toml"
+v02_config_sha256 = "86f39280d959900d2759f76ee1d16710fe1de0bc87952e05ad1fa4fbdcc717a2"
+v03_config_path = "configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml"
+v03_config_sha256 = "77ab1698ec37bc65e319fcc55b3d6921860bdd317d7600b5a2da1bd5f71fa158"
+v04_config_path = "configs/experiments/phase6-remediation-v0.4.0.toml"
+v04_config_sha256 = "c2efbee9a0ca05b5ce62453ae1af04e79f03315f53300ce5eff2ddba189c5725"
+stage_order = [
+  "preflight", "v02_inventory_and_caps", "v02_smoke", "v02_development_training",
+  "v02_development_gate", "v03_data_audit", "v03_smoke", "v03_candidate_training",
+  "v03_development_evaluation", "v03_gate", "v04_shadow_freeze", "v04_pilot",
+  "v04_candidate_training", "v04_shadow_evaluation", "v04_gate_and_final_policy_freeze", "review_bundle",
+]
+heartbeat_interval_seconds = 30
+maximum_status_bytes = 1048576
+maximum_event_log_bytes = 67108864
+maximum_pipeline_seconds = 259200
+maximum_run_bytes = 8589934592
+maximum_process_rss_bytes = 17179869184
+stop_before_final_evaluation = true
+
+[reuse_v02_prefix]
+policy_version = "0.3.1-targeted"
+source_run_root = "runs/phase6-remediation-v0.4.0-local-rerun-02"
+source_run_manifest_sha256 = "57c39a7d3878763e74800b1d61b3c412e138d73e4e6e2b8162f5154f716a3ab2"
+source_commit = "cf732307d1d1f756772af7a87214ffde8e9bf8b0"
+evidence_inventory_sha256 = "60babd70f9b33a50b36147df7ef2609c1c93df635fe4e5f1b8aea2060675ea96"
+evidence = [
+  ["run-manifest.json", "4ed02f09278cf985bd17c152359ee80dae3bcf154cabaeb243efb245447655c0"],
+  ["stages/01-v02_inventory_and_caps/attempt-0001/dataset-v02/examples.jsonl", "3c75a8d2d1bdcdba8bd231017f9e84af617e65a844ad6e8f6ead3d932c8f25c7"],
+  ["stages/01-v02_inventory_and_caps/attempt-0001/dataset-v02/manifest.json", "993c484ecdd1496daaeed3a249ab1f3965260741db9f570b57fa9683ff1bbbf9"],
+  ["stages/01-v02_inventory_and_caps/attempt-0001/outcome.json", "5c20d448dc96e49e1a04b505c6e7e1995b5e97e45df354a7041c406ecc009ee0"],
+  ["stages/01-v02_inventory_and_caps/attempt-0001/v02-inventory.json", "79d22a4ae9f142f33999a3967573d30c17faae7f240e1e5401aa7c67e2a89b2a"],
+  ["stages/01-v02_inventory_and_caps/completed.json", "49a4ed07b3bfda5083530db8e5397b43c616d2c08392ebc047c816ce17050fe0"],
+  ["stages/02-v02_smoke/attempt-0001/checkpoint-v02-smoke/manifest.json", "14cc93315a02809c5ef21393326262822010362c8f0e9752c1e1f5165766e1df"],
+  ["stages/02-v02_smoke/attempt-0001/checkpoint-v02-smoke/model.safetensors", "e948a36f88945b328064fbd981ae6db9dd89ea00e7856c08cab8de73fd5af144"],
+  ["stages/02-v02_smoke/attempt-0001/outcome.json", "9814accc461d49050cb39d9fc450ce2481a7e82d6acf0167902a9f1774c49b88"],
+  ["stages/02-v02_smoke/attempt-0001/training-v02-smoke.json", "29b2eec7e5bfd0fb6187e0ee721ed8df8b404eb84320f739680c189262274df4"],
+  ["stages/02-v02_smoke/completed.json", "261950bc5b15a47ffb6bb5107c445c1bb1f11ce6d55caabd23801adcfaa98d76"],
+  ["stages/03-v02_development_training/attempt-0001/checkpoint-v02-development/manifest.json", "83dd54d8f7416946081651316dfa679cc7bed956af67d02d6b1ead7962bfaecc"],
+  ["stages/03-v02_development_training/attempt-0001/checkpoint-v02-development/model.safetensors", "24e0ca729dd3183ad5cb3b54f0315acd599b7f752f66c47150c00658451fb767"],
+  ["stages/03-v02_development_training/attempt-0001/outcome.json", "9afbe9f8a60b6cdc93f34875eebf6567f470b9a95ef532463ee97b7e33581606"],
+  ["stages/03-v02_development_training/attempt-0001/training-v02-development.json", "c2457784d4445fd4f22307ad3716564b0e5b537be49b3ec200f62706aa213329"],
+  ["stages/03-v02_development_training/completed.json", "ac822e10706d89052afc24f271e8767d65f3a3f1105ca624ec29e20a637fde14"],
+  ["stages/04-v02_development_gate/attempt-0001/outcome.json", "79bfe1e8cf9b782c7bdd7b8bc2b70c2df8666d9ce79011bbc5e8e76dd95c6915"],
+  ["stages/04-v02_development_gate/attempt-0001/v02-development-gate.json", "b7ec71056b1d11208b7e5245df8257ce6ea1569213bc3516a62dfa717ba7260f"],
+  ["stages/04-v02_development_gate/attempt-0001/v02-validation-predictions-manifest.json", "61352deb0b9ecb0c93116faef015a0f631c0fa414b450ce38e803a7c911aee3a"],
+  ["stages/04-v02_development_gate/attempt-0001/v02-validation-predictions.jsonl", "8fb5c5f05b19e40979a2fb0d73ce9778a6164c3cc64127e0cd10cf38c11e0cf0"],
+  ["stages/04-v02_development_gate/completed.json", "f5e1ee590ddf38d777a5a024532ac154beca8af0724c9af6599b11ff6c670103"],
+]
+verify_only_stages = ["v02_inventory_and_caps", "v02_smoke", "v02_development_training", "v02_development_gate"]

@@ -2,27 +2,57 @@
 
 Last updated: 2026-08-29 America/New_York
 
-Current phase: **Phase 6 focused v0.3 quality remediation implemented; targeted-01
-is preserved and the non-overwriting targeted-02 run is Not started**
+Current phase: **Phase 6 targeted-02 diagnosed and preserved; hierarchical targeted-03
+remediation implemented but Not started**
 
-Current objective: verify and hand off `phase6-remediation-v0.4.0-targeted-02` for a
-later owner-operated run. The candidate-only attempt targets the two remaining v0.3
-shortfalls, keeps every scientific threshold unchanged, and avoids repeating the
-already-proven v0.2 compute prefix. No claim is made that the new candidate will pass.
+Current objective: finish verification and hand off
+`phase6-remediation-v0.4.0-targeted-03` for a later owner-operated run. The new
+candidate restores every task to every batch, balances continuation, action, and fault
+labels hierarchically, and uses semantic quality as an eligibility floor before
+validation NLL selects a checkpoint. All ten scientific thresholds remain unchanged.
+No claim is made that the new candidate will pass.
 
-Checkpoint reason: targeted-01 proved validation-only calibration successful but
-still missed fault margin and continuation macro-F1. Its gate also exposed an
-identity-order reconstruction defect. The new code joins calibration evidence by
-immutable example ID and replaces global class flattening with one focused candidate:
-empirical-distribution fault rows, label-balanced continuation rows, and rotating
-coverage of the four already-strong tasks. No dataset generation, training,
-final/golden access, deployment, or push occurred during this preparation.
+Checkpoint reason: targeted-02 completed ten stages and blocked scientifically at the
+v0.3 gate. Continuation macro-F1 improved to 0.9418, but six of ten checks failed after
+the focused sampler reduced exposure to other tasks. The 48-row selector also chose
+step 1,200 despite validation NLL improving through step 2,000. Targeted-02 remains
+immutable. No dataset generation, new training, final/golden access, deployment, or
+push occurred during this remediation.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
 
 Exact account usage is not observable in this environment. No account-level
 percentage was measured.
+
+## Current targeted-03 checkpoint
+
+- Preserved blocked run:
+  `runs/phase6-remediation-v0.4.0-targeted-02/`
+- Exact diagnosis:
+  `docs/model/PHASE6_TARGETED02_DIAGNOSIS.md`
+- New run identity:
+  `phase6-remediation-v0.4.0-targeted-03`
+- New v0.3 config:
+  `configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml`
+- New pipeline config:
+  `configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-03.toml`
+- v0.3 config SHA-256:
+  `77ab1698ec37bc65e319fcc55b3d6921860bdd317d7600b5a2da1bd5f71fa158`
+- pipeline config SHA-256:
+  `46672289436a789e21e017c822f0dc831da6ef38b308abf6d271e223d1e782a7`
+- Focused verification: 197 tests passed; Ruff and strict mypy passed.
+- Full permitted repository verification: 1,134 passed, 2 protected historical
+  final/golden readers deselected, 85.25% coverage against the required 85%.
+- Temporary wheel and sdist inventories matched reviewed source assets, and an
+  isolated no-network wheel installation passed.
+- Swift parse and full type-check passed; every shell wrapper passed `bash -n`.
+- Alarm policy: one 45-second looping `Sosumi` alert at application volume 1.0, with
+  a 23-beep fallback and once-per-session guard. This cannot override muted or low
+  macOS system output or an incorrect output device.
+
+The sections below retain cumulative historical implementation evidence. Any older
+“Not started” statement for targeted-02 is superseded by this current checkpoint.
 
 ## Completed work
 
@@ -597,22 +627,26 @@ successfully.
   `6a63bea3b63fe317368a7212a6850e03b51cb3a7`.
 - Final verification and independent re-review disposition: ship, with no required
   corrections for targeted-01 preparation.
-- Focused targeted-02 remediation is locally checkpointed; verify the final clean
-  state with `git status` before pushing or starting it.
-- All four failed run directories are preserved; the rerun-03 and targeted-02
-  directories do not exist.
+- Targeted-02 is preserved as a scientific `blocked` run at source commit
+  `21df210e8237ea998edf663bb82498f87e21841b`.
+- Hierarchical targeted-03 remediation is implemented locally but not started; verify
+  the final clean state with `git status` before pushing or starting it.
+- Every historical failed/blocked run directory is preserved; the targeted-03 run
+  directory does not exist.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
   historical test-boundary mistake is separately disclosed above.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-Confirm the tree is clean and the targeted-02 directory remains absent. Push the
-local commits when ready, then open the local monitor and confirm it reports
-`Not started` and `phase6-remediation-v0.4.0-targeted-02`, optionally run the
-non-mutating readiness check, and press `Start new rerun` when ready to measure the
-preregistered targeted candidate. Do not resume or modify any preserved failed run.
-Passing remains unknown until that owner-operated run completes.
+After verification and a local checkpoint commit, confirm the tree is clean and the
+targeted-03 directory remains absent. Push the local commits when ready, then open the
+local monitor and confirm it reports `Not started` and
+`phase6-remediation-v0.4.0-targeted-03`. Check the Mac's output device and system
+volume, optionally run the non-mutating readiness check, and press `Start new rerun`
+when ready to measure the preregistered hierarchical candidate. Do not resume or modify
+any preserved failed or blocked run. Passing remains unknown until that owner-operated
+run completes.
 
 ## Exact recommended next command after final handoff
 
