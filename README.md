@@ -284,11 +284,22 @@ instructions are in
 - [Threat model](docs/threat-model.md)
 - [Security control map](docs/security-controls.md)
 - [Security reporting policy](SECURITY.md)
+- [0BSD license](LICENSE)
 - [Research package](research/README.md)
 - [Canonical requirements](research/PROJECT_REQUIREMENTS.md)
 - [Aster Station specification](research/FICTIONAL_PLANT_SPEC.md)
 - [Dataset specification](research/DATASET_SPEC.md)
 - [Experiment and acceptance plan](research/EXPERIMENT_ACCEPTANCE_PLAN.md)
+
+## License
+
+Unless a file says otherwise, I release the original code, documentation,
+project-authored synthetic data, and other original material in this repository under
+the [0BSD License](LICENSE).
+
+Use it, copy it, change it, share it, or build on it however you want. Credit is
+appreciated, but it is not required. Third-party dependencies and referenced material
+keep their own licenses and terms.
 
 ## Publication boundary
 
@@ -298,9 +309,6 @@ repository automatically.
 
 I allow all crawler access in [`robots.txt`](robots.txt). The comments there welcome
 people to explore, share, learn from, and build on the project, with credit appreciated
-but not required. That file is a discovery policy, not a substitute for a software or
-data license. When I build the Phase 7 site, I will make sure the deployed application
-serves the same policy at `/robots.txt`.
-
-I have not selected the final code or data license yet. Until I do, the repository
-should not be treated as granting reuse rights.
+but not required. That file controls crawler access; the repository's legal reuse
+terms are in [LICENSE](LICENSE). When I build the Phase 7 site, I will make sure the
+deployed application serves the same policy at `/robots.txt`.

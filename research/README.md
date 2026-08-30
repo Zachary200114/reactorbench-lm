@@ -110,5 +110,6 @@ checkpoint selection policy documented in
 passes the frozen development gates and the separate final-evaluation prerequisites
 are ready.
 
-I will handle GitHub pushes and Vercel deployment myself. I also need to choose the
-final code and data licenses before a public release.
+I will handle GitHub pushes and Vercel deployment myself. I selected 0BSD for my
+original code, documentation, synthetic data, and other original repository material;
+third-party work keeps its own terms.

@@ -17,7 +17,9 @@ not public releases or the later pilot tier.
 - [x] Confirm `ReactorBench-LM` as the final project name.
 - [x] Initialize Git only after confirming the correct folder. Local repository initialized on `codex/foundation`; no remote is configured.
 - [x] Add a root README with the visible synthetic/non-operational disclaimer.
-- [ ] Choose initial code and data licenses. Deferred by D-041; nonblocking for local foundation and generator work, but required before distribution.
+- [x] Choose initial code and data licenses. D-092 selects 0BSD for original code,
+  documentation, project-authored synthetic data, and other original repository
+  material unless a file explicitly states otherwise.
 
 ## Scope
 

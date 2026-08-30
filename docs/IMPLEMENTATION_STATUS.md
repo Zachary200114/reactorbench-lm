@@ -163,6 +163,12 @@ this current checkpoint.
 
 ## Completed work
 
+- Selected and added the standard 0BSD license for original code, documentation,
+  project-authored synthetic data, and other original repository material unless a
+  file explicitly states otherwise. Added the plain-language README section, PEP 621
+  package metadata, source-distribution inclusion, D-092, and reconciled the dataset
+  card, dataset specification, research README, and pre-build checklist. Credit is
+  appreciated but not required; third-party work retains its own terms.
 - Added a root `robots.txt` that permits all crawler access and uses the owner's
   requested friendly reuse message: exploration, sharing, learning, and building on
   the project are welcome; credit is appreciated but not required. The file explicitly
@@ -420,6 +426,21 @@ scientific outcome remains unknown until the owner runs it. The code changes imp
 the evidence-aligned training setup; they do not guarantee acceptance.
 
 ## Tests and checks run
+
+- 0BSD licensing pass on 2026-08-30:
+  - Standard SPDX 0BSD text added at repository root with `Copyright (C) 2026 Zachary`.
+  - PEP 621 license expression and license-file metadata set to `0BSD` / `LICENSE`;
+    source-distribution inclusion added explicitly.
+  - Focused license and package-resource contracts: 6 passed and 1 protected
+    historical reader deliberately deselected. Ruff lint/format and Git diff whitespace
+    validation passed.
+  - A no-isolation distribution build could not start because the local environment
+    lacks the declared Hatchling backend. No dependency installation was authorized.
+    Static PEP 621 metadata, explicit source-distribution inclusion, and license text
+    are contract-tested; the missing local build backend is a release-environment
+    limitation rather than a license-policy failure.
+  - No training, data generation, run-artifact mutation, final/golden access, push, or
+    deployment occurred.
 
 - Root crawler-policy pass on 2026-08-30:
   - Exact `User-agent: *` and `Allow: /` records verified.
@@ -689,7 +710,8 @@ successfully.
   approved.
 - Fresh final evaluation remains locked and unimplemented. Do not create readiness or
   approval markers by hand.
-- Code and dataset license placeholders remain deferred until release preparation.
+- 0BSD now covers original repository material unless a file explicitly says
+  otherwise. Third-party dependencies and referenced material retain their own terms.
 - Exact account usage cannot be monitored here; the user must supply the visible
   percentage for a precise account-level cutoff.
 

@@ -538,18 +538,16 @@ Permitted external use is limited to:
 
 The source-level decisions are recorded in `SOURCE_MANIFEST.csv`.
 
-## 12. Ownership and license planning
+## 12. Ownership and licensing
 
-Because the released corpus will be generated entirely from project-authored rules and text templates, licensing will be simpler than a scraped corpus. Before public release:
+The corpus is generated from project-authored rules and text templates rather than a
+scraped corpus. D-092 selects 0BSD for original code, documentation, project-authored
+synthetic data, and other original repository material unless a file explicitly says
+otherwise. Third-party dependencies and referenced material keep their own licenses
+and terms.
 
-- choose a dataset license, provisionally CC BY 4.0 or CC0;
-- choose a code license, provisionally Apache-2.0 or MIT;
-- document NRC/DOE/IAEA sources as references, not training inputs;
-- do not imply endorsement by any agency;
-- obtain legal guidance if the project later changes to ingest third-party text.
+Public documentation must continue to identify NRC/DOE/IAEA sources as references,
+not training inputs, and must not imply endorsement by any agency. Obtain legal
+guidance if the project later ingests or redistributes third-party text.
 
 This dossier is not legal advice.
-
-License selection is explicitly deferred under D-041. That deferral does not block
-local schema, generator, or evaluation work, but no code or dataset distribution may
-imply reuse permission until the applicable licenses are selected.

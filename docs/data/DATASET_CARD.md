@@ -181,8 +181,9 @@ it is not a release or candidate-approval hash.
 
 No external source is approved as narrative training data. Text is emitted only by the
 repository's deterministic grammar and fictional alias catalogs. External documents in
-the research dossier are citations and design references, not corpus inputs. Code and
-dataset licenses remain intentionally undecided; no distribution permission is implied.
+the research dossier are citations and design references, not corpus inputs.
+Project-authored synthetic data is licensed under 0BSD unless a file explicitly states
+otherwise; cited and third-party material retains its own terms.
 
 ## Quality and review
 
@@ -208,5 +209,5 @@ the full post-render packet. Both reviews were completed and approved on 2026-08
 Known limitations include synthetic grammar artifacts, a small developmental sample,
 low-severity-dominant simulator coverage, no training-compound examples, an unfrozen
 golden suite, and simplified fictional causal dynamics. These limitations are expected
-to be measured rather than hidden. Code and dataset licenses remain `TBD`, so no
-distribution permission is implied.
+to be measured rather than hidden. Project-authored synthetic data is available under
+the repository's 0BSD license unless a file explicitly states otherwise.
