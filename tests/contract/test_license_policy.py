@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_zero_clause_license_matches_the_owner_policy_and_package_metadata() -> None:
     license_text = (ROOT / "LICENSE").read_text("ascii")
     normalized = " ".join(license_text.split())
-    assert license_text.startswith("BSD Zero Clause License\n\nCopyright (C) 2026 Zachary\n")
+    assert license_text.startswith("BSD Zero Clause License\n\nCopyright (C) 2026 Zachary Ryan\n")
     assert (
         "Permission to use, copy, modify, and/or distribute this software for any "
         "purpose with or without fee is hereby granted."

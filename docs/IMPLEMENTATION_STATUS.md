@@ -428,7 +428,8 @@ the evidence-aligned training setup; they do not guarantee acceptance.
 ## Tests and checks run
 
 - 0BSD licensing pass on 2026-08-30:
-  - Standard SPDX 0BSD text added at repository root with `Copyright (C) 2026 Zachary`.
+  - Standard SPDX 0BSD text added at repository root with
+    `Copyright (C) 2026 Zachary Ryan`.
   - PEP 621 license expression and license-file metadata set to `0BSD` / `LICENSE`;
     source-distribution inclusion added explicitly.
   - Focused license and package-resource contracts: 6 passed and 1 protected
