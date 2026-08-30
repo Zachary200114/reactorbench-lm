@@ -20,6 +20,7 @@ from reactorbench.remediation.sampling import (
     SamplingMetadataRecord,
     SamplingRecord,
     TaskBalancedSamplingError,
+    fault_continuation_focused_batch_indices,
     sampling_metadata_inventory_sha256,
     task_balanced_batch,
     task_balanced_batch_indices,
@@ -97,6 +98,95 @@ def test_task_class_metadata_hash_is_order_independent_and_mismatch_is_rejected(
             records,
             metadata=metadata[:-1],
             batch_size=6,
+            seed=1,
+            step=0,
+        )
+
+
+def test_focused_sampler_freezes_task_mix_and_only_balances_continuation_labels() -> None:
+    records, original_metadata = _class_inventory()
+    metadata = tuple(
+        row._replace(
+            classification_label=(
+                ("fault-common" if int(row.example_id.rsplit(":", 1)[1]) < 4 else "fault-rare")
+                if row.task_name is TaskName.FAULT_FAMILY
+                else row.classification_label
+            )
+        )
+        for row in original_metadata
+    )
+    batches = tuple(
+        fault_continuation_focused_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=6,
+            seed=91,
+            step=step,
+        )
+        for step in range(6)
+    )
+    assert batches == tuple(
+        fault_continuation_focused_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=6,
+            seed=91,
+            step=step,
+        )
+        for step in range(6)
+    )
+    for batch in batches:
+        counts = Counter(records[index].task_name for index in batch)
+        assert counts[TaskName.FAULT_FAMILY] == 2
+        assert counts[TaskName.CONTINUE_LOG] == 2
+        assert (
+            sum(
+                counts[task]
+                for task in TaskName
+                if task
+                not in {
+                    TaskName.FAULT_FAMILY,
+                    TaskName.CONTINUE_LOG,
+                }
+            )
+            == 2
+        )
+
+    metadata_by_id = {row.example_id: row for row in metadata}
+    fault_labels = Counter(
+        metadata_by_id[records[index].example_id].classification_label
+        for batch in batches[:3]
+        for index in batch
+        if records[index].task_name is TaskName.FAULT_FAMILY
+    )
+    assert fault_labels == Counter({"fault-common": 4, "fault-rare": 2})
+    continuation_labels = Counter(
+        metadata_by_id[records[index].example_id].classification_label
+        for batch in batches[:3]
+        for index in batch
+        if records[index].task_name is TaskName.CONTINUE_LOG
+    )
+    assert continuation_labels == Counter({"label-0": 2, "label-1": 2, "label-2": 2})
+    other_counts = Counter(
+        records[index].task_name
+        for batch in batches[:4]
+        for index in batch
+        if records[index].task_name
+        not in {
+            TaskName.FAULT_FAMILY,
+            TaskName.CONTINUE_LOG,
+        }
+    )
+    assert set(other_counts.values()) == {2}
+
+
+def test_focused_sampler_rejects_non_frozen_batch_shape() -> None:
+    records, metadata = _class_inventory()
+    with pytest.raises(ValueError, match="batch_size"):
+        fault_continuation_focused_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=8,
             seed=1,
             step=0,
         )

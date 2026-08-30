@@ -2529,6 +2529,37 @@ def _semantic_reports_differ_only_in_confidence(
     return payloads[0] == payloads[1]
 
 
+def _calibration_observations_by_identity(
+    examples: tuple[RemediationExample, ...],
+    predictions: tuple[DualPathCompactPrediction, ...],
+) -> tuple[CalibrationObservation, ...]:
+    """Bind calibration truth and predictions by immutable example identity."""
+
+    ordered_examples = tuple(sorted(examples, key=lambda item: item.example_id))
+    ordered_predictions = tuple(sorted(predictions, key=lambda item: item.example_id))
+    if len(ordered_examples) != len(ordered_predictions):
+        raise PipelineExecutionError("calibration example and prediction counts differ")
+    observations: list[CalibrationObservation] = []
+    for example, prediction in zip(ordered_examples, ordered_predictions, strict=True):
+        if (
+            prediction.example_id != example.example_id
+            or prediction.example_checksum_sha256 != example.checksum_sha256
+        ):
+            raise PipelineExecutionError("calibration prediction identity binding differs")
+        observations.append(
+            CalibrationObservation(
+                example_id=example.example_id,
+                raw_confidence=float(
+                    prediction.constrained.selected_token_geometric_mean_probability
+                ),
+                exact_match=(
+                    prediction.constrained.canonical_target_json == example.canonical_target_json
+                ),
+            )
+        )
+    return tuple(observations)
+
+
 def _reconstruct_targeted_v03_gate(
     *,
     selection: CandidateSelectionReport,
@@ -2547,14 +2578,9 @@ def _reconstruct_targeted_v03_gate(
 ) -> tuple[V03AcceptanceResult, TargetedV03GateBinding]:
     """Independently reconstruct every targeted acceptance input from raw evidence."""
 
-    observations = tuple(
-        CalibrationObservation(
-            example_id=example.example_id,
-            raw_confidence=float(prediction.constrained.selected_token_geometric_mean_probability),
-            exact_match=prediction.constrained.canonical_target_json
-            == example.canonical_target_json,
-        )
-        for example, prediction in zip(calibration_examples, calibration_predictions, strict=True)
+    observations = _calibration_observations_by_identity(
+        calibration_examples,
+        calibration_predictions,
     )
     reconstructed_calibration = fit_temperature(
         observations,
@@ -3088,7 +3114,12 @@ def _run_training(
     guard: _ResourceGuard,
     inputs: _ExecutionInputs,
     candidate_id: str,
-    sampling_strategy: Literal["uniform_control", "task_balanced", "task_class_balanced"],
+    sampling_strategy: Literal[
+        "uniform_control",
+        "task_balanced",
+        "task_class_balanced",
+        "fault_continuation_focused",
+    ],
     model_config: TransformerConfig,
     training: RemediationTraining,
     train_examples: tuple[RemediationExample, ...],
@@ -3124,7 +3155,7 @@ def _run_training(
             )
             for item in train_examples
         )
-        if sampling_strategy == "task_class_balanced"
+        if sampling_strategy in {"task_class_balanced", "fault_continuation_focused"}
         else None
     )
     targeted_binding = (
@@ -3137,6 +3168,10 @@ def _run_training(
             train_tokenized_sha256=tokenized_inventory_sha256(tokenized_train),
             sampling_metadata_inventory_sha256=sampling_metadata_inventory_sha256(
                 sampling_metadata
+            ),
+            sampling_strategy=cast(
+                Literal["task_class_balanced", "fault_continuation_focused"],
+                sampling_strategy,
             ),
         )
         if sampling_metadata is not None
@@ -3227,10 +3262,11 @@ def _load_training_result(attempt: Path, candidate_id: str) -> CompactTrainingRe
         CompactTrainingResult,
     )
     binding_path = attempt / "training-state" / candidate_id / TARGETED_SAMPLING_BINDING_FILENAME
-    if result.sampling_strategy == "task_class_balanced":
+    if result.sampling_strategy in {"task_class_balanced", "fault_continuation_focused"}:
         binding = load_targeted_sampling_binding(binding_path.parent)
         if (
-            binding.candidate_id != result.candidate_id
+            binding.sampling_strategy != result.sampling_strategy
+            or binding.candidate_id != result.candidate_id
             or binding.training_config_sha256 != result.training_config_sha256
             or binding.train_inventory_sha256 != result.train_inventory_sha256
             or binding.train_tokenized_sha256 != result.train_tokenized_sha256
@@ -4253,18 +4289,9 @@ class _PipelineRuntime:
                 predictions=calibration_predictions,
             )
             artifacts.extend(calibration_prediction_artifacts)
-            observations = tuple(
-                CalibrationObservation(
-                    example_id=example.example_id,
-                    raw_confidence=float(
-                        prediction.constrained.selected_token_geometric_mean_probability
-                    ),
-                    exact_match=prediction.constrained.canonical_target_json
-                    == example.canonical_target_json,
-                )
-                for example, prediction in zip(
-                    calibration_examples, calibration_predictions, strict=True
-                )
+            observations = _calibration_observations_by_identity(
+                calibration_examples,
+                calibration_predictions,
             )
             calibration_report = fit_temperature(
                 observations,

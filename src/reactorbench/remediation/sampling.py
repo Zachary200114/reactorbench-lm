@@ -433,6 +433,115 @@ def task_class_balanced_batch_indices[RecordT: SamplingRecord](
     return indices
 
 
+def fault_continuation_focused_batch_indices[RecordT: SamplingRecord](
+    records: tuple[RecordT, ...],
+    *,
+    metadata: tuple[SamplingMetadataRecord, ...],
+    batch_size: int,
+    seed: int,
+    step: int,
+) -> tuple[int, ...]:
+    """Choose the frozen v0.3.2 weak-task-focused six-row batch.
+
+    Each batch contains two fault-diagnosis rows, two continuation rows, and one
+    row from each of two rotating non-focus tasks. Fault rows retain the empirical
+    training distribution; continuation rows rotate uniformly across supervised
+    labels because the development errors are confined to its rare event types.
+    The other four tasks alternate in deterministic pairs, so each receives one
+    row every two steps without disappearing from training.
+    """
+
+    batch_size = _bounded_integer(batch_size, field_name="batch_size", minimum=6, maximum=6)
+    seed = _bounded_integer(seed, field_name="seed", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    step = _bounded_integer(step, field_name="step", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    by_task = _validated_inventory(records)
+    if set(by_task) != set(TaskName):
+        raise TaskBalancedSamplingError("focused sampler requires all six task inventories")
+    rows = _validated_sampling_metadata(metadata)
+    position_by_id = {
+        getattr(record, "example_id", None): index for index, record in enumerate(records)
+    }
+    if None in position_by_id or len(position_by_id) != len(records):
+        raise ValueError("sampling records must expose unique example_id values")
+    if set(position_by_id) != {row.example_id for row in rows}:
+        raise ValueError("sampling metadata does not exactly cover the tokenized inventory")
+    metadata_by_position: dict[int, SamplingMetadataRecord] = {}
+    for row in rows:
+        position = position_by_id[row.example_id]
+        if records[position].task_name is not row.task_name:
+            raise ValueError("sampling metadata task differs from tokenized record")
+        metadata_by_position[position] = row
+
+    selected: list[tuple[int, TaskName, _ValidatedRecord]] = []
+    fault_rows = _ordered_task_records(
+        by_task[TaskName.FAULT_FAMILY], seed=seed, task_name=TaskName.FAULT_FAMILY
+    )
+    for draw in range(2):
+        selected.append(
+            (draw, TaskName.FAULT_FAMILY, fault_rows[(step * 2 + draw) % len(fault_rows)])
+        )
+
+    continuation_strata: dict[str, list[_ValidatedRecord]] = defaultdict(list)
+    for record in by_task[TaskName.CONTINUE_LOG]:
+        label = metadata_by_position[record.position].classification_label
+        if label is None:
+            raise TaskBalancedSamplingError("continuation sampling metadata lacks its label")
+        continuation_strata[label].append(record)
+    ordered_labels = tuple(
+        sorted(
+            continuation_strata,
+            key=lambda value: (_rank("focused-continuation-label", seed, value), value),
+        )
+    )
+    for draw in range(2):
+        sequence_position = step * 2 + draw
+        label = ordered_labels[sequence_position % len(ordered_labels)]
+        label_rows = _ordered_task_records(
+            tuple(continuation_strata[label]), seed=seed, task_name=TaskName.CONTINUE_LOG
+        )
+        selected.append(
+            (
+                draw,
+                TaskName.CONTINUE_LOG,
+                label_rows[(sequence_position // len(ordered_labels)) % len(label_rows)],
+            )
+        )
+
+    other_tasks = (
+        TaskName.EXTRACT_EVIDENCE,
+        TaskName.NEXT_ACTION,
+        TaskName.INCIDENT_SUMMARY,
+        TaskName.COUNTERFACTUAL_COMPARE,
+    )
+    start = _rank("focused-other-task-order", seed) % len(other_tasks)
+    pair_offset = 0 if step % 2 == 0 else 2
+    for draw in range(2):
+        task = other_tasks[(start + pair_offset + draw) % len(other_tasks)]
+        task_rows = _ordered_task_records(by_task[task], seed=seed, task_name=task)
+        selected.append((draw, task, task_rows[(step // 2) % len(task_rows)]))
+
+    selected.sort(
+        key=lambda item: (
+            _rank(
+                "focused-batch-record",
+                seed,
+                str(step),
+                item[1].value,
+                str(item[0]),
+                item[2].group_id,
+                str(item[2].position),
+            ),
+            item[1].value,
+            item[0],
+            item[2].position,
+        )
+    )
+    indices = tuple(item[2].position for item in selected)
+    if len(indices) != 6:
+        raise TaskBalancedSamplingError("focused sampler violated its six-row invariant")
+    return indices
+
+
 __all__ = [
     "MAX_BATCH_SIZE",
     "MAX_GROUP_ID_UTF8_BYTES",
@@ -441,6 +550,7 @@ __all__ = [
     "SamplingMetadataRecord",
     "SamplingRecord",
     "TaskBalancedSamplingError",
+    "fault_continuation_focused_batch_indices",
     "sampling_metadata_inventory_sha256",
     "task_balanced_batch",
     "task_balanced_batch_indices",

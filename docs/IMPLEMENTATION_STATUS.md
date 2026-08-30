@@ -2,20 +2,21 @@
 
 Last updated: 2026-08-29 America/New_York
 
-Current phase: **Phase 6 targeted v0.3 quality remediation implemented and verified;
-the non-overwriting targeted run is Not started**
+Current phase: **Phase 6 focused v0.3 quality remediation implemented; targeted-01
+is preserved and the non-overwriting targeted-02 run is Not started**
 
-Current objective: hand off `phase6-remediation-v0.4.0-targeted-01` for a later
-owner-operated run. The prepared attempt targets the three measured v0.3 shortfalls,
-keeps every scientific threshold unchanged, and avoids repeating the already-proven
-v0.2 compute prefix. No claim is made that the new candidate will pass.
+Current objective: verify and hand off `phase6-remediation-v0.4.0-targeted-02` for a
+later owner-operated run. The candidate-only attempt targets the two remaining v0.3
+shortfalls, keeps every scientific threshold unchanged, and avoids repeating the
+already-proven v0.2 compute prefix. No claim is made that the new candidate will pass.
 
-Checkpoint reason: rerun 02 provided valid development evidence that fault margin,
-continuation macro-F1, and calibration missed their preregistered thresholds. The new
-code adds deterministic within-task class balancing, disjoint validation-only
-temperature calibration, checksum-bound sampler provenance, and read-only v0.2 prefix
-reuse. Repository-wide tests pass; no dataset generation, training, final/golden
-access, deployment, or push occurred during this preparation.
+Checkpoint reason: targeted-01 proved validation-only calibration successful but
+still missed fault margin and continuation macro-F1. Its gate also exposed an
+identity-order reconstruction defect. The new code joins calibration evidence by
+immutable example ID and replaces global class flattening with one focused candidate:
+empirical-distribution fault rows, label-balanced continuation rows, and rotating
+coverage of the four already-strong tasks. No dataset generation, training,
+final/golden access, deployment, or push occurred during this preparation.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -137,7 +138,7 @@ percentage was measured.
   but superseded it before start with the targeted scientific-remediation identity.
   Its run directory was never created.
 - Added `phase6-remediation-v0.4.0-targeted-01` as the CLI, GUI, and wrapper default.
-  The run directory remains absent.
+  It is now preserved as failed development evidence.
 - Added deterministic task-and-class-balanced sampling with a separate metadata
   inventory so frozen tokenized examples and historical training contracts remain
   byte-compatible. A checksum-bound targeted sidecar is required for fresh training,
@@ -169,6 +170,18 @@ percentage was measured.
   local macOS testing GUI. A second bar now reports progress within Setup, v0.2, v0.3,
   v0.4, or Finalization, while the third retains exact current-task work. The entire-
   run value is explicitly documented as stage-based, not a wall-clock estimate.
+- Targeted-01 completed both candidates, disjoint calibration, and all 427 gate
+  predictions. It failed before acceptance because the consumer paired canonical
+  prediction order with selection-order calibration examples.
+- Replaced positional calibration pairing with a strict example-ID and example-
+  checksum join used by both producer and independent consumer. Read-only replay of
+  targeted-01 reproduces its saved 56-observation calibration report, temperature
+  2.35, and checksum bit-for-bit.
+- Added the candidate-only `phase6-remediation-v0.4.0-targeted-02` identity. Its
+  focused sampler allocates two of six rows to empirical-distribution fault examples,
+  two to label-balanced continuation examples, and rotates the remaining two across
+  the four already-strong tasks. It retains random initialization, 2,000 steps, the
+  48/56/427 validation partition, and every frozen threshold.
 
 ## Frozen development evidence
 
@@ -236,11 +249,46 @@ Rerun 02 is completed development evidence but not an accepted model result:
 - Preserved progress checksum:
   `4af616a1d43f3acbdc84e28a4e29df860560d8bd5e753fd0229aaeb4957324ff`
 
-The targeted attempt is designed to address the three measured development misses,
-but its scientific outcome remains unknown until the owner runs it. The code changes
-improve the training and calibration setup; they do not guarantee acceptance.
+Targeted-01 is completed development evidence but not an accepted result:
+
+- Source commit: `120e06789a35515bd5deebed9710420ecde3f213`
+- Terminal stage: 10 of 16, `v03_gate`, after 9,140.8 active seconds
+- Selected candidate: `v03-task-balanced-control`
+- Selected 48-row semantic composite: 0.96104410198
+- 427-row constrained exact match: 0.75175644028
+- Calibrated expected calibration error: 0.08746113292; required at most 0.15
+- Continuation macro-F1: 0.73961904762; required at least 0.90
+- Fault comparator margin: -0.04544028655; required at least +0.02
+- Reconstructed acceptance: eight of ten criteria pass
+- Pipeline-state checksum:
+  `b059fa874e3d5ab088d2e371382ec6bbfd984c1ae4f37c8d41467e5c1479245c`
+
+Targeted-02 is designed to address the two remaining development misses, but its
+scientific outcome remains unknown until the owner runs it. The code changes improve
+the evidence-aligned training setup; they do not guarantee acceptance.
 
 ## Tests and checks run
+
+- Focused targeted-02 implementation verification on 2026-08-29:
+  - Identity-bound read-only replay of targeted-01: 56 observations, temperature
+    2.35, and calibration checksum
+    `66fe764515d1aed39a00f3e1b169433227f4a5d28f8f0b12666fc8fecb4790d9`
+    reproduced bit-for-bit.
+  - Focused unit/property/contract gate: 84 passed in 2.42 seconds.
+  - Broader remediation/resource gate: 189 passed and 1 protected historical
+    package-resource reader deliberately deselected in 2.96 seconds.
+  - Final boundary-correct repository gate: 1,127 passed and 2 protected historical
+    tests deliberately deselected in 551.03 seconds.
+  - Coverage: 85.26%, above the required 85%.
+  - Ruff format: 157 files passed. Ruff lint: passed. Strict mypy: passed across all
+    78 source modules.
+  - Swift syntax parse, property-list lint, seven shell-wrapper syntax checks, Git
+    diff whitespace validation, and exact v0.2 reuse-inventory equality: passed.
+  - Source and wheel distributions built successfully in a temporary directory. The
+    isolated no-network wheel install and distribution-resource verifier passed,
+    including both new targeted-02 configuration resources. Nothing was published.
+  - The targeted-02 run directory remained absent throughout verification; no
+    training, dataset generation, fresh-final access, push, or deployment occurred.
 
 - Targeted v0.3 remediation verification on 2026-08-29:
   - Ruff format: 192 files passed.
@@ -378,6 +426,8 @@ successfully.
 - D-089 defines targeted-01, keeps every threshold unchanged, pins the exact 21-file
   v0.2 reuse inventory, requires prediction-level consumer reconstruction, and makes
   targeted resume publication binding-first.
+- D-090 preserves targeted-01, fixes identity-bound calibration reconstruction, and
+  defines the single-candidate focused targeted-02 task mix without changing any gate.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -392,11 +442,13 @@ successfully.
 - Rerun 02 failed safely after approximately 10,772.9 active seconds at `v03_gate`.
   It is terminal and must not be resumed or edited. The false checksum mismatch is
   corrected, but its preserved model independently misses three frozen thresholds.
-- The targeted run is pending and may still take hours on Apple MPS. It should be
-  shorter because its four v0.2 compute stages are verification-only, but v0.3 data
-  audit, smoke, two candidate trainings, calibration, and gate evaluation remain real
-  work. The changes improve the evidence-aligned learning setup; they do not promise
-  acceptance or guarantee a large metric increase.
+- Targeted-01 failed safely after approximately 9,140.8 active seconds at `v03_gate`.
+  It is terminal and must not be resumed or edited. Its identity-order defect is
+  corrected, but its preserved model still misses fault margin and continuation F1.
+- Targeted-02 may still take hours on Apple MPS. It should be shorter because its four
+  v0.2 stages are verification-only and it trains one candidate rather than two, but
+  v0.3 data audit, smoke, training, calibration, and gate evaluation remain real work.
+  The focused sampler does not promise acceptance or guarantee a large metric gain.
 - During final verification, one unrestricted coverage command mistakenly omitted
   the two recorded deselections and executed both protected historical tests. It
   passed 1,125 tests and did not start training, generate data, run the fresh-final
@@ -432,8 +484,11 @@ successfully.
 ## Files and artifact paths
 
 - Pipeline configuration:
-  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml
-- Targeted v0.3 configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-02.toml
+- Focused v0.3 configuration:
+  configs/experiments/phase6-remediation-v0.3.2-focused.toml
+- Preserved targeted-01 configurations:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml,
   configs/experiments/phase6-remediation-v0.3.1-targeted.toml
 - Superseded unstarted checksum-only configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-rerun-03.toml
@@ -468,24 +523,26 @@ successfully.
   runs/phase6-remediation-v0.4.0-local-rerun-01/
 - Preserved failed rerun 02:
   runs/phase6-remediation-v0.4.0-local-rerun-02/
-- Targeted run root (currently absent):
+- Preserved failed targeted-01:
   runs/phase6-remediation-v0.4.0-targeted-01/
+- Focused targeted-02 run root (currently absent):
+  runs/phase6-remediation-v0.4.0-targeted-02/
 - Canonical live status after start:
-  runs/phase6-remediation-v0.4.0-targeted-01/status.json
+  runs/phase6-remediation-v0.4.0-targeted-02/status.json
 
-### Targeted v0.3 preparation (Not started)
+### Focused v0.3 preparation (Not started)
 
-- Default identity: `phase6-remediation-v0.4.0-targeted-01`.
-- The new v0.3 config compares a task-balanced control with a deterministic
-  task-and-class-balanced candidate. It freezes a 48-example raw semantic selection
-  subset, then a disjoint 56-example validation-only calibration subset; the final
-  IID gate inventory is the remaining 427 rows for the current 531-row inventory.
+- Default identity: `phase6-remediation-v0.4.0-targeted-02`.
+- The new v0.3 config trains exactly one fault/continuation-focused candidate. It
+  freezes the same 48-example raw semantic selection subset, then the same disjoint
+  56-example validation-only calibration subset; the IID gate inventory remains the
+  other 427 rows of the current 531-row validation inventory.
 - Thresholds, model size, teacher-forced exposure, and 2,000 training steps are
   unchanged. Temperature calibration affects only confidence-based gate metrics.
 - The targeted run directory is intentionally absent. No training or data generation
   has been started, and the expected result is unknown.
 - Append-only progress after start:
-  runs/phase6-remediation-v0.4.0-targeted-01/progress.jsonl
+  runs/phase6-remediation-v0.4.0-targeted-02/progress.jsonl
 
 ## Repository state
 
@@ -509,10 +566,10 @@ successfully.
 - Targeted-remediation implementation commit:
   `0e38874c83ad20a9af41547a959bd959c595278a`.
 - Final verification and independent re-review disposition: ship, with no required
-  corrections.
-- The worktree was clean before this final status-only checkpoint; verify the final
-  handoff commit and clean state with `git status` after resuming.
-- All three failed run directories are preserved; the rerun-03 directory does not
+  corrections for targeted-01 preparation.
+- Focused targeted-02 remediation is awaiting its final local checkpoint commit;
+  verify every changed path and the final clean state with `git status`.
+- All four failed run directories are preserved; the rerun-03 and targeted-02 directories do not
   exist.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
   historical test-boundary mistake is separately disclosed above.
@@ -520,10 +577,10 @@ successfully.
 
 ## Immediate next step
 
-The implementation, permitted repository/package gates, independent final re-review,
-and clean-source dry run are complete. The owner may now push the local commits.
-Tomorrow, open the local monitor, confirm it reports `Not started` and
-`phase6-remediation-v0.4.0-targeted-01`, optionally run the non-mutating readiness
+Create the final local checkpoint commit, run the clean-source dry run, and confirm
+the tree is clean and the targeted-02 directory remains absent. Then open the local
+monitor, confirm it reports `Not started` and
+`phase6-remediation-v0.4.0-targeted-02`, optionally run the non-mutating readiness
 check, and press `Start new rerun` when ready to measure the preregistered targeted
 candidate. Do not resume or modify any preserved failed run. Passing remains unknown
 until that owner-operated run completes.

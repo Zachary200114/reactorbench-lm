@@ -1,6 +1,6 @@
 # Phase 6 remediation local runbook
 
-Status: **targeted v0.3 quality remediation verified; targeted-01 Not started**
+Status: **targeted-01 preserved; focused candidate-only targeted-02 verified and Not started**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -93,11 +93,27 @@ Constrained parse and schema validity are both 1.0, constrained exact match is
 measurements, not a final result. An unchanged rerun is expected to reach a valid
 scientific `blocked` state at v0.3 rather than advance to v0.4.
 
+The first targeted scientific attempt remains preserved at:
+
+```text
+runs/phase6-remediation-v0.4.0-targeted-01/
+```
+
+It completed the first nine stages, two 2,000-step candidates, calibration, and all
+427 IID gate predictions in 2h 32m 20s. The v0.3 gate failed before acceptance because
+canonical example-ID-ordered predictions were paired with calibration examples in
+selection order. The run is not corrupt: an identity-bound read-only reconstruction
+reproduces all 56 observations, temperature 2.35, and the saved calibration checksum
+bit-for-bit. Its calibrated development evidence would pass eight of ten checks:
+expected calibration error is 0.087461, continuation macro-F1 is 0.739619, and fault
+comparator margin is -0.045440. The latter two miss their unchanged 0.90 and +0.02
+thresholds. Do not delete, rename, resume, or edit this failed run.
+
 The current corrected default configuration is:
 
 ```text
-configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml
-runs/phase6-remediation-v0.4.0-targeted-01/
+configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-02.toml
+runs/phase6-remediation-v0.4.0-targeted-02/
 ```
 
 Checkpoint consumers now return the model's actual parameter device after verifying
@@ -106,7 +122,7 @@ explicit-index mismatch still fails closed. The exact preserved checkpoint opera
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers below now select the targeted-01 identity. The unstarted
+The ordinary wrappers below now select the targeted-02 identity. Targeted-01 and the unstarted
 rerun-03 configuration remains historical preparation and is not the default. The
 original run is bound to source
 commit `2aafcd1661ec7c3640a385621db171041532e547`, rerun 01 is bound to
@@ -166,7 +182,7 @@ if necessary; an optional foreground form is:
 caffeinate -i ./scripts/run_phase6_pipeline.sh
 ```
 
-The runner retains the frozen 16-stage interface. For targeted-01, preflight and the
+The runner retains the frozen 16-stage interface. For targeted-02, preflight and the
 four v0.2 stages verify the preserved rerun-02 manifest, completion prefix, outcomes,
 and all referenced artifacts by canonical contract, size, SHA-256, source, config,
 path containment, and non-symlink checks. The targeted configuration externally pins
@@ -179,9 +195,13 @@ when v0.3 passes, it runs the permitted v0.4 pilot, candidate, shadow evaluation
 policy freeze, and review-bundle stages. A failed scientific gate stops later work
 cleanly instead of weakening a threshold.
 
-Targeted v0.3 compares a task-balanced control against a deterministic
-task-and-class-balanced candidate. Model size, teacher-forced exposure, 2,000 steps,
-and every acceptance threshold are unchanged. Checkpoint selection still uses the
+Focused v0.3 trains exactly one candidate from random initialization. Each six-row
+batch contains two empirical-distribution fault rows, two continuation rows balanced
+across event labels, and two rows rotating across evidence, action, summary, and
+counterfactual tasks. This avoids the fault-distribution distortion measured in the
+fully class-balanced targeted-01 candidate and removes the second candidate's training
+cost. Model size, teacher-forced exposure, 2,000 steps, and every acceptance threshold
+are unchanged. Checkpoint selection still uses the
 same target-independent 48-example subset and raw confidence. A separate
 target-independent 56-example validation subset is decoded only after selection to
 fit a scalar temperature on the fixed 0.50–5.00 grid. The remaining 427 IID rows form
@@ -296,8 +316,8 @@ when those fields are available. The machine-readable heartbeat and append-only 
 log are:
 
 ```text
-runs/phase6-remediation-v0.4.0-targeted-01/status.json
-runs/phase6-remediation-v0.4.0-targeted-01/progress.jsonl
+runs/phase6-remediation-v0.4.0-targeted-02/status.json
+runs/phase6-remediation-v0.4.0-targeted-02/progress.jsonl
 ```
 
 ### Optional local progress window
@@ -311,7 +331,7 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ```
 
 Opening the monitor does not start training. It identifies the fixed
-`phase6-remediation-v0.4.0-targeted-01` run, refreshes through the existing
+`phase6-remediation-v0.4.0-targeted-02` run, refreshes through the existing
 strictly validated status command, and offers only allowlisted readiness, Start,
 status, safe-stop, stopped-run Resume, Finder, and copy operations. The activity log
 is bounded and non-scientific; the monitor never reads `status.json` or
@@ -448,7 +468,7 @@ implemented in this release.
 All ordinary pipeline outputs stay under:
 
 ```text
-runs/phase6-remediation-v0.4.0-targeted-01/
+runs/phase6-remediation-v0.4.0-targeted-02/
 ```
 
 Important top-level evidence includes:
@@ -478,16 +498,16 @@ After a completed development run, the human and machine review indexes are unde
 committed review-bundle attempt:
 
 ```text
-runs/phase6-remediation-v0.4.0-targeted-01/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
-runs/phase6-remediation-v0.4.0-targeted-01/stages/15-review_bundle/attempt-*/review-bundle.json
+runs/phase6-remediation-v0.4.0-targeted-02/stages/15-review_bundle/attempt-*/REVIEW_BUNDLE.md
+runs/phase6-remediation-v0.4.0-targeted-02/stages/15-review_bundle/attempt-*/review-bundle.json
 ```
 
 For `blocked`, `stopped`, or `failed` runs, the command prints the exact paths to an
 idempotent terminal-prefix bundle. If you return later, find it at:
 
 ```text
-runs/phase6-remediation-v0.4.0-targeted-01/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
-runs/phase6-remediation-v0.4.0-targeted-01/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
+runs/phase6-remediation-v0.4.0-targeted-02/terminal-reviews/state-<pipeline-state-sha256>/TERMINAL_REVIEW.md
+runs/phase6-remediation-v0.4.0-targeted-02/terminal-reviews/state-<pipeline-state-sha256>/terminal-review-bundle.json
 ```
 
 Use the exact attempt or state-checksum path reported by the command; do not choose a
@@ -538,8 +558,9 @@ raw traceback or private internal detail.
 
 Do not manually edit, rename, replace, or delete:
 
-- any file under `runs/phase6-remediation-v0.4.0-targeted-01/` or any preserved
-  failed run: `runs/phase6-remediation-v0.4.0-local-rerun-02/`,
+- any file under `runs/phase6-remediation-v0.4.0-targeted-02/` or any preserved
+  failed run: `runs/phase6-remediation-v0.4.0-targeted-01/`,
+  `runs/phase6-remediation-v0.4.0-local-rerun-02/`,
   `runs/phase6-remediation-v0.4.0-local-rerun-01/`, and
   `runs/phase6-remediation-v0.4.0-local/`;
 - the v0.2, v0.3, v0.4, or pipeline TOML configurations;
@@ -572,7 +593,7 @@ Then ask Codex to inspect, without rerunning the long job:
 > checksum-bound run manifest, pipeline state, status, progress log, completion
 > markers, review bundle, detailed v0.2/v0.3/v0.4 reports, baselines, checkpoints, and
 > acceptance outcomes under
-> `runs/phase6-remediation-v0.4.0-targeted-01/`. Do not retrain,
+> `runs/phase6-remediation-v0.4.0-targeted-02/`. Do not retrain,
 > open frozen final data, use historical G01–G15 as the new golden gate, push, or
 > deploy. Tell me whether development completed, blocked, stopped, or failed; what the
 > measured results show; and the exact reviewed prerequisite needed next.

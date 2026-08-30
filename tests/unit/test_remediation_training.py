@@ -873,6 +873,24 @@ def test_task_balanced_training_candidate_executes_the_frozen_sampler(tmp_path: 
     assert result.training_steps == 4
 
 
+def test_focused_training_candidate_executes_and_binds_its_sampler(tmp_path: Path) -> None:
+    examples = _examples()
+    result = _run(
+        tmp_path / "focused",
+        sampling="fault_continuation_focused",
+        train_examples=examples,
+        sampling_metadata=_sampling_metadata(examples),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    assert result.sampling_strategy == "fault_continuation_focused"
+    binding = TargetedSamplingBinding.model_validate_json(
+        (tmp_path / "focused" / "states" / TARGETED_SAMPLING_BINDING_FILENAME).read_bytes(),
+        strict=True,
+    )
+    assert binding.contract_version == "0.3.2-focused"
+    assert binding.sampling_strategy == "fault_continuation_focused"
+
+
 def test_device_resolution_has_explicit_fallback_and_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

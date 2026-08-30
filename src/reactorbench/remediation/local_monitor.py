@@ -25,7 +25,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol
 
-RUN_NAME: Final = "phase6-remediation-v0.4.0-targeted-01"
+RUN_NAME: Final = "phase6-remediation-v0.4.0-targeted-02"
 TOTAL_STAGES: Final = 16
 MAX_COMMAND_OUTPUT_BYTES: Final = 32 * 1024
 MAX_ACTIVITY_ENTRIES: Final = 100

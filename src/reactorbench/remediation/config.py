@@ -235,7 +235,12 @@ class AugmentationPolicy(StrictConfigModel):
 class CandidatePolicy(StrictConfigModel):
     candidate_id: ContractId
     seed: Annotated[StrictInt, Field(ge=0, le=4_294_967_295)]
-    sampling: Literal["uniform_control", "task_balanced", "task_class_balanced"]
+    sampling: Literal[
+        "uniform_control",
+        "task_balanced",
+        "task_class_balanced",
+        "fault_continuation_focused",
+    ]
     exposure: Literal["teacher_forced_only"]
     enabled: Literal[True]
 
@@ -304,7 +309,7 @@ class SemanticSelectionPolicy(StrictConfigModel):
 class CalibrationPolicy(StrictConfigModel):
     """Frozen, validation-only temperature-calibration declaration."""
 
-    policy_version: Literal["0.3.1-targeted"]
+    policy_version: Literal["0.3.1-targeted", "0.3.2-focused"]
     calibration_example_limit: Literal[56]
     grid_start: StrictFloat
     grid_stop: StrictFloat
@@ -322,9 +327,15 @@ class CalibrationPolicy(StrictConfigModel):
 class TargetedV03Policy(StrictConfigModel):
     """Narrow opt-in for the non-historical semantic remediation attempt."""
 
-    policy_version: Literal["0.3.1-targeted"]
+    policy_version: Literal["0.3.1-targeted", "0.3.2-focused"]
     sampling_metadata_required: Literal[True]
     calibration: CalibrationPolicy
+
+    @model_validator(mode="after")
+    def versions_match(self) -> TargetedV03Policy:
+        if self.calibration.policy_version != self.policy_version:
+            raise ValueError("targeted sampling and calibration policy versions differ")
+        return self
 
 
 class V03Config(StrictConfigModel):
@@ -370,13 +381,24 @@ class V03Config(StrictConfigModel):
             raise ValueError("v0.3 candidate IDs must be unique")
         historical = ("uniform_control", "task_balanced")
         targeted = ("task_balanced", "task_class_balanced")
+        focused = ("fault_continuation_focused",)
         sampling = tuple(item.sampling for item in self.candidates)
         if self.targeted_policy is None and sampling != historical:
             raise ValueError("historical v0.3 freezes the control and task-balanced candidates")
-        if self.targeted_policy is not None and sampling != targeted:
+        if (
+            self.targeted_policy is not None
+            and self.targeted_policy.policy_version == "0.3.1-targeted"
+            and sampling != targeted
+        ):
             raise ValueError(
                 "targeted v0.3 requires task-balanced and task-class-balanced candidates"
             )
+        if (
+            self.targeted_policy is not None
+            and self.targeted_policy.policy_version == "0.3.2-focused"
+            and sampling != focused
+        ):
+            raise ValueError("focused v0.3 requires exactly one focused candidate")
         return self
 
 

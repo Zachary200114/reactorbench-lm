@@ -1605,27 +1605,26 @@ def test_targeted_gate_reconstructs_acceptance_and_rejects_every_derived_drift(
     calibration_examples = tuple(
         SimpleNamespace(
             example_id=f"calibration-{index:03d}",
+            checksum_sha256=HASH_A,
             canonical_target_json="target" if index % 2 else "other",
         )
-        for index in range(56)
+        for index in reversed(range(56))
     )
     calibration_predictions = tuple(
         SimpleNamespace(
+            example_id=f"calibration-{index:03d}",
+            example_checksum_sha256=HASH_A,
             constrained=SimpleNamespace(
                 selected_token_geometric_mean_probability=0.6,
                 canonical_target_json="target",
-            )
+            ),
         )
-        for _index in range(56)
+        for index in range(56)
     )
-    observations = tuple(
-        pipeline.CalibrationObservation(
-            example_id=example.example_id,
-            raw_confidence=0.6,
-            exact_match=prediction.constrained.canonical_target_json
-            == example.canonical_target_json,
-        )
-        for example, prediction in zip(calibration_examples, calibration_predictions, strict=True)
+    assert calibration_examples[0].example_id != calibration_predictions[0].example_id
+    observations = pipeline._calibration_observations_by_identity(
+        cast(tuple[RemediationExample, ...], calibration_examples),
+        cast(tuple[DualPathCompactPrediction, ...], calibration_predictions),
     )
     calibration = pipeline.fit_temperature(
         observations,
@@ -1724,10 +1723,12 @@ def test_targeted_gate_reconstructs_acceptance_and_rejects_every_derived_drift(
 
     changed_calibration = (
         SimpleNamespace(
+            example_id=calibration_predictions[0].example_id,
+            example_checksum_sha256=HASH_A,
             constrained=SimpleNamespace(
                 selected_token_geometric_mean_probability=0.99,
                 canonical_target_json="target",
-            )
+            ),
         ),
         *calibration_predictions[1:],
     )

@@ -27,22 +27,27 @@ stages, both 2,000-step v0.3 candidates, and all 531 full-IID development evalua
 Its v0.3 gate failed before writing acceptance because training and gate reconstruction
 hashed the same tokenized inventory through different tuple/dictionary representations.
 All other reconstructed candidate bindings passed. One shared canonical checksum
-function now serves both paths, and the non-overwriting
-`phase6-remediation-v0.4.0-targeted-01` is the prepared development-only targeted
-attempt and remains **Not started**. Its outcome is unknown: it retains every frozen
-acceptance threshold while comparing task-balanced control sampling with deterministic
-task-and-class-balanced sampling and fitting confidence temperature only on a disjoint
-validation calibration subset. The exact 56 calibration predictions and 427 gate
-predictions are persisted; the gate independently reopens them to recompute the
-temperature, raw/calibrated reports, and acceptance result. Reused v0.2 evidence is
-externally pinned to an exact 21-file SHA-256 inventory rather than trusted by summary.
+function now serves both paths. Targeted-01 subsequently completed one task-balanced
+control, one task-and-class-balanced candidate, calibration decoding, and all 427 IID
+gate predictions. It failed before publishing acceptance because the independent gate
+reopened predictions in canonical example-ID order but paired them with calibration
+examples in selection order. The preserved prediction-level evidence is intact. An
+identity-bound join now reproduces its 56-row temperature report bit-for-bit. The next
+non-overwriting `phase6-remediation-v0.4.0-targeted-02` attempt remains **Not started**.
+It retains every frozen threshold, trains one candidate from random initialization,
+and focuses two of each six batch rows on fault diagnosis and two on continuation.
+Continuation labels rotate evenly, while fault labels retain their empirical training
+distribution. Reused v0.2 evidence remains externally pinned to an exact 21-file
+SHA-256 inventory rather than trusted by summary.
 
-The preserved rerun-02 metrics are promising but not an acceptance result: constrained
-parse/schema validity reached 100% and constrained exact match reached 74.95%, while
-the reconstructed gate misses the frozen fault-margin, continuation-F1, and calibration
-thresholds. An unchanged rerun is therefore expected to stop as a legitimate v0.3
-scientific block even though the engineering checksum failure is fixed. The Phase 7
-inference/UI gate remains blocked until a behaviorally acceptable checkpoint exists.
+Targeted-01's preserved development report passes eight of ten checks. Validation-only
+temperature scaling reduced expected calibration error from the earlier 0.1855 to
+0.08746 and passes its 0.15 threshold. Continuation macro-F1 improved only from 0.7182
+to 0.7396 against a required 0.90, while fault-comparator margin regressed to -0.04544
+against a required +0.02. The fully class-balanced candidate also lost checkpoint
+selection to the task-balanced control. Targeted-02 therefore avoids flattening the
+fault distribution and spends only one candidate's training compute. Phase 7 remains
+blocked until a behaviorally acceptable checkpoint exists.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -89,9 +94,8 @@ inference/UI gate remains blocked until a behaviorally acceptable checkpoint exi
   historical final/golden readers were deliberately excluded from this
   remediation-only verification boundary. Rerun 02 completed v0.3 development
   training/evaluation in 2h 59m 32s. Its preserved full-IID evidence passes seven of
-  ten reconstructed semantic checks and misses fault comparator margin (0.0098 versus
-  0.02), continuation macro-F1 (0.7182 versus 0.90), and expected calibration error
-  (0.1855 versus a maximum of 0.15). The targeted-01 attempt remains Not started.
+  ten reconstructed semantic checks. Targeted-01 later fixed calibration but still
+  missed fault margin and continuation F1; targeted-02 is prepared and Not started.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
@@ -99,7 +103,7 @@ inference service or web interface, and the current checkpoint must not be prese
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
 progress, safe stop/resume, and review evidence. The versioned local rerun remains
-pending under the `phase6-remediation-v0.4.0-targeted-01` identity, and the separate fresh final-evaluation executor
+pending under the `phase6-remediation-v0.4.0-targeted-02` identity, and the separate fresh final-evaluation executor
 is intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
@@ -232,7 +236,7 @@ window:
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. The current default is
-`phase6-remediation-v0.4.0-targeted-01`; do not resume or modify any preserved
+`phase6-remediation-v0.4.0-targeted-02`; do not resume or modify any preserved
 failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
 the current version, and exact current-task work when the runner reports it. The
 entire-rerun bar is stage-based rather than a wall-clock estimate.
