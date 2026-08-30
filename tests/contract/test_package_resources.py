@@ -49,6 +49,7 @@ PHASE6_SCRIPT_NAMES = (
     "check_phase6_status.sh",
     "open_phase6_progress_gui.sh",
     "phase6_monitor_controller.sh",
+    "replay_phase6_targeted03_gate.sh",
     "resume_phase6_pipeline.sh",
     "run_phase6_evaluation.sh",
     "run_phase6_pipeline.sh",
@@ -178,6 +179,10 @@ def test_dataset_guard_resources_are_importlib_readable_without_drift() -> None:
 
 
 def test_remediation_script_resource_rejects_non_allowlisted_names() -> None:
+    assert (
+        phase6_remediation_script_resource("replay_phase6_targeted03_gate.sh").read_bytes()
+        == (ROOT / "scripts/replay_phase6_targeted03_gate.sh").read_bytes()
+    )
     with pytest.raises(ValueError, match="not an allowlisted"):
         phase6_remediation_script_resource("../phase6_rescore_v0_1_1.py")
 
@@ -188,6 +193,7 @@ def test_remediation_runbook_freezes_the_user_operated_safety_workflow() -> None
         "./scripts/run_phase6_pipeline.sh",
         "./scripts/open_phase6_progress_gui.sh",
         "./scripts/check_phase6_status.sh",
+        "./scripts/replay_phase6_targeted03_gate.sh",
         "./scripts/stop_phase6_pipeline.sh",
         "./scripts/resume_phase6_pipeline.sh",
         "./scripts/run_phase6_evaluation.sh --confirm-final-evaluation",

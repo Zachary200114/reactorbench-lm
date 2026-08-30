@@ -31,22 +31,22 @@ function now serves both paths. Targeted-01 subsequently completed one task-bala
 control, one task-and-class-balanced candidate, calibration decoding, and all 427 IID
 gate predictions. Its independent gate exposed an example-order join bug, which was
 corrected without changing the preserved predictions. Targeted-02 then completed
-through the v0.3 gate and produced a valid scientific block: continuation macro-F1
-reached 0.9418, but six of ten unchanged checks failed. The focused batches starved
-other tasks, next-action macro-F1 fell to 0.2421, evidence F1 reached only 0.6778, and
-five of nine no-fault examples became false positives. Its small semantic selector
-also chose step 1,200 even though validation NLL continued improving through step
-2,000. All targeted-02 artifacts remain preserved; no final or golden evaluation was
-opened.
+through the v0.3 gate and produced a valid scientific block, passing four of ten
+unchanged checks.
 
-The next non-overwriting `phase6-remediation-v0.4.0-targeted-03` attempt is prepared but
-**Not started**. Each six-row batch restores one row from every task, rotates
-continuation and next-action labels evenly, and balances fault examples through a
-50% unresolved / 10% no-fault / 40% diagnosed hierarchy. A frozen 0.75 semantic floor
-now makes checkpoints eligible before validation NLL selects among them. The model
-architecture, 48/56/427 development partitions, calibration grid, externally pinned
-21-file v0.2 prefix, and all ten acceptance thresholds are unchanged. Phase 7 remains
-blocked until a behaviorally acceptable checkpoint exists.
+Targeted-03 subsequently completed all 2,500 training steps and all 427 gate
+evaluations. Its original stage-10 attempt failed safely because gate reconstruction
+still applied the historical `1 - semantic_composite` score to a checkpoint trained
+under the hierarchical semantic-floor policy. The source run remains unchanged. A
+versioned, checksum-bound replay at source commit
+`6b8a89c10aeec45518246d6b1ac082480cec4af7` reopened the completed evidence without
+retraining and certified nine of ten unchanged checks. The only miss is
+fault-comparator margin: `-0.0344200`, required at least `0.0200000`. Continuation
+macro-F1 is `0.9418182`, evidence F1 is `0.9330784`, no-fault false-positive rate is
+`0.0`, expected calibration error is `0.0931758`, and selective risk at 80% coverage
+is `0.1695906`; all pass. No final or golden evaluation was opened. Targeted-03 is
+therefore a development-only scientific block, not another integrity failure. Phase 7
+remains blocked until a behaviorally acceptable checkpoint passes every threshold.
 
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -89,22 +89,24 @@ blocked until a behaviorally acceptable checkpoint exists.
   cap-measurement inventory, then removes 24 same-task exact-prompt duplicates with
   identical targets; only the resulting 5,835 examples are written, audited, or
   trained, and all 55 counterfactual rows remain bit-exact. The permitted repository
-  verification now passes 1,134 tests with 85.25% coverage; two protected
-  historical final/golden readers were deliberately excluded from this
-  remediation-only verification boundary. Rerun 02 completed v0.3 development
+  verification now passes 1,137 permitted tests with 85.02% combined branch
+  coverage; two protected historical final/golden readers were deliberately excluded
+  from this remediation-only verification boundary. Rerun 02 completed v0.3 development
   training/evaluation in 2h 59m 32s. Its preserved full-IID evidence passes seven of
   ten reconstructed semantic checks. Targeted-01 later fixed calibration but still
   missed fault margin and continuation F1. Targeted-02 fixed continuation but failed
-  six of ten checks; targeted-03 is prepared and Not started.
+  six of ten checks. Targeted-03 completed training/evaluation and its corrected,
+  no-training gate replay passes nine of ten checks, missing only fault margin.
 
 This is a real test-generalization result, but it is a negative one. Low teacher-forced
 NLL did not translate into reliable free-running structured output. There is no
 inference service or web interface, and the current checkpoint must not be presented as
 deployment-ready. A three-iteration remediation program is now frozen; its three
 versioned iterations are encoded as a development-only, non-overwriting pipeline with
-progress, safe stop/resume, and review evidence. The versioned local rerun remains
-pending under the `phase6-remediation-v0.4.0-targeted-03` identity, and the separate fresh final-evaluation executor
-is intentionally locked and unimplemented in this release.
+progress, safe stop/resume, and review evidence. The targeted-03 source run and its
+separate gate-replay certificate are preserved. Further model-quality remediation is
+required before v0.4 or Phase 7 can proceed, and the separate fresh final-evaluation
+executor is intentionally locked and unimplemented in this release.
 
 Measured Phase 4 evidence and exact hashes are recorded in
 [the smoke-model report](docs/model/PHASE4_SMOKE.md) and
@@ -113,6 +115,7 @@ Measured Phase 4 evidence and exact hashes are recorded in
 [the Phase 6 main result](docs/model/PHASE6_MAIN.md) and
 [the Phase 6 remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md) and
 [the targeted-02 diagnosis](docs/model/PHASE6_TARGETED02_DIAGNOSIS.md) and
+[the targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -227,6 +230,18 @@ stop, and resume wrappers rather than editing run evidence:
 ./scripts/resume_phase6_pipeline.sh
 ```
 
+Targeted-03's completed training/evaluation evidence has a one-time,
+non-overwriting gate certification path that does not retrain:
+
+```bash
+./scripts/replay_phase6_targeted03_gate.sh
+```
+
+The command exits `9` when the reconstructed unchanged gate is a scientific block.
+It writes only under
+`runs/phase6-remediation-v0.4.0-targeted-03-gate-replay-01/` and never edits the
+preserved targeted-03 source run.
+
 On macOS, the same fixed workflow is available through a small local-only progress
 window:
 
@@ -245,8 +260,10 @@ open while the pipeline runs: when a verified run first enters `Failed` or `Bloc
 the monitor requests macOS attention and loops the system `Sosumi` alert at application
 volume 1.0 for 45 seconds, with a 23-beep fallback if the sound file is unavailable.
 It alerts only once per monitor session, so routine status refreshes do not repeat the
-sound. The alarm cannot override muted or low system volume or an incorrect output
-device; verify those macOS settings before leaving a run unattended.
+sound. While it is active, the enabled **Stop alarm** button stops the loop and cancels
+pending fallback beeps without changing run state. The alarm cannot override muted or
+low system volume or an incorrect output device; verify those macOS settings before
+leaving a run unattended.
 
 Infrastructure availability is not a positive model result. The routine pipeline
 cannot open the frozen final evaluation, and the historical G01–G15 packet is
@@ -263,6 +280,7 @@ instructions are in
 - [Phase 5 baseline and pilot evidence](docs/model/PHASE5_PILOT.md)
 - [Phase 6 main evaluation and negative result](docs/model/PHASE6_MAIN.md)
 - [Phase 6 three-iteration remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md)
+- [Phase 6 targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md)
 - [Phase 6 remediation local runbook](docs/model/PHASE6_REMEDIATION_RUNBOOK.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)
 - [Architecture](docs/architecture.md)

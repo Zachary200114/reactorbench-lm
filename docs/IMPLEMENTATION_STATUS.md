@@ -1,23 +1,23 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-29 America/New_York
+Last updated: 2026-08-30 America/New_York
 
-Current phase: **Phase 6 targeted-02 diagnosed and preserved; hierarchical targeted-03
-remediation implemented but Not started**
+Current phase: **Phase 6 targeted-03 preserved; policy-aware gate replay certified a
+scientific block at 9 of 10 unchanged checks**
 
-Current objective: finish verification and hand off
-`phase6-remediation-v0.4.0-targeted-03` for a later owner-operated run. The new
-candidate restores every task to every batch, balances continuation, action, and fault
-labels hierarchically, and uses semantic quality as an eligibility floor before
-validation NLL selects a checkpoint. All ten scientific thresholds remain unchanged.
-No claim is made that the new candidate will pass.
+Current objective: preserve the targeted-03 source run and its separate replay
+certificate, then design a bounded next model-quality remediation focused only on the
+remaining fault-comparator margin miss. Do not lower thresholds, resume targeted-03,
+or begin v0.4/Phase 7 from this checkpoint.
 
-Checkpoint reason: targeted-02 completed ten stages and blocked scientifically at the
-v0.3 gate. Continuation macro-F1 improved to 0.9418, but six of ten checks failed after
-the focused sampler reduced exposure to other tasks. The 48-row selector also chose
-step 1,200 despite validation NLL improving through step 2,000. Targeted-02 remains
-immutable. No dataset generation, new training, final/golden access, deployment, or
-push occurred during this remediation.
+Checkpoint reason: targeted-03 completed all 2,500 training steps and 427 gate
+evaluations, but its original gate attempt failed an integrity check because the
+consumer used the historical checkpoint score rather than the hierarchical policy.
+The shared scoring and candidate-reconstruction path was fixed and covered for both
+policies. A non-overwriting, checksum-bound replay reused the completed evidence with
+no retraining and certified nine of ten checks. Only fault-comparator margin failed:
+`-0.0344200013`, required at least `0.02`. No final/golden access, deployment, or push
+occurred.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -27,12 +27,22 @@ percentage was measured.
 
 ## Current targeted-03 checkpoint
 
-- Preserved blocked run:
-  `runs/phase6-remediation-v0.4.0-targeted-02/`
-- Exact diagnosis:
-  `docs/model/PHASE6_TARGETED02_DIAGNOSIS.md`
-- New run identity:
-  `phase6-remediation-v0.4.0-targeted-03`
+- Preserved source run:
+  `runs/phase6-remediation-v0.4.0-targeted-03/`
+- Source-run status: `failed` at stage 10 only because the original gate consumer used
+  the wrong policy formula; the directory remains unchanged.
+- Source commit: `240d3955e141432d2d24cf567f0117701e634037`.
+- Replay identity:
+  `runs/phase6-remediation-v0.4.0-targeted-03-gate-replay-01/`
+- Replay implementation commit:
+  `6b8a89c10aeec45518246d6b1ac082480cec4af7`.
+- Replay result: 9/10 checks pass; advancement denied.
+- Reconstructed acceptance SHA-256:
+  `c86624943c607c99836d2c05e8d5e727655b5d8472fa2f18269321b337506c61`.
+- Replay certification SHA-256:
+  `59ae5bf70e538c61b99181e27ce2de7a90e48ced0d332c1c9ce5537d7b80ee21`.
+- Exact report:
+  `docs/model/PHASE6_TARGETED03_GATE_REPLAY.md`.
 - New v0.3 config:
   `configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml`
 - New pipeline config:
@@ -41,9 +51,12 @@ percentage was measured.
   `77ab1698ec37bc65e319fcc55b3d6921860bdd317d7600b5a2da1bd5f71fa158`
 - pipeline config SHA-256:
   `46672289436a789e21e017c822f0dc831da6ef38b308abf6d271e223d1e782a7`
-- Focused verification: 197 tests passed; Ruff and strict mypy passed.
-- Full permitted repository verification: 1,134 passed, 2 protected historical
-  final/golden readers deselected, 85.25% coverage against the required 85%.
+- Current focused verification: 111 tests passed; Ruff and strict mypy passed; Swift
+  type-check and replay-wrapper shell syntax passed.
+- Full permitted repository verification: 1,136 tests passed in the full run, then one
+  exact-reference regression passed with coverage appended to the same data; 1,137
+  permitted tests passed in total, 2 protected historical final/golden readers were
+  deselected, and combined branch coverage reached 85.02% against the required 85%.
 - Temporary wheel and sdist inventories matched reviewed source assets, and an
   isolated no-network wheel installation passed.
 - Swift parse and full type-check passed; every shell wrapper passed `bash -n`.
@@ -52,11 +65,13 @@ percentage was measured.
   `46672289436a789e21e017c822f0dc831da6ef38b308abf6d271e223d1e782a7`,
   16 frozen stages, and no run state created.
 - Alarm policy: one 45-second looping `Sosumi` alert at application volume 1.0, with
-  a 23-beep fallback and once-per-session guard. This cannot override muted or low
-  macOS system output or an incorrect output device.
+  a 23-beep fallback and once-per-session guard. The enabled **Stop alarm** button
+  stops the loop and cancels pending fallback beeps without touching run state. This
+  cannot override muted or low macOS system output or an incorrect output device.
 
 The sections below retain cumulative historical implementation evidence. Any older
-“Not started” statement for targeted-02 is superseded by this current checkpoint.
+“Not started” statement for targeted-02 or targeted-03 is superseded by this current
+checkpoint.
 
 ## Completed work
 
@@ -631,41 +646,44 @@ successfully.
   `6a63bea3b63fe317368a7212a6850e03b51cb3a7`.
 - Hierarchical targeted-03 implementation and verified source commit:
   `3c9a6507c1086ba02bb4b45c6084f4c4142a1523`.
+- Targeted-03 completed training/evaluation source commit:
+  `240d3955e141432d2d24cf567f0117701e634037`.
+- Policy-aware gate replay and GUI alarm-stop implementation commit:
+  `6b8a89c10aeec45518246d6b1ac082480cec4af7`.
 - The final handoff commit is the commit containing this status update; verify it with
   `git rev-parse HEAD` before pushing or starting the run.
 - Final verification and independent re-review disposition: ship, with no required
   corrections for targeted-01 preparation.
 - Targeted-02 is preserved as a scientific `blocked` run at source commit
   `21df210e8237ea998edf663bb82498f87e21841b`.
-- Hierarchical targeted-03 remediation is implemented locally but not started; verify
-  the final clean state with `git status` before pushing or starting it.
-- Every historical failed/blocked run directory is preserved; the targeted-03 run
-  directory does not exist.
+- Hierarchical targeted-03 completed training and evaluation. Its source run remains
+  unchanged at the original integrity failure; the separate replay certificate
+  establishes the authoritative 9/10 scientific block without retraining.
+- Every historical failed/blocked run directory is preserved. Do not resume, edit,
+  delete, or replace targeted-03 or its replay identity.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
   historical test-boundary mistake is separately disclosed above.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-Confirm the tree is clean and the targeted-03 directory remains absent. Push the local
-commits when ready, then open the
-local monitor and confirm it reports `Not started` and
-`phase6-remediation-v0.4.0-targeted-03`. Check the Mac's output device and system
-volume, optionally run the non-mutating readiness check, and press `Start new rerun`
-when ready to measure the preregistered hierarchical candidate. Do not resume or modify
-any preserved failed or blocked run. Passing remains unknown until that owner-operated
-run completes.
+Review `docs/model/PHASE6_TARGETED03_GATE_REPLAY.md` and preserve both local evidence
+directories. The next engineering task is a new, non-overwriting model-quality
+remediation focused on fault-family comparison. Define its hypothesis, data/sampling
+change, experiment identity, provenance, and tests before any training. Keep every
+existing threshold unchanged and do not start v0.4, final evaluation, or Phase 7.
 
 ## Exact recommended next command after final handoff
 
     cd /Users/zachary/Documents/Personal-Projects/AI-transformer
     git status
-    git push origin main
-    ./scripts/open_phase6_progress_gui.sh
+    .venv/bin/python -m pytest tests/unit/test_remediation_cli.py \
+      tests/unit/test_remediation_pipeline.py tests/unit/test_phase6_local_monitor.py -q
+    sed -n '1,220p' docs/model/PHASE6_TARGETED03_GATE_REPLAY.md
 
-Pushing does not start training. Opening the monitor does not start training. The
-readiness, Start, cooperative stop, and stopped-run Resume controls are inside the
-window. The locked evaluation wrapper is not a research command in this release.
+The user may push the resulting local commits later. Do not run targeted-03 again: its
+training/evaluation evidence and one-time replay certificate already exist. The locked
+evaluation wrapper is not a research command in this release.
 
 ## Resume prompt
 

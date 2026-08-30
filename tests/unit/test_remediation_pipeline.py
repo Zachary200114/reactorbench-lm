@@ -157,6 +157,59 @@ def test_semantic_checkpoint_selector_uses_floor_before_validation_nll() -> None
         )
 
 
+def test_gate_replay_certification_binds_scientific_block() -> None:
+    draft = pipeline.V03GateReplayCertification.model_construct(
+        source_run_name="phase6-remediation-v0.4.0-targeted-03",
+        replay_name="phase6-remediation-v0.4.0-targeted-03-gate-replay-01",
+        source_run_manifest_sha256=HASH_A,
+        source_pipeline_state_file_sha256=HASH_B,
+        source_pipeline_state_contract_sha256=HASH_C,
+        source_commit=FULL_SOURCE_COMMIT,
+        replay_source_commit="b" * 40,
+        pipeline_config_sha256=HASH_D,
+        training_completion_marker_sha256=HASH_A,
+        evaluation_completion_marker_sha256=HASH_B,
+        acceptance_sha256=HASH_C,
+        targeted_gate_binding_sha256=HASH_D,
+        passed_check_count=9,
+        total_check_count=10,
+        advancement_allowed=False,
+        thresholds_unchanged=True,
+        retraining_performed=False,
+        final_evaluation_accessed=False,
+        checksum_sha256="0" * 64,
+    )
+    certification = pipeline._bound_model(draft, pipeline.V03GateReplayCertification)
+
+    assert certification.passed_check_count == 9
+    assert certification.advancement_allowed is False
+    payload = certification.model_dump(mode="json", round_trip=True)
+    payload["advancement_allowed"] = True
+    payload["checksum_sha256"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "checksum_sha256"}
+    )
+    with pytest.raises(ValidationError, match="advancement differs"):
+        pipeline.V03GateReplayCertification.model_validate(payload, strict=True)
+
+
+def test_gate_replay_reference_reopens_only_exact_bounded_file(tmp_path: Path) -> None:
+    root = tmp_path / "source-run"
+    artifact = root / "stages/08-v03_development_evaluation/evidence.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"immutable evidence\n")
+    reference = ArtifactReference(
+        relative_path=artifact.relative_to(root).as_posix(),
+        sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        size_bytes=artifact.stat().st_size,
+    )
+
+    assert pipeline._verified_replay_reference(root, reference) == artifact
+
+    mismatched = reference.model_copy(update={"sha256": HASH_A})
+    with pytest.raises(pipeline.PipelineExecutionError, match="checksum or size"):
+        pipeline._verified_replay_reference(root, mismatched)
+
+
 def test_targeted_v02_prefix_reuse_reopens_checksum_bound_evidence() -> None:
     project_root = Path(__file__).resolve().parents[2]
     config = load_pipeline_config(
@@ -1942,14 +1995,14 @@ def test_v03_gate_rederives_complete_candidate_ranking_provenance(
         pipeline._ExecutionInputs,
         SimpleNamespace(
             v02=SimpleNamespace(model=model),
-                v03=SimpleNamespace(
-                    training=training,
-                    candidates=candidate_policies,
-                    selection=load_v03_config(
-                        Path(__file__).resolve().parents[2]
-                        / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
-                    ).selection,
-                ),
+            v03=SimpleNamespace(
+                training=training,
+                candidates=candidate_policies,
+                selection=load_v03_config(
+                    Path(__file__).resolve().parents[2]
+                    / "configs/experiments/phase6-remediation-v0.3.2-focused.toml"
+                ).selection,
+            ),
             tokenizer=SimpleNamespace(manifest=SimpleNamespace(checksum_sha256=HASH_C)),
             generation_caps={},
             compact_contract_sha256=HASH_D,

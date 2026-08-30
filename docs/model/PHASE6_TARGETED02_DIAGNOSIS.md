@@ -1,6 +1,13 @@
 # Phase 6 targeted-02 diagnosis and targeted-03 remediation
 
-Status: **targeted-02 preserved as a scientific block; targeted-03 prepared but not run**
+Status: **targeted-02 preserved; targeted-03 later certified 9 of 10 through a
+no-training gate replay**
+
+> Superseding result: targeted-03 completed all training and development evaluation.
+> Its versioned gate replay fixed a hierarchical-policy reconstruction defect and
+> certified a scientific block with only fault-comparator margin failing. See
+> [the targeted-03 gate replay](PHASE6_TARGETED03_GATE_REPLAY.md). The targeted-02
+> diagnosis below remains the historical rationale for that experiment.
 
 ## Outcome
 
@@ -70,11 +77,12 @@ Targeted-02 and every earlier run remain immutable.
 
 ## Local failure alarm
 
-The macOS monitor now plays the system `Sosumi` sound in a loop at the maximum volume
+The macOS monitor plays the system `Sosumi` sound in a loop at the maximum volume
 available to the application for 45 seconds when a run first enters `Blocked` or
 `Failed`. If that sound cannot be loaded, it emits 23 system beeps over approximately
 45 seconds. It also requests critical user attention and retains the once-per-session
-guard.
+guard. While active, the enabled **Stop alarm** button stops the sound and cancels
+pending fallback beeps without changing run evidence.
 
 This is intentionally not described as guaranteed to wake someone. Application volume
 cannot override a muted Mac, a low system output level, Focus settings, disconnected or

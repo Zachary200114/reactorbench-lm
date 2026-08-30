@@ -6189,11 +6189,14 @@ def replay_targeted_v03_gate(
     ):
         raise TypeError("targeted v0.3 gate replay requires its exact frozen bindings")
     root = project_root.resolve(strict=True)
-    if _verify_runner_source(
-        root,
-        source_commit=replay_source_commit,
-        run_root=config.run_root,
-    ) != replay_source_commit:
+    if (
+        _verify_runner_source(
+            root,
+            source_commit=replay_source_commit,
+            run_root=config.run_root,
+        )
+        != replay_source_commit
+    ):
         raise PipelineExecutionError("gate replay source binding differs from the clean checkout")
     source_root = root / config.run_root / source_name
     if source_root.is_symlink() or not source_root.is_dir():
@@ -6314,11 +6317,8 @@ def replay_targeted_v03_gate(
     _write_contract(certification_path, certification)
     if (
         _read_contract(certification_path, V03GateReplayCertification) != certification
-        or _read_contract(replay_root / "v03-acceptance.json", V03AcceptanceResult)
-        != acceptance
-        or _read_contract(
-            replay_root / "v03-targeted-gate-binding.json", TargetedV03GateBinding
-        )
+        or _read_contract(replay_root / "v03-acceptance.json", V03AcceptanceResult) != acceptance
+        or _read_contract(replay_root / "v03-targeted-gate-binding.json", TargetedV03GateBinding)
         != binding
     ):
         raise PipelineExecutionError("gate replay publication failed strict verification")

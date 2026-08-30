@@ -193,6 +193,43 @@ def _create_store(project_root: Path, loaded: cli.LoadedPipeline) -> PipelineSto
     )
 
 
+def test_gate_replay_cli_reports_certified_scientific_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    loaded = _loaded(root, _config("phase6-remediation-v0.4.0-targeted-03"))
+    replay_root = root / "work/phase6-remediation-v0.4.0-targeted-03-gate-replay-01"
+    checks = tuple(SimpleNamespace(passed=index < 9) for index in range(10))
+    certification = SimpleNamespace(advancement_allowed=False)
+    acceptance = SimpleNamespace(checks=checks)
+
+    def replay(**kwargs: object) -> tuple[Path, object, object]:
+        assert kwargs == {
+            "project_root": root,
+            "config": loaded.config,
+            "replay_source_commit": "a" * 40,
+        }
+        return replay_root, certification, acceptance
+
+    monkeypatch.setattr(
+        cli,
+        "_pipeline_module",
+        lambda: SimpleNamespace(replay_targeted_v03_gate=replay),
+    )
+    output = io.StringIO()
+    code = cli._replay_v03_gate(
+        project_root=root,
+        loaded=loaded,
+        source_commit="a" * 40,
+        output=output,
+    )
+
+    assert code == cli.ExitCode.BLOCKED
+    assert "9 of 10" in output.getvalue()
+    assert "No training or final evaluation was run." in output.getvalue()
+
+
 def test_start_status_dry_run_and_completed_resume_are_understandable_and_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

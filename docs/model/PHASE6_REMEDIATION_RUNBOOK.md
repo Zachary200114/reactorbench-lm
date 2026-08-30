@@ -1,6 +1,7 @@
 # Phase 6 remediation local runbook
 
-Status: **targeted-02 preserved as a scientific block; hierarchical targeted-03 verified and Not started**
+Status: **targeted-03 training/evaluation preserved; no-training gate replay certified
+9 of 10 checks and a scientific block**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -132,15 +133,31 @@ configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-03.toml
 runs/phase6-remediation-v0.4.0-targeted-03/
 ```
 
+Targeted-03 completed its 2,500 training steps and 427 development-gate evaluations.
+Its original stage-10 attempt failed because the independent gate consumer applied the
+historical score to hierarchical checkpoint evidence. The source run remains
+unchanged. The policy-aware correction was certified through the separate one-time
+identity below, with no training or final access:
+
+```bash
+./scripts/replay_phase6_targeted03_gate.sh
+```
+
+The completed replay is under
+`runs/phase6-remediation-v0.4.0-targeted-03-gate-replay-01/`. It exits `9` because the
+unchanged scientific gate passes nine of ten checks and misses only fault-comparator
+margin (`-0.0344200`, required `>= 0.02`). Do not delete that identity to rerun it.
+See `docs/model/PHASE6_TARGETED03_GATE_REPLAY.md` for exact metrics and checksums.
+
 Checkpoint consumers now return the model's actual parameter device after verifying
 that its device type and any explicitly requested index match. A real CPU/MPS or
 explicit-index mismatch still fails closed. The exact preserved checkpoint operation
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers below now select the targeted-03 identity. Targeted-01,
-targeted-02, and the unstarted rerun-03 configuration remain historical evidence or
-preparation and are not the default. The
+The ordinary wrappers below still select the now-preserved targeted-03 identity.
+Targeted-01, targeted-02, and targeted-03 remain historical evidence and are not valid
+restart targets. The
 original run is bound to source
 commit `2aafcd1661ec7c3640a385621db171041532e547`, rerun 01 is bound to
 `034b41cca07b999f701850986a67a692b40d8c30`, and rerun 02 is bound to
@@ -348,10 +365,11 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ./scripts/open_phase6_progress_gui.sh
 ```
 
-Opening the monitor does not start training. It identifies the fixed
+Opening the monitor does not start training. It identifies the fixed, preserved
 `phase6-remediation-v0.4.0-targeted-03` run, refreshes through the existing
-strictly validated status command, and offers only allowlisted readiness, Start,
-status, safe-stop, stopped-run Resume, Finder, and copy operations. The activity log
+strictly validated status command, and exposes only controls allowed by verified run
+state. Start and Resume remain disabled for this terminal failed source run. The
+activity log
 is bounded and non-scientific; the monitor never reads `status.json` or
 `progress.jsonl` directly and never changes their artifact contracts.
 
@@ -371,7 +389,9 @@ When strictly validated status first enters `Failed` or `Blocked`, the monitor r
 critical macOS attention and loops the system `Sosumi` sound at application volume 1.0
 for 45 seconds. If the sound file is unavailable, it emits 23 system beeps over about
 45 seconds. The alert is issued only once per monitor session and is not repeated by
-later refreshes. It cannot override muted or low system output, an incorrect output
+later refreshes. While it is active, **Stop alarm** stops the loaded sound and cancels
+pending fallback beeps without changing the pipeline or its alert guard. It cannot
+override muted or low system output, an incorrect output
 device, disconnected headphones or speakers, or a sleeping/powered-off computer; test
 those macOS settings before leaving a run unattended. The pipeline itself does not
 depend on notification delivery.
