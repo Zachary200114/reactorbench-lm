@@ -239,7 +239,10 @@ remain confirmation-gated and preserve existing run evidence. The current defaul
 `phase6-remediation-v0.4.0-targeted-02`; do not resume or modify any preserved
 failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
 the current version, and exact current-task work when the runner reports it. The
-entire-rerun bar is stage-based rather than a wall-clock estimate.
+entire-rerun bar is stage-based rather than a wall-clock estimate. Keep the monitor
+open while the pipeline runs: when a verified run first enters `Failed` or `Blocked`,
+the monitor requests macOS attention and sounds three system-alert beeps. It alerts
+only once per monitor session, so routine status refreshes do not repeat the sound.
 
 Infrastructure availability is not a positive model result. The routine pipeline
 cannot open the frozen final evaluation, and the historical G01–G15 packet is

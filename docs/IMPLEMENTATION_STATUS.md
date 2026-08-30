@@ -182,6 +182,11 @@ percentage was measured.
   two to label-balanced continuation examples, and rotates the remaining two across
   the four already-strong tasks. It retains random initialization, 2,000 steps, the
   48/56/427 validation partition, and every frozen threshold.
+- Added a once-per-monitor-session terminal failure alert to the local macOS GUI.
+  The first strictly verified `Failed` or `Blocked` status requests critical macOS
+  attention and sounds three spaced system-alert beeps; refreshes cannot repeat it.
+  The monitor must remain open or minimized, and audibility depends on macOS output,
+  alert-volume, and mute settings.
 
 ## Frozen development evidence
 
@@ -268,6 +273,19 @@ scientific outcome remains unknown until the owner runs it. The code changes imp
 the evidence-aligned training setup; they do not guarantee acceptance.
 
 ## Tests and checks run
+
+- Terminal-failure monitor alert verification on 2026-08-29:
+  - Focused monitor and package-resource gate: 35 passed and 1 protected historical
+    package-resource reader deliberately deselected in 0.79 seconds.
+  - Ruff format: 157 files passed. Ruff lint: passed. Strict mypy: passed across all
+    78 source modules. Native Swift syntax parsing and Git diff whitespace validation
+    passed.
+  - Source and wheel distributions built successfully in a temporary directory. The
+    isolated no-network wheel install and distribution-resource verifier passed with
+    the updated AppKit source and runbook. Nothing was published.
+  - No live failure was manufactured and no audible sound was triggered during
+    verification. The source contract freezes three beeps, both terminal failure
+    states, critical macOS attention, and a once-only session guard.
 
 - Focused targeted-02 implementation verification on 2026-08-29:
   - Identity-bound read-only replay of targeted-01: 56 observations, temperature

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -32,6 +33,7 @@ from reactorbench.remediation.local_monitor import (
 )
 
 SOURCE_COMMIT = "8f6d491188164c1c81c86f350516d1019c843105"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _running_status_output(*, stop_request: str = "none") -> str:
@@ -361,6 +363,20 @@ def test_native_window_payload_contains_exact_safe_policy_and_no_arbitrary_paths
         "stop": False,
     }
     assert "path" not in " ".join(payload)
+
+
+def test_native_monitor_sounds_one_three_beep_alert_for_terminal_failure() -> None:
+    source = (PROJECT_ROOT / "src/reactorbench/remediation/Phase6RunMonitor.swift").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'terminalFailureStates: Set<String> = ["Blocked", "Failed"]' in source
+    assert "terminalFailureBeepCount = 3" in source
+    assert "!terminalFailureAlertIssued" in source
+    assert "terminalFailureAlertIssued = true" in source
+    assert "alertForTerminalFailureIfNeeded(status)" in source
+    assert "NSSound.beep()" in source
+    assert "requestUserAttention(.criticalRequest)" in source
 
 
 def test_json_operation_uses_safe_message_without_echoing_command_output(

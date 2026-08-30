@@ -6,6 +6,9 @@ private let expectedRunName = "phase6-remediation-v0.4.0-targeted-02"
 private let maximumHelperOutputBytes = 32 * 1024
 private let maximumActivityEntries = 100
 private let maximumActivityCharacters = 32 * 1024
+private let terminalFailureStates: Set<String> = ["Blocked", "Failed"]
+private let terminalFailureBeepCount = 3
+private let terminalFailureBeepSpacingSeconds = 0.7
 
 private enum HelperAction: String {
     case snapshot = "--snapshot-json"
@@ -170,6 +173,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private var detachedLaunchPending = false
     private var refreshTimer: Timer?
     private var lastStatusSignature: String?
+    private var terminalFailureAlertIssued = false
 
     static func make() throws -> MonitorWindowController {
         var root = URL(fileURLWithPath: #filePath)
@@ -510,6 +514,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
                     self.appendActivity(status.summary)
                     self.lastStatusSignature = signature
                 }
+                self.alertForTerminalFailureIfNeeded(status)
                 self.scheduleRefresh(after: status.state == "Running" ? 5 : 15)
             } catch {
                 self.latestStatus = nil
@@ -610,6 +615,24 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         detailLabels["run"]?.stringValue = status.runName
         detailLabels["updated"]?.stringValue = status.latestUpdateUtc ?? "Not yet available"
         detailLabels["pipeline"]?.stringValue = status.pipelineStatus
+    }
+
+    private func alertForTerminalFailureIfNeeded(_ status: StatusPayload) {
+        guard
+            status.verified,
+            terminalFailureStates.contains(status.state),
+            !terminalFailureAlertIssued
+        else { return }
+        terminalFailureAlertIssued = true
+        appendActivity("Terminal failure detected. Audible alert sounded three times.")
+        NSApplication.shared.requestUserAttention(.criticalRequest)
+        for beepIndex in 0 ..< terminalFailureBeepCount {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (Double(beepIndex) * terminalFailureBeepSpacingSeconds)
+            ) {
+                NSSound.beep()
+            }
+        }
     }
 
     private func formatDuration(_ seconds: Double?) -> String {

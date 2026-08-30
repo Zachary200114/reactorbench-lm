@@ -348,6 +348,13 @@ The entire-rerun percentage is a completion indicator, not a wall-clock predicti
 the 16 stages do not have equal runtimes. Use the separately displayed estimated
 remaining time only when the validated status reporter supplies it.
 
+Keep the window open or minimized if an audible failure notification is required.
+When strictly validated status first enters `Failed` or `Blocked`, the monitor requests
+critical macOS attention and sounds three system-alert beeps spaced apart. The alert
+is issued only once per monitor session and is not repeated by later refreshes. Its
+audibility still depends on the Mac's output device, system alert volume, and mute
+settings; the pipeline itself does not depend on notification delivery.
+
 The Homebrew project Python currently lacks `_tkinter`, and the importable macOS
 system Tk 8.5 was visually probed and rendered even a minimal window blank on this
 Mac. The launcher therefore uses the already-installed `/usr/bin/swiftc` AppKit toolchain
