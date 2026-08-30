@@ -16,8 +16,10 @@ from reactorbench.resources import (
     golden_suite_resource,
     phase4_smoke_config_resource,
     phase5_pilot_config_resource,
+    phase6_diagnostic_sweep_resource,
     phase6_main_config_resource,
     phase6_remediation_development_dataset_config_resource,
+    phase6_remediation_diagnostic_pipeline_config_resource,
     phase6_remediation_fault_boosted_pipeline_config_resource,
     phase6_remediation_fault_boosted_v03_config_resource,
     phase6_remediation_final_dataset_config_resource,
@@ -50,13 +52,17 @@ DATASET_SNAPSHOT_DIRECTORY = ROOT / "schemas" / "dataset" / "v0"
 COMPACT_OUTPUT_DIRECTORY = ROOT / "schemas" / "compact-output" / "v0"
 DATASET_GUARD_DIRECTORY = ROOT / "src" / "reactorbench" / "dataset" / "resources"
 PHASE6_SCRIPT_NAMES = (
+    "check_phase6_diagnostic_status.sh",
     "check_phase6_status.sh",
     "open_phase6_progress_gui.sh",
     "phase6_monitor_controller.sh",
     "replay_phase6_targeted03_gate.sh",
+    "resume_phase6_diagnostic_pipeline.sh",
     "resume_phase6_pipeline.sh",
+    "run_phase6_diagnostic_pipeline.sh",
     "run_phase6_evaluation.sh",
     "run_phase6_pipeline.sh",
+    "stop_phase6_diagnostic_pipeline.sh",
     "stop_phase6_pipeline.sh",
 )
 
@@ -211,12 +217,41 @@ def test_remediation_script_resource_rejects_non_allowlisted_names() -> None:
         phase6_remediation_script_resource("../phase6_rescore_v0_1_1.py")
 
 
+def test_diagnostic_sweep_resources_match_the_reviewed_source_without_protected_data() -> None:
+    assert (
+        phase6_remediation_diagnostic_pipeline_config_resource().read_bytes()
+        == ROOT.joinpath(
+            "configs",
+            "experiments",
+            "phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml",
+        ).read_bytes()
+    )
+    assert (
+        phase6_diagnostic_sweep_resource().read_bytes()
+        == (ROOT / "docs/model/PHASE6_DIAGNOSTIC_SWEEP.md").read_bytes()
+    )
+    for script_name in (
+        "check_phase6_diagnostic_status.sh",
+        "resume_phase6_diagnostic_pipeline.sh",
+        "run_phase6_diagnostic_pipeline.sh",
+        "stop_phase6_diagnostic_pipeline.sh",
+    ):
+        assert (
+            phase6_remediation_script_resource(script_name).read_bytes()
+            == (ROOT / "scripts" / script_name).read_bytes()
+        )
+
+
 def test_remediation_runbook_freezes_the_user_operated_safety_workflow() -> None:
     runbook = phase6_remediation_runbook_resource().read_text(encoding="utf-8")
     for command in (
         "./scripts/run_phase6_pipeline.sh",
         "./scripts/open_phase6_progress_gui.sh",
         "./scripts/check_phase6_status.sh",
+        "./scripts/run_phase6_diagnostic_pipeline.sh",
+        "./scripts/check_phase6_diagnostic_status.sh",
+        "./scripts/stop_phase6_diagnostic_pipeline.sh",
+        "./scripts/resume_phase6_diagnostic_pipeline.sh",
         "./scripts/replay_phase6_targeted03_gate.sh",
         "./scripts/stop_phase6_pipeline.sh",
         "./scripts/resume_phase6_pipeline.sh",
@@ -247,6 +282,7 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
     assert {
         "/configs",
         "/docs/model/PHASE6_REMEDIATION_RUNBOOK.md",
+        "/docs/model/PHASE6_DIAGNOSTIC_SWEEP.md",
         "/docs/model/PHASE6_V02_INVENTORY.json",
         "/docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json",
         "/golden",
@@ -333,6 +369,13 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml": (
             "reactorbench/_data/configs/experiments/"
             "phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
+        ),
+        "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml": (
+            "reactorbench/_data/configs/experiments/"
+            "phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml"
+        ),
+        "docs/model/PHASE6_DIAGNOSTIC_SWEEP.md": (
+            "reactorbench/_data/docs/model/PHASE6_DIAGNOSTIC_SWEEP.md"
         ),
         "docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
             "reactorbench/_data/docs/model/PHASE6_REMEDIATION_RUNBOOK.md"

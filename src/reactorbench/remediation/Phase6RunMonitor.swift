@@ -2,7 +2,8 @@ import AppKit
 import Foundation
 
 private let applicationTitle = "ReactorBench-LM — Phase 6 Run Monitor"
-private let expectedRunName = "phase6-remediation-v0.4.0-targeted-05"
+private let expectedOfficialRunName = "phase6-remediation-v0.4.0-targeted-05"
+private let expectedDiagnosticRunName = "phase6-remediation-v0.4.0-targeted-05-diagnostic-01"
 private let maximumHelperOutputBytes = 32 * 1024
 private let maximumActivityEntries = 100
 private let maximumActivityCharacters = 32 * 1024
@@ -19,6 +20,21 @@ private enum HelperAction: String {
     case stop = "--request-stop"
     case resume = "--resume-detached"
     case finder = "--open-finder"
+    case diagnosticSnapshot = "--diagnostic-snapshot-json"
+    case diagnosticReadiness = "--diagnostic-readiness-check"
+    case diagnosticStart = "--diagnostic-start-detached"
+    case diagnosticStop = "--diagnostic-request-stop"
+    case diagnosticResume = "--diagnostic-resume-detached"
+    case diagnosticFinder = "--diagnostic-open-finder"
+}
+
+private enum MonitorTarget {
+    case official
+    case diagnostic
+
+    var expectedRunName: String {
+        self == .official ? expectedOfficialRunName : expectedDiagnosticRunName
+    }
 }
 
 private struct PolicyPayload: Decodable {
@@ -118,7 +134,7 @@ private func decodeStatus(_ data: Data) throws -> StatusPayload {
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let payload = try decoder.decode(StatusPayload.self, from: data)
     guard
-        payload.runName == expectedRunName,
+        [expectedOfficialRunName, expectedDiagnosticRunName].contains(payload.runName),
         payload.overallPercent.isFinite,
         payload.versionPercent.isFinite,
         payload.workPercent.isFinite,
@@ -158,6 +174,12 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private let workProgress = NSProgressIndicator()
     private var detailLabels: [String: NSTextField] = [:]
     private let activityView = NSTextView()
+    private let targetControl = NSSegmentedControl(
+        labels: ["Official fail-fast", "Diagnostic full sweep"],
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
 
     private let readinessButton = NSButton(title: "Readiness check", target: nil, action: nil)
     private let startButton = NSButton(title: "Start new rerun", target: nil, action: nil)
@@ -180,6 +202,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private var terminalFailureAlarm: NSSound?
     private var terminalFailureAlarmActive = false
     private var terminalFailureAlarmWorkItems: [DispatchWorkItem] = []
+    private var selectedTarget: MonitorTarget = .official
 
     static func make() throws -> MonitorWindowController {
         var root = URL(fileURLWithPath: #filePath)
@@ -224,6 +247,8 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         super.init(window: window)
         window.delegate = self
         buildInterface(in: window)
+        targetControl.selectedSegment = 0
+        startButton.title = "Start official fail-fast run"
         appendActivity("Monitor opened. No model training was started by opening this window.")
         applyButtonState()
     }
@@ -258,6 +283,9 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         let title = NSTextField(labelWithString: applicationTitle)
         title.font = NSFont.systemFont(ofSize: 21, weight: .bold)
         stack.addArrangedSubview(title)
+        targetControl.target = self
+        targetControl.action = #selector(targetChanged)
+        stack.addArrangedSubview(targetControl)
 
         let localOnly = NSTextField(
             labelWithString: "LOCAL DEVELOPMENT UTILITY — not Phase 7 and not an operational system"
@@ -402,18 +430,25 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     }
 
     @objc private func readinessPressed() {
-        runOperation(.readiness)
+        runOperation(selectedTarget == .official ? .readiness : .diagnosticReadiness)
     }
 
     @objc private func startPressed() {
+        let diagnostic = selectedTarget == .diagnostic
         guard confirm(
-            title: "Start Phase 6 remediation rerun?",
-            message: "This begins a potentially 6-24-hour local model-training workflow.\n\n" +
-                "The preserved failed run will remain unchanged. Continue?",
-            confirmTitle: "Start rerun"
+            title: diagnostic
+                ? "Start diagnostic full sweep?"
+                : "Start official fail-fast Phase 6 run?",
+            message: diagnostic
+                ? "This diagnostic run continues through allowlisted scientific gate misses " +
+                    "to collect all development failures. Code, integrity, resource, and safety " +
+                    "failures still stop it. It cannot certify the model or unlock final evaluation."
+                : "This begins the official fail-fast local model-training workflow. A scientific " +
+                    "gate miss stops later stages. Continue?",
+            confirmTitle: diagnostic ? "Start diagnostic sweep" : "Start official run"
         ) else { return }
         detachedLaunchPending = true
-        runOperation(.start)
+        runOperation(diagnostic ? .diagnosticStart : .start)
     }
 
     @objc private func refreshPressed() {
@@ -427,7 +462,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
                 "This is not an immediate kill.",
             confirmTitle: "Request safe stop"
         ) else { return }
-        runOperation(.stop)
+        runOperation(selectedTarget == .official ? .stop : .diagnosticStop)
     }
 
     @objc private func resumePressed() {
@@ -438,11 +473,29 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             confirmTitle: "Resume"
         ) else { return }
         detachedLaunchPending = true
-        runOperation(.resume)
+        runOperation(selectedTarget == .official ? .resume : .diagnosticResume)
     }
 
     @objc private func finderPressed() {
-        runOperation(.finder)
+        runOperation(selectedTarget == .official ? .finder : .diagnosticFinder)
+    }
+
+    @objc private func targetChanged() {
+        silenceTerminalFailureAlarm(recordActivity: false)
+        terminalFailureAlertIssued = false
+        selectedTarget = targetControl.selectedSegment == 1 ? .diagnostic : .official
+        latestStatus = nil
+        lastStatusSignature = nil
+        detachedLaunchPending = false
+        startButton.title = selectedTarget == .diagnostic
+            ? "Start diagnostic full sweep"
+            : "Start official fail-fast run"
+        appendActivity(
+            selectedTarget == .diagnostic
+                ? "Viewing the non-certifying diagnostic sweep."
+                : "Viewing the official fail-fast run."
+        )
+        refreshStatus()
     }
 
     @objc private func copyPressed() {
@@ -475,10 +528,14 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     }
 
     private func runOperation(_ action: HelperAction) {
-        guard !operationInProgress, action != .snapshot else { return }
+        guard
+            !operationInProgress,
+            action != .snapshot,
+            action != .diagnosticSnapshot
+        else { return }
         operationInProgress = true
         applyButtonState()
-        if action == .readiness {
+        if action == .readiness || action == .diagnosticReadiness {
             appendActivity("Readiness check requested. This cannot train or create the rerun.")
         }
         runHelper(action) { [weak self] exitCode, data in
@@ -507,11 +564,18 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         guard !statusInProgress else { return }
         statusInProgress = true
         applyButtonState()
-        runHelper(.snapshot) { [weak self] _, data in
+        let snapshotAction: HelperAction = selectedTarget == .official
+            ? .snapshot
+            : .diagnosticSnapshot
+        let expectedRun = selectedTarget.expectedRunName
+        runHelper(snapshotAction) { [weak self] _, data in
             guard let self else { return }
             self.statusInProgress = false
             do {
                 let status = try decodeStatus(data)
+                guard status.runName == expectedRun else {
+                    throw MonitorDecodeError.invalidShape
+                }
                 self.latestStatus = status
                 if status.runExists {
                     self.detachedLaunchPending = false
@@ -589,7 +653,10 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
         }
         overallProgress.doubleValue = status.overallPercent
         overallLabel.stringValue = String(
-            format: "ENTIRE RERUN — all versions and all 16 stages: %.1f%%",
+            format: "%@ — all versions and all 16 stages: %.1f%%",
+            status.runName == expectedDiagnosticRunName
+                ? "DIAGNOSTIC SWEEP"
+                : "OFFICIAL RERUN",
             status.overallPercent
         )
         versionProgress.doubleValue = status.versionPercent
@@ -703,6 +770,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
     private func applyButtonState() {
         let busy = operationInProgress || statusInProgress
         guard let status = latestStatus, status.verified else {
+            targetControl.isEnabled = !busy && !detachedLaunchPending
             readinessButton.isEnabled = false
             startButton.isEnabled = false
             refreshButton.isEnabled = !statusInProgress
@@ -715,6 +783,7 @@ private final class MonitorWindowController: NSWindowController, NSWindowDelegat
             return
         }
         readinessButton.isEnabled = status.policy.dryRun && !busy && !detachedLaunchPending
+        targetControl.isEnabled = !busy && !detachedLaunchPending
         startButton.isEnabled = status.policy.start && status.state == "Not started" &&
             !busy && !detachedLaunchPending
         refreshButton.isEnabled = status.policy.refresh && !statusInProgress

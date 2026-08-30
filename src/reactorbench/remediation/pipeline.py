@@ -64,6 +64,7 @@ from .calibration import (
     fit_temperature,
 )
 from .config import (
+    DIAGNOSTIC_CONTINUATION_STAGES,
     PIPELINE_STAGES,
     SHADOW_VIEWS,
     PipelineConfig,
@@ -1041,9 +1042,75 @@ class ReviewBundleManifest(ContractModel):
         return self
 
 
+class DiagnosticFinalEvaluationLock(ContractModel):
+    """Permanent final-access denial for a non-certifying diagnostic sweep."""
+
+    policy_version: Literal["0.4.0-diagnostic"] = "0.4.0-diagnostic"
+    v04_acceptance_sha256: Sha256
+    development_gate_passed: StrictBool
+    diagnostic_only: Literal[True] = True
+    automatic_final_evaluation: Literal[False] = False
+    final_evaluation_authorized: Literal[False] = False
+    status: Literal["locked_diagnostic_only"] = "locked_diagnostic_only"
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def checksum_matches(self) -> DiagnosticFinalEvaluationLock:
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("diagnostic final-evaluation lock checksum mismatch")
+        return self
+
+
+class DiagnosticSweepReport(ContractModel):
+    """Checksum-bound inventory of a sweep that can diagnose but never certify."""
+
+    report_version: Literal["0.1.0"] = "0.1.0"
+    run_name: str
+    source_commit: GitCommit
+    pipeline_config_sha256: Sha256
+    mode: Literal["collect_scientific_failures"] = "collect_scientific_failures"
+    stages: tuple[ReviewStageBinding, ...] = Field(min_length=len(PIPELINE_STAGES) - 1)
+    scientific_failure_stages: tuple[str, ...]
+    diagnostic_lock_sha256: Sha256
+    official_certification_allowed: Literal[False] = False
+    final_evaluation_accessed: Literal[False] = False
+    phase7_authorized: Literal[False] = False
+    summary_relative_path: str
+    summary_sha256: Sha256
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def graph_and_checksum_match(self) -> DiagnosticSweepReport:
+        if tuple(item.stage for item in self.stages) != PIPELINE_STAGES[:-1]:
+            raise ValueError("diagnostic report stage inventory differs from the frozen graph")
+        permitted = set(DIAGNOSTIC_CONTINUATION_STAGES)
+        if self.scientific_failure_stages != tuple(
+            stage for stage in PIPELINE_STAGES if stage in self.scientific_failure_stages
+        ) or any(stage not in permitted for stage in self.scientific_failure_stages):
+            raise ValueError("diagnostic report contains an invalid scientific-failure inventory")
+        summary_path = Path(self.summary_relative_path)
+        if (
+            not self.summary_relative_path
+            or "\\" in self.summary_relative_path
+            or summary_path.is_absolute()
+            or ".." in summary_path.parts
+            or summary_path.as_posix() != self.summary_relative_path
+        ):
+            raise ValueError("diagnostic summary path is unsafe")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("diagnostic sweep report checksum mismatch")
+        return self
+
+
 class TerminalReviewStage(ContractModel):
     stage: str
-    status: Literal["completed", "blocked", "failed", "stopped"]
+    status: Literal["completed", "scientific_failed", "blocked", "failed", "stopped"]
     latest_attempt_path: str
     outcome: ArtifactReference | None
 
@@ -1058,7 +1125,7 @@ class TerminalReviewStage(ContractModel):
             or path.as_posix() != self.latest_attempt_path
         ):
             raise ValueError("terminal review attempt path is unsafe")
-        if self.status in {"completed", "blocked"} and self.outcome is None:
+        if self.status in {"completed", "scientific_failed", "blocked"} and self.outcome is None:
             raise ValueError("published terminal stage lacks its immutable outcome")
         if self.status in {"failed", "stopped"} and self.outcome is not None:
             raise ValueError("unsuccessful terminal stage cannot publish an outcome")
@@ -1072,7 +1139,13 @@ class TerminalReviewBundleManifest(ContractModel):
     source_commit: GitCommit
     pipeline_config_sha256: Sha256
     pipeline_state_sha256: Sha256
-    pipeline_status: Literal["completed", "blocked", "failed", "stopped"]
+    pipeline_status: Literal[
+        "completed",
+        "diagnostic_completed",
+        "blocked",
+        "failed",
+        "stopped",
+    ]
     stages: tuple[TerminalReviewStage, ...] = Field(max_length=len(PIPELINE_STAGES))
     completed_prefix_length: StrictInt = Field(ge=0, le=len(PIPELINE_STAGES))
     final_evaluation_accessed: Literal[False] = False
@@ -1088,12 +1161,19 @@ class TerminalReviewBundleManifest(ContractModel):
         completed_prefix = tuple(
             item.status for item in self.stages[: self.completed_prefix_length]
         )
-        if completed_prefix != ("completed",) * self.completed_prefix_length:
+        if any(status not in {"completed", "scientific_failed"} for status in completed_prefix):
             raise ValueError("terminal review completed-prefix count mismatch")
         suffix = self.stages[self.completed_prefix_length :]
         if self.pipeline_status == "completed":
-            if self.completed_prefix_length != len(PIPELINE_STAGES) or suffix:
+            if (
+                self.completed_prefix_length != len(PIPELINE_STAGES)
+                or suffix
+                or any(item.status != "completed" for item in self.stages)
+            ):
                 raise ValueError("completed terminal review does not cover the full graph")
+        elif self.pipeline_status == "diagnostic_completed":
+            if self.completed_prefix_length != len(PIPELINE_STAGES) or suffix:
+                raise ValueError("diagnostic terminal review does not cover the full graph")
         elif self.pipeline_status in {"blocked", "failed"}:
             if len(suffix) != 1 or suffix[0].status != self.pipeline_status:
                 raise ValueError("terminal review status differs from its terminal stage")
@@ -1101,7 +1181,7 @@ class TerminalReviewBundleManifest(ContractModel):
             if len(suffix) != 1 or suffix[0].status != "stopped":
                 raise ValueError("attempted stop has an invalid terminal stage")
         elif self.completed_prefix_length >= len(PIPELINE_STAGES):
-            raise ValueError("pre-stage stop must leave an incomplete graph")
+            raise ValueError("completed-prefix for a pre-stage stop must remain incomplete")
         expected = canonical_sha256(
             self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
         )
@@ -2308,7 +2388,14 @@ def _upstream_attempt(
     )
     state = store.load_state()
     record = state.stages[PIPELINE_STAGES.index(stage_name)]
-    if record.status is not StageStatus.COMPLETED or record.latest_attempt_path is None:
+    diagnostic_scientific_failure = (
+        config.diagnostic_mode is not None
+        and record.status is StageStatus.SCIENTIFIC_FAILED
+        and stage_name in DIAGNOSTIC_CONTINUATION_STAGES
+    )
+    if (
+        record.status is not StageStatus.COMPLETED and not diagnostic_scientific_failure
+    ) or record.latest_attempt_path is None:
         raise PipelineExecutionError("required upstream stage is not durably completed")
     path = context.run_directory / record.latest_attempt_path
     if path.is_symlink() or not path.is_dir():
@@ -5799,22 +5886,38 @@ class _PipelineRuntime:
             or acceptance.checksum_sha256 != index.v04_acceptance_sha256
         ):
             raise PipelineExecutionError("v0.4 gate acceptance differs from selected evidence")
-        draft = FinalEvaluationPolicyFreeze.model_construct(
-            v04_acceptance_sha256=acceptance.checksum_sha256,
-            development_gate_passed=bool(acceptance.advancement_allowed),
-            status=(
-                "locked_pending_owner_reviewed_fresh_extension"
-                if acceptance.advancement_allowed
-                else "locked_development_gate_failed"
-            ),
-            checksum_sha256="0" * 64,
-        )
-        policy = _bound_model(draft, FinalEvaluationPolicyFreeze)
-        policy_artifact = _contract_artifact(
-            context,
-            "final-evaluation-policy.json",
-            policy,
-        )
+        if self.config.diagnostic_mode is not None:
+            diagnostic_draft = DiagnosticFinalEvaluationLock.model_construct(
+                v04_acceptance_sha256=acceptance.checksum_sha256,
+                development_gate_passed=bool(acceptance.advancement_allowed),
+                checksum_sha256="0" * 64,
+            )
+            diagnostic_lock = _bound_model(
+                diagnostic_draft,
+                DiagnosticFinalEvaluationLock,
+            )
+            policy_artifact = _contract_artifact(
+                context,
+                "diagnostic-final-evaluation-lock.json",
+                diagnostic_lock,
+            )
+        else:
+            draft = FinalEvaluationPolicyFreeze.model_construct(
+                v04_acceptance_sha256=acceptance.checksum_sha256,
+                development_gate_passed=bool(acceptance.advancement_allowed),
+                status=(
+                    "locked_pending_owner_reviewed_fresh_extension"
+                    if acceptance.advancement_allowed
+                    else "locked_development_gate_failed"
+                ),
+                checksum_sha256="0" * 64,
+            )
+            policy = _bound_model(draft, FinalEvaluationPolicyFreeze)
+            policy_artifact = _contract_artifact(
+                context,
+                "final-evaluation-policy.json",
+                policy,
+            )
         return self._finish(
             context,
             _stage_outcome(
@@ -5831,9 +5934,18 @@ class _PipelineRuntime:
             maximum_state_bytes=self.config.maximum_status_bytes,
         ).load_state()
         bindings: list[ReviewStageBinding] = []
+        diagnostic = self.config.diagnostic_mode is not None
+        scientific_failures: list[str] = []
         for record in state.stages[:-1]:
-            if record.status is not StageStatus.COMPLETED or record.latest_attempt_path is None:
+            accepted_status = record.status is StageStatus.COMPLETED or (
+                diagnostic
+                and record.status is StageStatus.SCIENTIFIC_FAILED
+                and record.name in DIAGNOSTIC_CONTINUATION_STAGES
+            )
+            if not accepted_status or record.latest_attempt_path is None:
                 raise PipelineExecutionError("complete review bundle lacks a completed prefix")
+            if record.status is StageStatus.SCIENTIFIC_FAILED:
+                scientific_failures.append(record.name)
             bindings.append(
                 ReviewStageBinding(
                     stage=record.name,
@@ -5844,6 +5956,55 @@ class _PipelineRuntime:
                 )
             )
         policy_attempt = _upstream_attempt(context, self.config, "v04_gate_and_final_policy_freeze")
+        if diagnostic:
+            diagnostic_lock = _read_contract(
+                policy_attempt / "diagnostic-final-evaluation-lock.json",
+                DiagnosticFinalEvaluationLock,
+            )
+            for filename in (
+                FINAL_EVALUATION_READY_FILENAME,
+                OWNER_REVIEW_APPROVED_FILENAME,
+                FRESH_EXTENSION_MANIFEST_FILENAME,
+                FINAL_ACCESS_LEDGER_FILENAME,
+            ):
+                path = context.run_directory / filename
+                if path.exists() or path.is_symlink():
+                    raise PipelineExecutionError("diagnostic sweep found a final-access file")
+            summary_path = context.attempt_directory / "DIAGNOSTIC_SWEEP_REPORT.md"
+            summary = _diagnostic_sweep_markdown(
+                run_name=self.config.run_name,
+                source_commit=context.source_commit,
+                bindings=tuple(bindings),
+                scientific_failures=tuple(scientific_failures),
+                diagnostic_lock=diagnostic_lock,
+            )
+            _write_bytes(summary_path, summary.encode("utf-8"))
+            summary_relative = summary_path.relative_to(context.run_directory).as_posix()
+            report_draft = DiagnosticSweepReport.model_construct(
+                run_name=self.config.run_name,
+                source_commit=context.source_commit,
+                pipeline_config_sha256=config_sha256(self.config),
+                stages=tuple(bindings),
+                scientific_failure_stages=tuple(scientific_failures),
+                diagnostic_lock_sha256=diagnostic_lock.checksum_sha256,
+                summary_relative_path=summary_relative,
+                summary_sha256=_sha256(summary_path),
+                checksum_sha256="0" * 64,
+            )
+            report = _bound_model(report_draft, DiagnosticSweepReport)
+            return self._finish(
+                context,
+                _stage_outcome(
+                    "Diagnostic sweep report completed without certifying the model.",
+                    artifacts=(
+                        _contract_artifact(context, "diagnostic-sweep-report.json", report),
+                        _artifact_reference(summary_path, run_directory=context.run_directory),
+                    ),
+                    warnings=(
+                        "Diagnostic continuation never authorizes final evaluation or Phase 7.",
+                    ),
+                ),
+            )
         policy = _read_contract(
             policy_attempt / "final-evaluation-policy.json",
             FinalEvaluationPolicyFreeze,
@@ -5891,6 +6052,49 @@ class _PipelineRuntime:
                 artifacts=(manifest_artifact, summary_artifact),
             ),
         )
+
+
+def _diagnostic_sweep_markdown(
+    *,
+    run_name: str,
+    source_commit: str,
+    bindings: tuple[ReviewStageBinding, ...],
+    scientific_failures: tuple[str, ...],
+    diagnostic_lock: DiagnosticFinalEvaluationLock,
+) -> str:
+    if tuple(binding.stage for binding in bindings) != PIPELINE_STAGES[:-1]:
+        raise ValueError("diagnostic summary differs from the frozen stage prefix")
+    failure_text = ", ".join(f"`{stage}`" for stage in scientific_failures) or "none"
+    lines = [
+        "# ReactorBench-LM diagnostic sweep report",
+        "",
+        f"- Run: `{run_name}`",
+        f"- Source commit: `{source_commit}`",
+        f"- Scientific gates that did not pass: {failure_text}",
+        f"- Diagnostic final-access lock: `{diagnostic_lock.checksum_sha256}`",
+        "- Official certification allowed: `no`",
+        "- Final evaluation accessed: `no`",
+        "- Phase 7 authorized: `no`",
+        "",
+        "## Recorded development stages",
+        "",
+        "| Stage | Outcome | SHA-256 |",
+        "|---|---|---|",
+    ]
+    lines.extend(
+        f"| `{binding.stage}` | `{binding.outcome.relative_path}` | `{binding.outcome.sha256}` |"
+        for binding in bindings
+    )
+    lines.extend(
+        (
+            "",
+            "This run continued only through allowlisted scientific gate misses so every "
+            "development failure could be inspected together. It is diagnostic evidence, "
+            "not an acceptance result, release gate, or permission to access held-out data.",
+            "",
+        )
+    )
+    return "\n".join(lines)
 
 
 def _complete_review_markdown(
@@ -5955,7 +6159,7 @@ def _terminal_review_markdown(
         f"- Source commit: `{state.source_commit}`",
         f"- Pipeline status: `{state.status}`",
         f"- Pipeline-state checksum: `{state.checksum_sha256}`",
-        f"- Completed stage prefix: `{completed_prefix_length}/{len(PIPELINE_STAGES)}`",
+        f"- Traversed stage prefix: `{completed_prefix_length}/{len(PIPELINE_STAGES)}`",
         "- Final evaluation accessed: `no`",
         "",
         "## Recorded stage prefix",
@@ -6004,7 +6208,11 @@ def _terminal_review_stages(
         if attempt.is_symlink() or not attempt.is_dir():
             raise PipelineExecutionError("terminal review stage attempt is unsafe")
         outcome: ArtifactReference | None = None
-        if record.status in {StageStatus.COMPLETED, StageStatus.BLOCKED}:
+        if record.status in {
+            StageStatus.COMPLETED,
+            StageStatus.SCIENTIFIC_FAILED,
+            StageStatus.BLOCKED,
+        }:
             outcome = _stage_completion_outcome(run_directory, expected_attempt)
             expected_outcome_path = f"{expected_attempt}/outcome.json"
             if outcome.relative_path != expected_outcome_path or outcome != _artifact_reference(
@@ -6017,7 +6225,7 @@ def _terminal_review_stages(
             if marker.exists() or marker.is_symlink():
                 raise PipelineExecutionError("unsuccessful stage has a committed outcome")
         stage_status = cast(
-            Literal["completed", "blocked", "failed", "stopped"],
+            Literal["completed", "scientific_failed", "blocked", "failed", "stopped"],
             record.status.value,
         )
         stages.append(
@@ -6028,7 +6236,7 @@ def _terminal_review_stages(
                 outcome=outcome,
             )
         )
-        if record.status is StageStatus.COMPLETED:
+        if record.status in {StageStatus.COMPLETED, StageStatus.SCIENTIFIC_FAILED}:
             completed_prefix_length += 1
             continue
         break
@@ -6073,6 +6281,7 @@ def write_terminal_review_bundle(
     )
     if validated_state != state or state.status not in {
         "completed",
+        "diagnostic_completed",
         "blocked",
         "failed",
         "stopped",
@@ -6171,7 +6380,7 @@ def write_terminal_review_bundle(
         pipeline_config_sha256=expected_config_sha256,
         pipeline_state_sha256=state.checksum_sha256,
         pipeline_status=cast(
-            Literal["completed", "blocked", "failed", "stopped"],
+            Literal["completed", "diagnostic_completed", "blocked", "failed", "stopped"],
             state.status,
         ),
         stages=stages,
@@ -6465,6 +6674,8 @@ def run_final_evaluation(
 
 
 __all__ = [
+    "DiagnosticFinalEvaluationLock",
+    "DiagnosticSweepReport",
     "ExecutionPreflightReport",
     "FinalEvaluationBlockedError",
     "FinalEvaluationPolicyFreeze",

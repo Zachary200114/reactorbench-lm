@@ -1,7 +1,7 @@
 # Phase 6 remediation local runbook
 
-Status: **targeted-04 preserved as an 8/10 negative result; targeted-05 implemented
-and awaiting verification/owner operation**
+Status: **targeted-04 preserved as an 8/10 negative result; targeted-05 official
+fail-fast and diagnostic full-sweep workflows implemented**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -192,6 +192,20 @@ commit `2aafcd1661ec7c3640a385621db171041532e547`, rerun 01 is bound to
 `cf732307d1d1f756772af7a87214ffde8e9bf8b0`. Their live status commands therefore
 fail closed from the corrected checkout. Inspect immutable terminal summaries when
 present; never edit a preserved run to make it match the current source.
+
+The monitor also exposes a separately versioned **Diagnostic full sweep** selection:
+
+```text
+configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml
+runs/phase6-remediation-v0.4.0-targeted-05-diagnostic-01/
+```
+
+This does not replace the ordinary wrappers or official acceptance run. It may record
+`v03_gate` and `v04_gate_and_final_policy_freeze` as `scientific_failed` and continue
+to collect later development evidence. Every other denied outcome and every exception,
+integrity, provenance, resource, or safety failure remains terminal. Its end state is
+`diagnostic_completed`, not `completed`, and it writes a diagnostic-only final-access
+lock. See `docs/model/PHASE6_DIAGNOSTIC_SWEEP.md` for the full contract.
 
 ```text
 runs/phase6-remediation-v0.4.0-local/terminal-reviews/state-b5d0053842367b2175837e6e647cce3b359beda90648eb12b254091ab427013a/TERMINAL_REVIEW.md
@@ -394,8 +408,9 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ./scripts/open_phase6_progress_gui.sh
 ```
 
-Opening the monitor does not start training. It identifies the fixed
-`phase6-remediation-v0.4.0-targeted-05` run, refreshes through the existing
+Opening the monitor does not start training. The selector chooses the official fixed
+`phase6-remediation-v0.4.0-targeted-05` run or the separate fixed diagnostic sweep.
+The window refreshes the selected identity through the existing
 strictly validated status command, and exposes only controls allowed by verified run
 state. Before the run exists, Readiness and Start are available; after creation,
 controls follow its strictly verified state. The activity log
@@ -445,6 +460,23 @@ immediate cancel. The monitor has no delete, overwrite, or automatic start-over
 operation: after this run exists, a scientifically justified fresh attempt requires
 a separately reviewed, versioned run-name/configuration change so existing evidence
 remains preserved.
+
+For the diagnostic selection, run **Readiness check** and then **Start diagnostic full
+sweep**. The official selection still stops at the first scientific gate miss. The
+diagnostic selection continues only through the two code-allowlisted scientific gates;
+it does not continue through engineering failures and cannot publish an official
+review bundle or final-access policy. Switching the selector changes only which fixed
+status and wrappers the window displays; it does not mutate either run.
+
+The equivalent diagnostic Terminal commands are:
+
+```bash
+./scripts/run_phase6_diagnostic_pipeline.sh --dry-run
+caffeinate -i ./scripts/run_phase6_diagnostic_pipeline.sh
+./scripts/check_phase6_diagnostic_status.sh
+./scripts/stop_phase6_diagnostic_pipeline.sh
+caffeinate -i ./scripts/resume_phase6_diagnostic_pipeline.sh
+```
 
 A non-window smoke check is available for maintainers and does not create or start a
 run:

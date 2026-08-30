@@ -25,7 +25,9 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol
 
-RUN_NAME: Final = "phase6-remediation-v0.4.0-targeted-05"
+OFFICIAL_RUN_NAME: Final = "phase6-remediation-v0.4.0-targeted-05"
+DIAGNOSTIC_RUN_NAME: Final = "phase6-remediation-v0.4.0-targeted-05-diagnostic-01"
+RUN_NAME: Final = OFFICIAL_RUN_NAME
 TOTAL_STAGES: Final = 16
 MAX_COMMAND_OUTPUT_BYTES: Final = 32 * 1024
 MAX_ACTIVITY_ENTRIES: Final = 100
@@ -85,6 +87,16 @@ class MonitorState(_StringEnum):
     BLOCKED = "Blocked"
     FAILED = "Failed"
     COMPLETED = "Completed"
+    DIAGNOSTIC_COMPLETED = "Diagnostic complete"
+
+
+class MonitorTarget(_StringEnum):
+    OFFICIAL = "official"
+    DIAGNOSTIC = "diagnostic"
+
+    @property
+    def run_name(self) -> str:
+        return OFFICIAL_RUN_NAME if self is MonitorTarget.OFFICIAL else DIAGNOSTIC_RUN_NAME
 
 
 class GuiAction(_StringEnum):
@@ -151,13 +163,17 @@ class MonitorStatus:
     safe_error: str | None = None
 
     @classmethod
-    def not_started(cls, source_commit: str) -> MonitorStatus:
+    def not_started(
+        cls,
+        source_commit: str,
+        target: MonitorTarget = MonitorTarget.OFFICIAL,
+    ) -> MonitorStatus:
         return cls(
             state=MonitorState.NOT_STARTED,
             verified=True,
             run_exists=False,
             pipeline_status="not_started",
-            run_name=RUN_NAME,
+            run_name=target.run_name,
             source_commit=source_commit,
             current_stage="preflight",
             next_stage="preflight",
@@ -179,13 +195,17 @@ class MonitorStatus:
         )
 
     @classmethod
-    def failed_verification(cls, message: str) -> MonitorStatus:
+    def failed_verification(
+        cls,
+        message: str,
+        target: MonitorTarget = MonitorTarget.OFFICIAL,
+    ) -> MonitorStatus:
         return cls(
             state=MonitorState.FAILED,
             verified=False,
             run_exists=False,
             pipeline_status="unverified",
-            run_name=RUN_NAME,
+            run_name=target.run_name,
             source_commit="Unavailable",
             current_stage="Unavailable",
             next_stage="Unavailable",
@@ -209,7 +229,7 @@ class MonitorStatus:
 
     @property
     def overall_percent(self) -> float:
-        if self.state is MonitorState.COMPLETED:
+        if self.state in {MonitorState.COMPLETED, MonitorState.DIAGNOSTIC_COMPLETED}:
             return 100.0
         if self.state is MonitorState.NOT_STARTED or self.stage_index is None:
             return 0.0
@@ -228,7 +248,7 @@ class MonitorStatus:
     def version_progress(self) -> tuple[str, int, int, float]:
         """Return the active version's stage position and bounded completion percent."""
 
-        if self.state is MonitorState.COMPLETED:
+        if self.state in {MonitorState.COMPLETED, MonitorState.DIAGNOSTIC_COMPLETED}:
             return ("Complete", 1, 1, 100.0)
         if self.stage_index is None:
             return ("Setup", 0, 1, 0.0)
@@ -295,7 +315,9 @@ class AlreadyActiveError(MonitorError):
     """The current GUI already owns a live detached launcher handle."""
 
 
-def _trusted_paths() -> TrustedPaths:
+def _trusted_paths(target: MonitorTarget = MonitorTarget.OFFICIAL) -> TrustedPaths:
+    if type(target) is not MonitorTarget:
+        raise TypeError("monitor target must be a MonitorTarget")
     source = Path(__file__)
     if source.is_symlink() or not source.is_file():
         raise MonitorError("The local monitor source path is unsafe.")
@@ -309,17 +331,18 @@ def _trusted_paths() -> TrustedPaths:
     if not (project_root / "pyproject.toml").is_file():
         raise MonitorError("The ReactorBench-LM checkout marker is unavailable.")
     scripts = project_root / "scripts"
+    suffix = "_diagnostic" if target is MonitorTarget.DIAGNOSTIC else ""
     wrappers = {
-        "dry_run": scripts / "run_phase6_pipeline.sh",
-        "status": scripts / "check_phase6_status.sh",
-        "start": scripts / "run_phase6_pipeline.sh",
-        "stop": scripts / "stop_phase6_pipeline.sh",
-        "resume": scripts / "resume_phase6_pipeline.sh",
+        "dry_run": scripts / f"run_phase6{suffix}_pipeline.sh",
+        "status": scripts / f"check_phase6{suffix}_status.sh",
+        "start": scripts / f"run_phase6{suffix}_pipeline.sh",
+        "stop": scripts / f"stop_phase6{suffix}_pipeline.sh",
+        "resume": scripts / f"resume_phase6{suffix}_pipeline.sh",
     }
     for wrapper in wrappers.values():
         if wrapper.is_symlink() or not wrapper.is_file() or not os.access(wrapper, os.X_OK):
             raise MonitorError("A required Phase 6 wrapper is missing or unsafe.")
-    run_directory = project_root / "runs" / RUN_NAME
+    run_directory = project_root / "runs" / target.run_name
     return TrustedPaths(
         project_root=project_root,
         run_directory=run_directory,
@@ -331,12 +354,17 @@ def _trusted_paths() -> TrustedPaths:
     )
 
 
-def command_for(action: GuiAction) -> tuple[str, ...]:
+def command_for(
+    action: GuiAction,
+    target: MonitorTarget = MonitorTarget.OFFICIAL,
+) -> tuple[str, ...]:
     """Return one fixed command. Strings, paths, and caller-supplied arguments are refused."""
 
     if type(action) is not GuiAction:
         raise TypeError("action must be a GuiAction")
-    paths = _trusted_paths()
+    if type(target) is not MonitorTarget:
+        raise TypeError("monitor target must be a MonitorTarget")
+    paths = _trusted_paths(target)
     if action is GuiAction.DRY_RUN:
         return (str(paths.dry_run_wrapper), "--dry-run")
     if action is GuiAction.STATUS:
@@ -367,17 +395,20 @@ def _bounded_decode(payload: bytes, *, maximum_bytes: int = MAX_COMMAND_OUTPUT_B
     return safe
 
 
-def _run_short_command(action: GuiAction) -> CommandOutcome:
+def _run_short_command(
+    action: GuiAction,
+    target: MonitorTarget = MonitorTarget.OFFICIAL,
+) -> CommandOutcome:
     if type(action) is not GuiAction:
         raise TypeError("action must be a GuiAction")
     if action not in {GuiAction.DRY_RUN, GuiAction.STATUS, GuiAction.STOP, GuiAction.OPEN_FINDER}:
         raise ValueError("action is not a short allowlisted operation")
-    command = command_for(action)
+    command = command_for(action, target)
     timeout = 120.0 if action is GuiAction.DRY_RUN else 15.0
     try:
         result = subprocess.run(  # noqa: S603 - command_for returns a closed argv allowlist
             command,
-            cwd=_trusted_paths().project_root,
+            cwd=_trusted_paths(target).project_root,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             check=False,
@@ -447,12 +478,16 @@ class LongRunLauncher:
     def has_active_process(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
-    def launch(self, action: GuiAction) -> int:
+    def launch(
+        self,
+        action: GuiAction,
+        target: MonitorTarget = MonitorTarget.OFFICIAL,
+    ) -> int:
         if action not in {GuiAction.START, GuiAction.RESUME}:
             raise ValueError("only Start and Resume are long-running actions")
         if self.has_active_process():
             raise AlreadyActiveError("A pipeline launcher from this monitor is already active.")
-        process = self._spawner(command_for(action))
+        process = self._spawner(command_for(action, target))
         self._process = process
         return process.pid
 
@@ -535,7 +570,10 @@ def _safe_checkpoint(value: str) -> str:
     return value
 
 
-def parse_status_output(output: str) -> MonitorStatus:
+def parse_status_output(
+    output: str,
+    target: MonitorTarget = MonitorTarget.OFFICIAL,
+) -> MonitorStatus:
     """Parse only the documented, bounded status command format."""
 
     if type(output) is not str:
@@ -578,10 +616,18 @@ def parse_status_output(output: str) -> MonitorStatus:
         values[key] = value
 
     pipeline_status = _required(values, "Pipeline status")
-    if pipeline_status not in {"ready", "running", "completed", "failed", "stopped", "blocked"}:
+    if pipeline_status not in {
+        "ready",
+        "running",
+        "completed",
+        "diagnostic_completed",
+        "failed",
+        "stopped",
+        "blocked",
+    }:
         raise StatusParseError("Verified pipeline state is unknown.")
     run_name = _required(values, "Run")
-    if run_name != RUN_NAME:
+    if run_name != target.run_name:
         raise StatusParseError("Verified status belongs to a different run.")
     source_commit = _required(values, "Source commit")
     if _COMMIT_PATTERN.fullmatch(source_commit) is None:
@@ -686,11 +732,12 @@ def parse_status_output(output: str) -> MonitorStatus:
         "ready": MonitorState.RUNNING,
         "running": MonitorState.RUNNING,
         "completed": MonitorState.COMPLETED,
+        "diagnostic_completed": MonitorState.DIAGNOSTIC_COMPLETED,
         "failed": MonitorState.FAILED,
         "stopped": MonitorState.STOPPED,
         "blocked": MonitorState.BLOCKED,
     }[pipeline_status]
-    if monitor_state is MonitorState.COMPLETED:
+    if monitor_state in {MonitorState.COMPLETED, MonitorState.DIAGNOSTIC_COMPLETED}:
         stage_index = TOTAL_STAGES
         stage_total = TOTAL_STAGES
         current_stage = "review_bundle"
@@ -727,20 +774,24 @@ class StatusReader:
 
     def __init__(
         self,
-        runner: CommandRunner = _run_short_command,
+        runner: CommandRunner | None = None,
         commit_reader: CommitReader = _read_current_commit,
+        target: MonitorTarget = MonitorTarget.OFFICIAL,
     ) -> None:
-        self._runner = runner
+        self._runner = (
+            (lambda action: _run_short_command(action, target)) if runner is None else runner
+        )
         self._commit_reader = commit_reader
+        self._target = target
 
     def read(self) -> MonitorStatus:
         outcome = self._runner(GuiAction.STATUS)
         if outcome.returncode == 0:
             try:
-                return parse_status_output(outcome.stdout)
+                return parse_status_output(outcome.stdout, self._target)
             except (StatusParseError, UnicodeError):
                 return MonitorStatus.failed_verification(
-                    "Status evidence failed strict validation; controls are disabled."
+                    "Status evidence failed strict validation; controls are disabled.", self._target
                 )
         if (
             outcome.returncode == 3
@@ -748,10 +799,11 @@ class StatusReader:
             and outcome.stderr.strip()
             == "Command refused: Pipeline run does not exist; use the start command."
         ):
-            return MonitorStatus.not_started(self._commit_reader())
+            return MonitorStatus.not_started(self._commit_reader(), self._target)
         return MonitorStatus.failed_verification(
             f"Verified status is unavailable (safe exit code {outcome.returncode}); "
-            "controls are disabled."
+            "controls are disabled.",
+            self._target,
         )
 
 
@@ -876,16 +928,19 @@ def _emit_json(payload: dict[str, object]) -> None:
     print(encoded, flush=True)
 
 
-def _snapshot_json() -> int:
-    status = StatusReader().read()
+def _snapshot_json(target: MonitorTarget = MonitorTarget.OFFICIAL) -> int:
+    status = StatusReader(target=target).read()
     _emit_json(_status_payload(status))
     return 0 if status.verified else 5
 
 
-def _operation_json(action: GuiAction) -> int:
+def _operation_json(
+    action: GuiAction,
+    target: MonitorTarget = MonitorTarget.OFFICIAL,
+) -> int:
     if action in {GuiAction.START, GuiAction.RESUME}:
         try:
-            pid = LongRunLauncher().launch(action)
+            pid = LongRunLauncher().launch(action, target)
         except (AlreadyActiveError, MonitorError, OSError, RuntimeError, ValueError):
             _emit_json(
                 {
@@ -907,7 +962,11 @@ def _operation_json(action: GuiAction) -> int:
             }
         )
         return 0
-    outcome = _run_short_command(action)
+    outcome = (
+        _run_short_command(action)
+        if target is MonitorTarget.OFFICIAL
+        else _run_short_command(action, target)
+    )
     _emit_json(
         {
             "kind": action.value,
@@ -937,6 +996,12 @@ def _parser() -> argparse.ArgumentParser:
     action.add_argument("--request-stop", action="store_true", help=argparse.SUPPRESS)
     action.add_argument("--resume-detached", action="store_true", help=argparse.SUPPRESS)
     action.add_argument("--open-finder", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--diagnostic-snapshot-json", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--diagnostic-readiness-check", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--diagnostic-start-detached", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--diagnostic-request-stop", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--diagnostic-resume-detached", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--diagnostic-open-finder", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -956,6 +1021,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _operation_json(GuiAction.RESUME)
     if arguments.open_finder:
         return _operation_json(GuiAction.OPEN_FINDER)
+    if arguments.diagnostic_snapshot_json:
+        return _snapshot_json(MonitorTarget.DIAGNOSTIC)
+    if arguments.diagnostic_readiness_check:
+        return _operation_json(GuiAction.DRY_RUN, MonitorTarget.DIAGNOSTIC)
+    if arguments.diagnostic_start_detached:
+        return _operation_json(GuiAction.START, MonitorTarget.DIAGNOSTIC)
+    if arguments.diagnostic_request_stop:
+        return _operation_json(GuiAction.STOP, MonitorTarget.DIAGNOSTIC)
+    if arguments.diagnostic_resume_detached:
+        return _operation_json(GuiAction.RESUME, MonitorTarget.DIAGNOSTIC)
+    if arguments.diagnostic_open_finder:
+        return _operation_json(GuiAction.OPEN_FINDER, MonitorTarget.DIAGNOSTIC)
     raise AssertionError("unreachable monitor controller action")
 
 

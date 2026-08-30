@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from reactorbench.remediation.local_monitor import (
+    DIAGNOSTIC_RUN_NAME,
     MAX_ACTIVITY_CHARACTERS,
     MAX_ACTIVITY_ENTRIES,
     RUN_NAME,
@@ -18,6 +19,7 @@ from reactorbench.remediation.local_monitor import (
     LongRunLauncher,
     MonitorState,
     MonitorStatus,
+    MonitorTarget,
     StatusParseError,
     StatusReader,
     _bounded_decode,
@@ -425,3 +427,34 @@ def test_controller_parser_has_only_closed_action_flags() -> None:
     with pytest.raises(SystemExit) as arbitrary:
         _parser().parse_args(["--snapshot-json", "--config", "../unsafe.toml"])
     assert arbitrary.value.code == 2
+
+
+def test_diagnostic_monitor_uses_only_fixed_wrappers_and_run_identity() -> None:
+    paths = _trusted_paths(MonitorTarget.DIAGNOSTIC)
+
+    assert paths.run_directory.name == DIAGNOSTIC_RUN_NAME
+    assert paths.start_wrapper.name == "run_phase6_diagnostic_pipeline.sh"
+    assert paths.status_wrapper.name == "check_phase6_diagnostic_status.sh"
+    assert command_for(GuiAction.START, MonitorTarget.DIAGNOSTIC) == (
+        "/usr/bin/caffeinate",
+        "-i",
+        str(paths.start_wrapper),
+    )
+    arguments = _parser().parse_args(["--diagnostic-start-detached"])
+    assert arguments.diagnostic_start_detached is True
+
+
+def test_diagnostic_completion_is_visible_but_not_a_terminal_failure_alarm_state() -> None:
+    output = (
+        _running_status_output()
+        .replace(
+            "Pipeline status: running",
+            "Pipeline status: diagnostic_completed",
+        )
+        .replace(f"Run: {RUN_NAME}", f"Run: {DIAGNOSTIC_RUN_NAME}")
+    )
+    status = parse_status_output(output, MonitorTarget.DIAGNOSTIC)
+
+    assert status.state is MonitorState.DIAGNOSTIC_COMPLETED
+    assert status.overall_percent == 100.0
+    assert status.run_name == DIAGNOSTIC_RUN_NAME

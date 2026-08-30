@@ -685,6 +685,11 @@ PIPELINE_STAGES: tuple[str, ...] = (
     "review_bundle",
 )
 
+DIAGNOSTIC_CONTINUATION_STAGES: tuple[str, ...] = (
+    "v03_gate",
+    "v04_gate_and_final_policy_freeze",
+)
+
 
 class V02PrefixReusePolicy(StrictConfigModel):
     """Checksum-pinned read-only prefix source for the targeted pipeline only."""
@@ -770,6 +775,7 @@ class PipelineConfig(StrictConfigModel):
     maximum_process_rss_bytes: Annotated[StrictInt, Field(ge=256 * 1024**2, le=128 * 1024**3)]
     stop_before_final_evaluation: Literal[True]
     reuse_v02_prefix: V02PrefixReusePolicy | None = None
+    diagnostic_mode: Literal["collect_scientific_failures"] | None = None
 
     @field_validator("stop_before_final_evaluation", mode="before")
     @classmethod
@@ -796,6 +802,10 @@ class PipelineConfig(StrictConfigModel):
     def stage_graph_is_exact(self) -> PipelineConfig:
         if self.stage_order != PIPELINE_STAGES:
             raise ValueError("pipeline stage order differs from the preregistered graph")
+        if self.diagnostic_mode is not None and self.run_name != (
+            "phase6-remediation-v0.4.0-targeted-05-diagnostic-01"
+        ):
+            raise ValueError("diagnostic mode requires its exact non-overwriting run identity")
         return self
 
 
@@ -834,6 +844,7 @@ def config_sha256(config: StrictConfigModel) -> str:
 
 
 __all__ = [
+    "DIAGNOSTIC_CONTINUATION_STAGES",
     "PIPELINE_STAGES",
     "SHADOW_VIEWS",
     "VIEW_SOURCE_SPLIT",

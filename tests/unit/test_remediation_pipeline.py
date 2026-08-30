@@ -3750,6 +3750,56 @@ def _future_policy(*, passed: bool = True) -> pipeline.FinalEvaluationPolicyFree
     return pipeline._bound_model(draft, pipeline.FinalEvaluationPolicyFreeze)
 
 
+def test_diagnostic_sweep_contract_is_non_certifying_and_gate_allowlisted() -> None:
+    lock_draft = pipeline.DiagnosticFinalEvaluationLock.model_construct(
+        v04_acceptance_sha256=HASH_A,
+        development_gate_passed=True,
+        checksum_sha256="0" * 64,
+    )
+    lock = pipeline._bound_model(lock_draft, pipeline.DiagnosticFinalEvaluationLock)
+    bindings = tuple(
+        pipeline.ReviewStageBinding(
+            stage=stage,
+            outcome=_artifact(f"stages/{index:02d}-{stage}/outcome.json"),
+        )
+        for index, stage in enumerate(PIPELINE_STAGES[:-1])
+    )
+    draft = pipeline.DiagnosticSweepReport.model_construct(
+        run_name="phase6-remediation-v0.4.0-targeted-05-diagnostic-01",
+        source_commit=SOURCE_COMMIT,
+        pipeline_config_sha256=HASH_B,
+        stages=bindings,
+        scientific_failure_stages=("v03_gate", "v04_gate_and_final_policy_freeze"),
+        diagnostic_lock_sha256=lock.checksum_sha256,
+        summary_relative_path=("stages/15-review_bundle/attempt-0001/DIAGNOSTIC_SWEEP_REPORT.md"),
+        summary_sha256=HASH_C,
+        checksum_sha256="0" * 64,
+    )
+    report = pipeline._bound_model(draft, pipeline.DiagnosticSweepReport)
+
+    assert lock.final_evaluation_authorized is False
+    assert report.official_certification_allowed is False
+    assert report.final_evaluation_accessed is False
+    assert report.phase7_authorized is False
+    summary = pipeline._diagnostic_sweep_markdown(
+        run_name=report.run_name,
+        source_commit=report.source_commit,
+        bindings=bindings,
+        scientific_failures=report.scientific_failure_stages,
+        diagnostic_lock=lock,
+    )
+    assert "Scientific gates that did not pass" in summary
+    assert "Official certification allowed: `no`" in summary
+    assert "Final evaluation accessed: `no`" in summary
+    assert "Phase 7 authorized: `no`" in summary
+    assert all(stage in summary for stage in report.scientific_failure_stages)
+
+    changed = report.model_dump(mode="python", round_trip=True)
+    changed["scientific_failure_stages"] = ("v04_pilot",)
+    with pytest.raises(ValidationError, match="invalid scientific-failure inventory"):
+        pipeline.DiagnosticSweepReport.model_validate(changed, strict=True)
+
+
 def _complete_review(policy: pipeline.FinalEvaluationPolicyFreeze) -> pipeline.ReviewBundleManifest:
     bindings = tuple(
         pipeline.ReviewStageBinding(stage=stage, outcome=_artifact(f"{stage}/outcome.json"))

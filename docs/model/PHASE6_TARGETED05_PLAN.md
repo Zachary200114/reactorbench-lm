@@ -79,6 +79,12 @@ All ten existing v0.3 checks remain mandatory. No threshold may be lowered. If
 targeted-05 misses any check, preserve it as negative development evidence and keep
 later stages blocked. No final or golden evaluation is permitted.
 
+The separately versioned diagnostic sweep described in
+`docs/model/PHASE6_DIAGNOSTIC_SWEEP.md` may continue through the two explicitly
+allowlisted scientific gates to collect development failures. That run cannot certify
+targeted-05, cannot change this advancement rule, and cannot authorize final evaluation
+or Phase 7. The official targeted-05 run remains fail-fast.
+
 ## Owner command after verification
 
 ```bash

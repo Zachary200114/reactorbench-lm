@@ -113,6 +113,7 @@ Measured Phase 4 evidence and exact hashes are recorded in
 [the targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md) and
 [the targeted-04 preregistration](docs/model/PHASE6_TARGETED04_PLAN.md) and
 [the targeted-05 diagnosis and preregistration](docs/model/PHASE6_TARGETED05_PLAN.md) and
+[the diagnostic full-sweep contract](docs/model/PHASE6_DIAGNOSTIC_SWEEP.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question
@@ -248,9 +249,13 @@ window:
 
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
-remain confirmation-gated and preserve existing run evidence. The current default is
-`phase6-remediation-v0.4.0-targeted-05`; do not resume or modify any preserved
-failed attempt. Its three separate bars show the entire 16-stage rerun, progress within
+remain confirmation-gated and preserve existing run evidence. Its selector switches
+between the official fail-fast targeted-05 run and a separate diagnostic full sweep.
+The diagnostic run continues only through the two allowlisted scientific gate misses,
+then produces a combined failure report; code, integrity, provenance, resource, and
+safety failures still stop it. It can never certify the model, unlock final evaluation,
+or authorize Phase 7. Do not resume or modify any preserved failed attempt. The three
+separate bars show the entire 16-stage run, progress within
 the current version, and exact current-task work when the runner reports it. The
 entire-rerun bar is stage-based rather than a wall-clock estimate. Keep the monitor
 open while the pipeline runs: when a verified run first enters `Failed` or `Blocked`,
@@ -269,6 +274,8 @@ is intentionally unimplemented and locked in this release; readiness-looking fil
 cannot authorize access. Exact self-run, status, stop/resume, review, and safety
 instructions are in
 [the Phase 6 remediation local runbook](docs/model/PHASE6_REMEDIATION_RUNBOOK.md).
+The exact diagnostic boundary and commands are in
+[the Phase 6 diagnostic sweep specification](docs/model/PHASE6_DIAGNOSTIC_SWEEP.md).
 
 ## Documentation map
 
@@ -279,6 +286,7 @@ instructions are in
 - [Phase 6 three-iteration remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md)
 - [Phase 6 targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md)
 - [Phase 6 remediation local runbook](docs/model/PHASE6_REMEDIATION_RUNBOOK.md)
+- [Phase 6 diagnostic full sweep](docs/model/PHASE6_DIAGNOSTIC_SWEEP.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)

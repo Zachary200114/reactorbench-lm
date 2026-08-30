@@ -559,7 +559,7 @@ def _progress_snapshot(store: PipelineStore, config: PipelineConfig) -> Progress
 
 
 def _exit_for_state(state: PipelineState) -> ExitCode:
-    if state.status == "completed":
+    if state.status in {"completed", "diagnostic_completed"}:
         return ExitCode.OK
     if state.status == "blocked":
         return ExitCode.BLOCKED
@@ -572,7 +572,7 @@ def _exit_for_state(state: PipelineState) -> ExitCode:
 
 def _next_stage(state: PipelineState) -> str:
     for stage in state.stages:
-        if stage.status.value != "completed":
+        if stage.status.value not in {"completed", "scientific_failed"}:
             return stage.name
     return "none"
 

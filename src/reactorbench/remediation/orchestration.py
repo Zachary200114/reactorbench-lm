@@ -27,7 +27,12 @@ from pydantic import Field, StrictBool, StrictFloat, StrictInt, model_validator
 
 from reactorbench.schemas.base import ContractModel, canonical_json_bytes, canonical_sha256
 
-from .config import PIPELINE_STAGES, PipelineConfig, config_sha256
+from .config import (
+    DIAGNOSTIC_CONTINUATION_STAGES,
+    PIPELINE_STAGES,
+    PipelineConfig,
+    config_sha256,
+)
 from .progress import (
     MAX_STATUS_BYTES,
     PROGRESS_EVENT_LOG_FILENAME,
@@ -185,6 +190,11 @@ class StageStatus(StrEnum):
     FAILED = "failed"
     STOPPED = "stopped"
     BLOCKED = "blocked"
+    SCIENTIFIC_FAILED = "scientific_failed"
+
+
+def _stage_is_traversed(status: StageStatus) -> bool:
+    return status in {StageStatus.COMPLETED, StageStatus.SCIENTIFIC_FAILED}
 
 
 class ArtifactReference(ContractModel):
@@ -335,7 +345,11 @@ class StageRecord(ContractModel):
             return self
         if self.completed_at is None or self.summary is None:
             raise ValueError("terminal stage lacks a completion result")
-        if self.status in {StageStatus.COMPLETED, StageStatus.BLOCKED}:
+        if self.status in {
+            StageStatus.COMPLETED,
+            StageStatus.BLOCKED,
+            StageStatus.SCIENTIFIC_FAILED,
+        }:
             if self.advancement_allowed is None:
                 raise ValueError("terminal gate stage lacks an advancement result")
         elif self.advancement_allowed is not None or self.artifact_count or self.metric_count:
@@ -344,6 +358,8 @@ class StageRecord(ContractModel):
             raise ValueError("completed stage must permit advancement")
         if self.status is StageStatus.BLOCKED and self.advancement_allowed is not False:
             raise ValueError("blocked stage must deny advancement")
+        if self.status is StageStatus.SCIENTIFIC_FAILED and self.advancement_allowed is not False:
+            raise ValueError("diagnostic scientific failure must deny advancement")
         return self
 
 
@@ -352,7 +368,15 @@ class PipelineState(ContractModel):
     run_name: str
     pipeline_config_sha256: Sha256
     source_commit: str = Field(pattern=r"^[0-9a-f]{7,64}$")
-    status: Literal["ready", "running", "completed", "failed", "stopped", "blocked"]
+    status: Literal[
+        "ready",
+        "running",
+        "completed",
+        "diagnostic_completed",
+        "failed",
+        "stopped",
+        "blocked",
+    ]
     current_stage: str | None
     stages: tuple[StageRecord, ...]
     interruption_count: StrictInt = Field(ge=0, le=10_000)
@@ -374,13 +398,11 @@ class PipelineState(ContractModel):
         active = tuple(
             (index, stage)
             for index, stage in enumerate(self.stages)
-            if stage.status is not StageStatus.COMPLETED
+            if not _stage_is_traversed(stage.status)
         )
         if active:
             first_index = active[0][0]
-            if any(
-                stage.status is StageStatus.COMPLETED for stage in self.stages[first_index + 1 :]
-            ):
+            if any(_stage_is_traversed(stage.status) for stage in self.stages[first_index + 1 :]):
                 raise ValueError("pipeline stages are not a contiguous completed prefix")
         non_pending = tuple(stage for _, stage in active if stage.status is not StageStatus.PENDING)
         if len(non_pending) > 1 or (non_pending and active and non_pending[0] is not active[0][1]):
@@ -392,6 +414,8 @@ class PipelineState(ContractModel):
             valid_status = status_counts[StageStatus.PENDING] == len(PIPELINE_STAGES)
         elif self.status == "completed":
             valid_status = status_counts[StageStatus.COMPLETED] == len(PIPELINE_STAGES)
+        elif self.status == "diagnostic_completed":
+            valid_status = all(_stage_is_traversed(stage.status) for stage in self.stages)
         elif self.status == "blocked":
             valid_status = status_counts[StageStatus.BLOCKED] == 1
         elif self.status == "failed":
@@ -830,6 +854,15 @@ class PipelineEngine:
         stages_root = self.store.run_directory / "stages"
         if stages_root.is_symlink() or not stages_root.is_dir():
             raise ValueError("pipeline stage root is unsafe")
+        scientific_failures = tuple(
+            record.name for record in state.stages if record.status is StageStatus.SCIENTIFIC_FAILED
+        )
+        if self.config.diagnostic_mode is None and scientific_failures:
+            raise ValueError("official pipeline state contains diagnostic scientific failures")
+        if any(stage not in DIAGNOSTIC_CONTINUATION_STAGES for stage in scientific_failures):
+            raise ValueError("diagnostic continuation escaped its exact scientific gate allowlist")
+        if state.status == "diagnostic_completed" and self.config.diagnostic_mode is None:
+            raise ValueError("official pipeline cannot have diagnostic completion status")
 
     def _stage_root(self, ordinal: int, stage_name: str) -> Path:
         return self.store.run_directory / "stages" / f"{ordinal:02d}-{stage_name}"
@@ -929,7 +962,7 @@ class PipelineEngine:
             (
                 ordinal
                 for ordinal, record in enumerate(state.stages)
-                if record.status is not StageStatus.COMPLETED
+                if not _stage_is_traversed(record.status)
             ),
             len(PIPELINE_STAGES),
         )
@@ -956,11 +989,20 @@ class PipelineEngine:
                 boundary = self._load_boundary(record, manifest)
                 marker, outcome, _ = boundary
                 boundaries[ordinal] = boundary
-                if record.status in {StageStatus.COMPLETED, StageStatus.BLOCKED}:
+                if record.status in {
+                    StageStatus.COMPLETED,
+                    StageStatus.BLOCKED,
+                    StageStatus.SCIENTIFIC_FAILED,
+                }:
                     expected_status = (
                         StageStatus.COMPLETED
                         if outcome.advancement_allowed
-                        else StageStatus.BLOCKED
+                        else (
+                            StageStatus.SCIENTIFIC_FAILED
+                            if self.config.diagnostic_mode is not None
+                            and record.name in DIAGNOSTIC_CONTINUATION_STAGES
+                            else StageStatus.BLOCKED
+                        )
                     )
                     if (
                         record.status is not expected_status
@@ -971,10 +1013,15 @@ class PipelineEngine:
                         or record.metric_count != len(outcome.metrics)
                     ):
                         raise ValueError("terminal stage state differs from its immutable outcome")
-            elif record.status in {StageStatus.COMPLETED, StageStatus.BLOCKED}:
+            elif record.status in {
+                StageStatus.COMPLETED,
+                StageStatus.BLOCKED,
+                StageStatus.SCIENTIFIC_FAILED,
+            }:
                 raise ValueError("terminal stage is missing its completion marker")
             if (
-                record.status in {StageStatus.COMPLETED, StageStatus.BLOCKED}
+                record.status
+                in {StageStatus.COMPLETED, StageStatus.BLOCKED, StageStatus.SCIENTIFIC_FAILED}
                 and attempts
                 and (attempts[-1] != record.attempt_count)
             ):
@@ -1046,7 +1093,18 @@ class PipelineEngine:
         *,
         recovered_from_running: bool,
     ) -> PipelineState:
-        terminal = StageStatus.COMPLETED if outcome.advancement_allowed else StageStatus.BLOCKED
+        diagnostic_continuation = (
+            not outcome.advancement_allowed
+            and self.config.diagnostic_mode is not None
+            and state.stages[ordinal].name in DIAGNOSTIC_CONTINUATION_STAGES
+        )
+        terminal = (
+            StageStatus.COMPLETED
+            if outcome.advancement_allowed
+            else StageStatus.SCIENTIFIC_FAILED
+            if diagnostic_continuation
+            else StageStatus.BLOCKED
+        )
         stages = list(state.stages)
         stages[ordinal] = stages[ordinal].model_copy(
             update={
@@ -1061,7 +1119,9 @@ class PipelineEngine:
         return self.store.write_state(
             state.model_copy(
                 update={
-                    "status": "running" if outcome.advancement_allowed else "blocked",
+                    "status": "running"
+                    if outcome.advancement_allowed or diagnostic_continuation
+                    else "blocked",
                     "current_stage": None,
                     "stages": tuple(stages),
                     "interruption_count": state.interruption_count + int(recovered_from_running),
@@ -1141,7 +1201,7 @@ class PipelineEngine:
         snapshot: ProgressSnapshot | None,
         missing_checkpoints: tuple[tuple[StageCompletionMarker, StageOutcome, Path], ...],
     ) -> None:
-        target_completed = state.status == "completed"
+        target_completed = state.status in {"completed", "diagnostic_completed"}
         if target_completed and snapshot is not None and snapshot.state is ProgressState.COMPLETED:
             return
         if (
@@ -1159,7 +1219,13 @@ class PipelineEngine:
                     message=outcome.summary,
                 )
             if target_completed:
-                progress.complete(message="All development pipeline stages completed.")
+                message = (
+                    "Diagnostic sweep completed; scientific failures were recorded without "
+                    "authorizing final evaluation."
+                    if state.status == "diagnostic_completed"
+                    else "All development pipeline stages completed."
+                )
+                progress.complete(message=message)
             else:
                 progress.stop(message="Scientific gate did not pass; later stages were not run.")
 
@@ -1175,13 +1241,14 @@ class PipelineEngine:
             boundaries = self._audit_boundaries(state, manifest)
             progress_snapshot, checkpoint_paths = self._load_progress_evidence()
             all_stage_records_completed = all(
-                record.status is StageStatus.COMPLETED for record in state.stages
+                _stage_is_traversed(record.status) for record in state.stages
             )
             if progress_snapshot is not None and progress_snapshot.state is ProgressState.COMPLETED:
                 if not all_stage_records_completed:
                     raise ValueError("completed progress conflicts with incomplete pipeline state")
                 if any(
-                    state.stages[ordinal].status in {StageStatus.COMPLETED, StageStatus.BLOCKED}
+                    state.stages[ordinal].status
+                    in {StageStatus.COMPLETED, StageStatus.BLOCKED, StageStatus.SCIENTIFIC_FAILED}
                     and boundary[2].relative_to(self.store.run_directory).as_posix()
                     not in checkpoint_paths
                     for ordinal, boundary in boundaries.items()
@@ -1210,7 +1277,7 @@ class PipelineEngine:
                     (
                         ordinal
                         for ordinal, record in enumerate(state.stages)
-                        if record.status is not StageStatus.COMPLETED
+                        if not _stage_is_traversed(record.status)
                     ),
                     None,
                 )
@@ -1233,16 +1300,22 @@ class PipelineEngine:
             missing_checkpoints = tuple(
                 boundary
                 for ordinal, boundary in sorted(boundaries.items())
-                if state.stages[ordinal].status in {StageStatus.COMPLETED, StageStatus.BLOCKED}
+                if state.stages[ordinal].status
+                in {StageStatus.COMPLETED, StageStatus.BLOCKED, StageStatus.SCIENTIFIC_FAILED}
                 and boundary[2].relative_to(self.store.run_directory).as_posix()
                 not in checkpoint_paths
             )
-            if all(record.status is StageStatus.COMPLETED for record in state.stages):
-                if state.status != "completed":
+            if all(_stage_is_traversed(record.status) for record in state.stages):
+                terminal_status = (
+                    "diagnostic_completed"
+                    if self.config.diagnostic_mode is not None
+                    else "completed"
+                )
+                if state.status != terminal_status:
                     state = self.store.write_state(
                         state.model_copy(
                             update={
-                                "status": "completed",
+                                "status": terminal_status,
                                 "current_stage": None,
                                 "updated_at": _utc_now(),
                             }
@@ -1265,7 +1338,7 @@ class PipelineEngine:
                     )
                 for ordinal, stage_name in enumerate(PIPELINE_STAGES):
                     current = state.stages[ordinal]
-                    if current.status is StageStatus.COMPLETED:
+                    if _stage_is_traversed(current.status):
                         continue
                     if self._stop_is_requested():
                         state = self.store.write_state(
@@ -1419,21 +1492,32 @@ class PipelineEngine:
                         checkpoint=marker_path.relative_to(self.store.run_directory).as_posix(),
                         message=outcome.summary,
                     )
-                    if not outcome.advancement_allowed:
+                    if not outcome.advancement_allowed and state.status != "running":
                         progress.stop(
                             message="Scientific gate did not pass; later stages were not run."
                         )
                         return state
+                terminal_status = (
+                    "diagnostic_completed"
+                    if self.config.diagnostic_mode is not None
+                    else "completed"
+                )
                 state = self.store.write_state(
                     state.model_copy(
                         update={
-                            "status": "completed",
+                            "status": terminal_status,
                             "current_stage": None,
                             "updated_at": _utc_now(),
                         }
                     )
                 )
-                progress.complete(message="All development pipeline stages completed.")
+                message = (
+                    "Diagnostic sweep completed; scientific failures were recorded without "
+                    "authorizing final evaluation."
+                    if terminal_status == "diagnostic_completed"
+                    else "All development pipeline stages completed."
+                )
+                progress.complete(message=message)
                 return state
 
 

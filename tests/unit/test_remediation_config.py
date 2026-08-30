@@ -52,6 +52,9 @@ FAULT_BOOSTED_PIPELINE_PATH = (
 TASK_WEIGHTED_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
 )
+DIAGNOSTIC_PIPELINE_PATH = (
+    ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml"
+)
 V04_PATH = ROOT / "configs/experiments/phase6-remediation-v0.4.0.toml"
 
 
@@ -304,6 +307,26 @@ def test_task_weighted_v03_restores_class_mix_and_adds_task_selection_floors() -
         pipeline.reuse_v02_prefix
         == PipelineConfig.model_validate(_raw(FAULT_BOOSTED_PIPELINE_PATH)).reuse_v02_prefix
     )
+
+
+def test_diagnostic_pipeline_has_a_separate_identity_and_preserves_official_hash() -> None:
+    official = PipelineConfig.model_validate(_raw(TASK_WEIGHTED_PIPELINE_PATH))
+    diagnostic = PipelineConfig.model_validate(_raw(DIAGNOSTIC_PIPELINE_PATH))
+
+    assert official.diagnostic_mode is None
+    assert config_sha256(official) == (
+        "bfdb3833fce80fd31e018126b1ae225e04cf85d7fcbd9ef0fcada69a69f4a354"
+    )
+    assert diagnostic.run_name == "phase6-remediation-v0.4.0-targeted-05-diagnostic-01"
+    assert diagnostic.diagnostic_mode == "collect_scientific_failures"
+    assert diagnostic.stop_before_final_evaluation is True
+    assert diagnostic.v03_config_sha256 == official.v03_config_sha256
+    assert diagnostic.reuse_v02_prefix == official.reuse_v02_prefix
+
+    changed = _raw(DIAGNOSTIC_PIPELINE_PATH)
+    changed["run_name"] = "unsafe-diagnostic-name"
+    with pytest.raises(ValidationError, match="exact non-overwriting run identity"):
+        PipelineConfig.model_validate(changed)
 
 
 def test_task_weighted_objective_and_selection_cannot_be_decoupled() -> None:

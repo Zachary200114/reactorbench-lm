@@ -6,7 +6,7 @@ if (( $# != 1 )); then
   exit 2
 fi
 case $1 in
-  --smoke | --snapshot-json | --readiness-check | --start-detached | --request-stop | --resume-detached | --open-finder)
+  --smoke | --snapshot-json | --readiness-check | --start-detached | --request-stop | --resume-detached | --open-finder | --diagnostic-snapshot-json | --diagnostic-readiness-check | --diagnostic-start-detached | --diagnostic-request-stop | --diagnostic-resume-detached | --diagnostic-open-finder)
     ;;
   *)
     echo "Command refused: monitor action is not allowlisted." >&2

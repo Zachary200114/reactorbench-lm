@@ -201,6 +201,93 @@ def test_dry_run_is_read_only_and_validates_exact_runtime_boundaries(tmp_path: P
         engine.run(dry_run=cast(bool, 1))
 
 
+def test_diagnostic_sweep_records_both_scientific_failures_and_finishes_graph(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        run_name="phase6-remediation-v0.4.0-targeted-05-diagnostic-01",
+        diagnostic_mode="collect_scientific_failures",
+    )
+    store = _store(tmp_path, config)
+    calls: list[tuple[str, str]] = []
+
+    def scientific_failure(context: StageContext) -> StageOutcome:
+        stage = context.attempt_directory.parent.name.split("-", 1)[1]
+        calls.append((stage, context.attempt_directory.name))
+        return StageOutcome(
+            summary="Scientific acceptance threshold did not pass.",
+            advancement_allowed=False,
+        )
+
+    actions = _actions(
+        calls,
+        {
+            "v03_gate": scientific_failure,
+            "v04_gate_and_final_policy_freeze": scientific_failure,
+        },
+    )
+    result = _engine(tmp_path, store, config, actions).run()
+
+    assert result.status == "diagnostic_completed"
+    assert result.stages[9].status is StageStatus.SCIENTIFIC_FAILED
+    assert result.stages[14].status is StageStatus.SCIENTIFIC_FAILED
+    assert result.stages[15].status is StageStatus.COMPLETED
+    assert len(calls) == len(PIPELINE_STAGES)
+    events = _progress_events(store)
+    assert events[-1].state is ProgressState.COMPLETED
+    assert "Diagnostic sweep completed" in events[-1].message
+
+
+def test_diagnostic_sweep_does_not_bypass_non_allowlisted_failure(tmp_path: Path) -> None:
+    config = _config(
+        run_name="phase6-remediation-v0.4.0-targeted-05-diagnostic-01",
+        diagnostic_mode="collect_scientific_failures",
+    )
+    store = _store(tmp_path, config)
+    calls: list[tuple[str, str]] = []
+
+    def blocked(context: StageContext) -> StageOutcome:
+        calls.append(("v04_pilot", context.attempt_directory.name))
+        return StageOutcome(summary="Pilot feasibility gate blocked.", advancement_allowed=False)
+
+    result = _engine(
+        tmp_path,
+        store,
+        config,
+        _actions(calls, {"v04_pilot": blocked}),
+    ).run()
+
+    assert result.status == "blocked"
+    assert result.stages[11].status is StageStatus.BLOCKED
+    assert result.stages[12].status is StageStatus.PENDING
+
+
+def test_diagnostic_sweep_stops_on_an_engineering_exception(tmp_path: Path) -> None:
+    config = _config(
+        run_name="phase6-remediation-v0.4.0-targeted-05-diagnostic-01",
+        diagnostic_mode="collect_scientific_failures",
+    )
+    store = _store(tmp_path, config)
+    calls: list[tuple[str, str]] = []
+
+    def engineering_failure(context: StageContext) -> StageOutcome:
+        calls.append(("v03_gate", context.attempt_directory.name))
+        raise RuntimeError("simulated internal stage failure")
+
+    with pytest.raises(PipelineStageError, match="internal stage callback failed"):
+        _engine(
+            tmp_path,
+            store,
+            config,
+            _actions(calls, {"v03_gate": engineering_failure}),
+        ).run()
+
+    result = store.load_state()
+    assert result.status == "failed"
+    assert result.stages[9].status is StageStatus.FAILED
+    assert result.stages[10].status is StageStatus.PENDING
+
+
 def test_create_and_engine_reject_config_drift_order_drift_and_existing_run(
     tmp_path: Path,
 ) -> None:

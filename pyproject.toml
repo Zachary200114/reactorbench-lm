@@ -31,18 +31,23 @@ dev = [
 include = [
   "/configs",
   "/docs/model/PHASE6_REMEDIATION_RUNBOOK.md",
+  "/docs/model/PHASE6_DIAGNOSTIC_SWEEP.md",
   "/docs/model/PHASE6_V02_INVENTORY.json",
   "/docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json",
   "/golden",
   "/schemas",
   "/scripts/check_phase6_status.sh",
+  "/scripts/check_phase6_diagnostic_status.sh",
   "/scripts/open_phase6_progress_gui.sh",
   "/scripts/phase6_monitor_controller.sh",
   "/scripts/replay_phase6_targeted03_gate.sh",
   "/scripts/resume_phase6_pipeline.sh",
+  "/scripts/resume_phase6_diagnostic_pipeline.sh",
   "/scripts/run_phase6_evaluation.sh",
   "/scripts/run_phase6_pipeline.sh",
+  "/scripts/run_phase6_diagnostic_pipeline.sh",
   "/scripts/stop_phase6_pipeline.sh",
+  "/scripts/stop_phase6_diagnostic_pipeline.sh",
   "/src",
   "/LICENSE",
   "/README.md",
@@ -77,6 +82,8 @@ packages = ["src/reactorbench"]
 "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-03.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-03.toml"
 "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml"
 "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
+"configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml" = "reactorbench/_data/configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml"
+"docs/model/PHASE6_DIAGNOSTIC_SWEEP.md" = "reactorbench/_data/docs/model/PHASE6_DIAGNOSTIC_SWEEP.md"
 "docs/model/PHASE6_REMEDIATION_RUNBOOK.md" = "reactorbench/_data/docs/model/PHASE6_REMEDIATION_RUNBOOK.md"
 "docs/model/PHASE6_V02_INVENTORY.json" = "reactorbench/_data/docs/model/PHASE6_V02_INVENTORY.json"
 "docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json" = "reactorbench/_data/docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json"
@@ -85,13 +92,17 @@ packages = ["src/reactorbench"]
 "schemas/compact-output/v0" = "reactorbench/_data/schemas/compact-output/v0"
 "schemas/dataset/v0" = "reactorbench/_data/schemas/dataset/v0"
 "scripts/check_phase6_status.sh" = "reactorbench/_data/scripts/check_phase6_status.sh"
+"scripts/check_phase6_diagnostic_status.sh" = "reactorbench/_data/scripts/check_phase6_diagnostic_status.sh"
 "scripts/open_phase6_progress_gui.sh" = "reactorbench/_data/scripts/open_phase6_progress_gui.sh"
 "scripts/phase6_monitor_controller.sh" = "reactorbench/_data/scripts/phase6_monitor_controller.sh"
 "scripts/replay_phase6_targeted03_gate.sh" = "reactorbench/_data/scripts/replay_phase6_targeted03_gate.sh"
 "scripts/resume_phase6_pipeline.sh" = "reactorbench/_data/scripts/resume_phase6_pipeline.sh"
+"scripts/resume_phase6_diagnostic_pipeline.sh" = "reactorbench/_data/scripts/resume_phase6_diagnostic_pipeline.sh"
 "scripts/run_phase6_evaluation.sh" = "reactorbench/_data/scripts/run_phase6_evaluation.sh"
 "scripts/run_phase6_pipeline.sh" = "reactorbench/_data/scripts/run_phase6_pipeline.sh"
+"scripts/run_phase6_diagnostic_pipeline.sh" = "reactorbench/_data/scripts/run_phase6_diagnostic_pipeline.sh"
 "scripts/stop_phase6_pipeline.sh" = "reactorbench/_data/scripts/stop_phase6_pipeline.sh"
+"scripts/stop_phase6_diagnostic_pipeline.sh" = "reactorbench/_data/scripts/stop_phase6_diagnostic_pipeline.sh"
 
 [tool.pytest.ini_options]
 minversion = "8.3"

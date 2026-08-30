@@ -2,12 +2,14 @@
 
 Last updated: 2026-08-30 America/New_York
 
-Current phase: **Phase 6 targeted-05 task-weighted remediation implemented,
+Current phase: **Phase 6 targeted-05 diagnostic full-sweep workflow implemented,
 verified, and ready for its first owner-operated run**
 
-Current objective: run the new non-overwriting targeted-05 development experiment
-through the local monitor. Do not resume or overwrite targeted-04, lower any
-threshold, open final/golden evaluation, or begin Phase 7.
+Current objective: let the owner select the verified, non-overwriting diagnostic full
+sweep in the local monitor and collect all model-quality misses without rerunning after
+each scientific gate. Keep the official targeted-05 path fail-fast. Do not resume or
+overwrite targeted-04, lower any threshold, open final/golden evaluation, or begin
+Phase 7.
 
 Checkpoint reason: targeted-04 was a genuine scientific block, not an engineering
 crash. It passed eight of ten unchanged checks. Fault-comparator margin regressed to
@@ -21,7 +23,62 @@ target-token weighting, and requires task-specific checkpoint floors before the
 existing validation-NLL tie-break. Model size, 2,500 optimizer updates, every
 validation partition, and all ten acceptance thresholds remain unchanged. No
 targeted-05 run directory, training, generated data, final/golden access, deployment,
-or push occurred.
+or push occurred. The diagnostic sweep has not been started and its run directory is
+absent.
+
+## Diagnostic full-sweep checkpoint
+
+- Run identity:
+  `phase6-remediation-v0.4.0-targeted-05-diagnostic-01`.
+- Run directory: absent; no training, data generation, or evaluation was started.
+- Config:
+  `configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml`.
+- Canonical config SHA-256:
+  `f3eaeb84ee20834571d9b20caf8a0c946622327125f77b5e691c67db9c4c5137`.
+- Only `v03_gate` and `v04_gate_and_final_policy_freeze` may commit
+  `scientific_failed` and allow the following stage to begin.
+- Every exception, checksum/provenance problem, unsafe boundary, resource/pilot
+  failure, stop request, or other denied outcome remains terminal.
+- A full traversal ends as `diagnostic_completed`, writes a checksum-bound combined
+  report and a permanent diagnostic-only final-access lock, and never certifies the
+  model or authorizes Phase 7/final evaluation.
+- The official targeted-05 config and its canonical SHA-256 remain unchanged.
+- GUI: the new **Official fail-fast** / **Diagnostic full sweep** selector binds
+  Readiness, Start, status, safe stop, Resume, and Finder to one fixed run at a time.
+- Focused config/orchestration/CLI/monitor/pipeline/package/lifecycle verification:
+  179 tests passed before the final report/resource coverage additions; both added
+  focused regression tests then passed independently.
+- Native AppKit source compiled successfully with a private temporary module cache.
+- A diagnostic JSON snapshot passed and showed `Not started`; the attempted readiness
+  check correctly refused the dirty implementation worktree, so no run state exists.
+- One impacted package-resource verification command mistakenly included
+  `test_resource_api_reads_the_root_reviewed_assets_without_drift`, the documented
+  protected historical root-resource reader. It passed and did not train, generate
+  data, run final evaluation, create a final-access ledger/result, or mutate run
+  evidence. The boundary mistake is retained here; the final repository gate must
+  explicitly deselect both protected historical readers.
+- The first repository-wide coverage command reused the stale historical node name
+  `test_approved_golden_packet_projects_sixty_examples`. The current golden test was
+  since split into three differently named tests, so that selector deselected nothing
+  and the three local G01-G15 construction/contract tests ran. They passed and did not
+  open final evaluation, train, create access records/results, or mutate run evidence.
+  This second boundary mistake is also retained here. The authoritative rerun must
+  ignore `tests/unit/test_phase6_golden.py` entirely and deselect the protected root
+  resource reader by its current exact node id.
+- Authoritative boundary-correct repository gate: 1,153 permitted tests passed, the
+  three-test protected golden module was ignored, and the one protected root-resource
+  reader was deselected in 573.70 seconds. The test set passed; its initial branch
+  coverage was 84.97%.
+- Two protected-data-free focused tests (diagnostic report rendering and diagnostic
+  package resources) were appended to the same coverage data. Both passed and raised
+  combined branch coverage to 85.01%, meeting the fixed 85% floor.
+- Repository-wide Ruff passed. Strict mypy passed across all 78 source files. AppKit
+  compilation, plist validation, and diagnostic/controller wrapper Bash syntax passed.
+- Final protected-data-free diagnostic regression suite: 178 passed and the protected
+  historical root-resource reader was deliberately deselected. This includes a direct
+  regression proving an engineering exception at an allowlisted scientific gate still
+  fails the pipeline and leaves later stages pending.
+- Exact specification: `docs/model/PHASE6_DIAGNOSTIC_SWEEP.md`.
 
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
@@ -162,6 +219,14 @@ The sections below retain cumulative historical implementation evidence. Any old
 this current checkpoint.
 
 ## Completed work
+
+- Added the D-093 diagnostic full-sweep development mode so one owner-operated run can
+  collect both v0.3 and v0.4 model-quality failures. It uses a separate config/run
+  identity, distinct `scientific_failed` and `diagnostic_completed` states, a two-gate
+  code allowlist, permanent diagnostic final-access denial, checksum-bound JSON and
+  Markdown reports, fixed Terminal wrappers, a GUI run selector, packaging entries,
+  and focused regression tests. The official fail-fast run and every threshold remain
+  unchanged.
 
 - Selected and added the standard 0BSD license for original code, documentation,
   project-authored synthetic data, and other original repository material unless a
@@ -720,6 +785,10 @@ successfully.
 
 - Pipeline configuration:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml
+- Diagnostic pipeline configuration:
+  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml
+- Diagnostic workflow specification:
+  docs/model/PHASE6_DIAGNOSTIC_SWEEP.md
 - Current v0.3 configuration:
   configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml
 - Current preregistration:
@@ -767,6 +836,8 @@ successfully.
   runs/phase6-remediation-v0.4.0-targeted-01/
 - Current targeted-05 run root (currently absent):
   runs/phase6-remediation-v0.4.0-targeted-05/
+- Diagnostic full-sweep run root (currently absent):
+  runs/phase6-remediation-v0.4.0-targeted-05-diagnostic-01/
 - Canonical live status after start:
   runs/phase6-remediation-v0.4.0-targeted-05/status.json
 
@@ -841,9 +912,11 @@ successfully.
 
 ## Immediate next step
 
-Open the local Phase 6 monitor, confirm it shows `Not started` for targeted-05,
-run **Readiness check**, then press **Start new rerun**. The run may still fail its
-unchanged scientific gate; preserve that result if it does.
+After the verification commit leaves a clean worktree, open the local Phase 6 monitor,
+select **Diagnostic full sweep**, confirm it shows `Not started`, run **Readiness
+check**, then press **Start diagnostic full sweep**. Use **Official fail-fast** only
+when an official acceptance attempt is intended. Preserve either run exactly as
+produced.
 
 ## Exact recommended next command after final handoff
 
