@@ -163,6 +163,11 @@ this current checkpoint.
 
 ## Completed work
 
+- Reworked all five repository README files into a direct first-person maintainer
+  voice, shortened the root status history, corrected its stale targeted-04 wording,
+  and updated the research README's immediate next step to targeted-05. The technical
+  reports, acceptance thresholds, measured results, and preserved run evidence were
+  not changed. Refreshed the checksum-bound compact-output README manifest.
 - Preserved Phase 6 v0.1 as immutable negative evidence.
 - Completed v0.2 compact-output reliability: the frozen RB2 contract, strict
   bidirectional compiler, task-footer-preserving serialization, tokenizer
@@ -410,6 +415,16 @@ scientific outcome remains unknown until the owner runs it. The code changes imp
 the evidence-aligned training setup; they do not guarantee acceptance.
 
 ## Tests and checks run
+
+- README voice and status pass on 2026-08-30:
+  - Reviewed the complete repository README inventory: root, research, Aster schema,
+    compact-output schema, and dataset schema.
+  - Focused compact-output, Aster schema, dataset schema, and package-resource
+    contracts: 26 passed and 1 protected historical reader deliberately deselected.
+  - Compact-output README SHA-256 and aggregate snapshot SHA-256 were regenerated and
+    independently verified by the contract suite.
+  - Git diff whitespace validation passed. No training, data generation, run-artifact
+    mutation, final/golden access, push, or deployment occurred.
 
 - Targeted-05 implementation verification on 2026-08-30:
   - Read-only diagnosis used only targeted-03 replay and targeted-04 development
@@ -771,6 +786,8 @@ successfully.
   `99ef3d15ab42e83a6fe60d39346fde4dc007e66b`.
 - Targeted-05 implementation and clean-source dry-run commit:
   `69be80e09804cf796824379de5f23435d6a74b29`.
+- The first-person README editorial pass is included in the final handoff commit that
+  contains this status update.
 - The final handoff commit is the commit containing this status update; verify it with
   `git rev-parse HEAD` before pushing or starting the run.
 - Final verification and independent re-review disposition: ship, with no required

@@ -1,17 +1,16 @@
 # Aster schema development snapshot
 
-This directory describes the developmental `0.1.0` contract set. It is not a
-frozen version 1 interface. Validated model instances are immutable, but that
-runtime property does not freeze the developmental interface against reviewed
-changes.
+I use this directory for the developmental `0.1.0` Aster contract set. It is not a
+frozen version 1 interface. Validated model instances are immutable at runtime, but I
+can still make reviewed changes to the developmental interface.
 
-`snapshot-contract.json` fixes the root model-to-filename mapping. The
-`reactorbench.schemas.export.export_json_schemas` helper deterministically emits
-the seven JSON Schema documents, including the aggregate
-`structured-trajectory.schema.json`, plus a SHA-256 `manifest.json`. Contract tests
-verify repeatable bytes, self-consistent hashes, and the present local root mapping.
+`snapshot-contract.json` records the root model-to-filename mapping. I use
+`reactorbench.schemas.export.export_json_schemas` to emit the seven JSON Schema
+documents deterministically, including `structured-trajectory.schema.json`, along
+with a SHA-256 `manifest.json`. Contract tests check repeatable bytes,
+self-consistent hashes, and the current local root mapping.
 
-The generated files are reviewed, version-controlled developmental artifacts, not a
-released stable interface. They must be regenerated and reviewed after every
-contract change; `frozen` remains `false` until the pre-build schema review and
-freeze gate are complete.
+I keep the generated files under version control so schema changes are reviewable.
+They are still developmental artifacts, not a stable released interface. After any
+contract change, I regenerate and review them; `frozen` stays `false` until the schema
+freeze gate is complete.

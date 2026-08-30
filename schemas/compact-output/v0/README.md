@@ -1,15 +1,15 @@
 # ReactorBench-LM compact output contract v0
 
-This directory records the developmental `0.2.0` model-output language. The learned
-sequence is a bounded, one-line `RB2` wire form; strict project target models remain
-the source of truth and canonical JSON remains the audit/API representation.
+I use this directory to define the developmental `0.2.0` model-output language. The
+model learns a bounded, one-line `RB2` wire format, while strict target models remain
+the source of truth and canonical JSON remains the audit and API representation.
 
-Learned enum fields use the immutable single-atom code tables recorded in
-`contract.json`. This keeps every task—including paired conclusions—within the
-512-token control-model budget without dropping any strict target field. The compiler
-expands every atom back to its allowlisted enum value; the decoder derives the same
-tables without consulting truth.
+I encode learned enum fields with the immutable single-atom tables in `contract.json`.
+That keeps every task, including paired conclusions, inside the 512-token control
+budget without dropping required fields. The compiler expands each atom back to its
+allowlisted value, and the decoder derives the same tables without looking at target
+truth.
 
-The contract is frozen after the approved training/validation target-length inventory
-and task-specific generation caps were recorded. Any later wire-format change requires
-a new contract version; the historical Phase 6 v0.1 artifacts must not be overwritten.
+I froze this contract after recording the approved training/validation target lengths
+and task-specific generation caps. Any later wire-format change needs a new contract
+version. Historical Phase 6 v0.1 artifacts are never overwritten.

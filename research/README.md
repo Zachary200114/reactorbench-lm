@@ -1,20 +1,20 @@
-# ReactorBench-LM research dossier
+# ReactorBench-LM research notes
 
-Status: **research complete; Phases 0–6 implemented and verified locally; Phase 6
-closed as a negative experiment and Phase 7 blocked**
-Prepared: 2026-08-18; implementation status reconciled 2026-08-20.
+Status: **core research complete; Phase 6 model-quality remediation is in progress;
+Phase 7 remains blocked until a candidate passes the frozen gates**
+Prepared: 2026-08-18; current run state is tracked separately in the implementation
+status.
 
-## Recommended project
+## Why I chose this project
 
 **ReactorBench-LM: Training a Small Transformer from Scratch on Synthetic
 Nuclear-Plant Event Sequences**
 
-ReactorBench-LM is a small decoder-only Transformer trained from random initialization
-on a wholly project-authored dataset representing a fictional civilian,
-pressurized-water-inspired energy facility. The model learns causal language modeling
-and will later be evaluated on structured tasks over synthetic event narratives:
-next-event prediction, fault-family identification, evidence extraction, incident
-summarization, and selection of a fictional diagnostic label.
+I chose to build a small decoder-only Transformer from random initialization and train
+it on a dataset I could fully control. Aster Station is my fictional,
+pressurized-water-inspired energy facility, and every scenario is synthetic. I use the
+resulting event narratives for next-event prediction, fault-family identification,
+evidence extraction, incident summarization, and fictional diagnostic labels.
 
 The research question is:
 
@@ -22,17 +22,17 @@ The research question is:
 > language and generalize to unseen combinations of faults in a controlled,
 > simulator-grounded synthetic domain?
 
-The project is a model-development and evaluation experiment. It is **not** a real
+This is a model-development and evaluation experiment. It is **not** a real
 plant simulator, digital twin, operator assistant, safety system, emergency tool, or
 source of engineering guidance.
 
-## Settled boundaries
+## Boundaries I set
 
 - The model is trained from scratch; no pretrained weights and no hosted LLM API
   perform the core modeling work.
 - PyTorch provides tensor operations, automatic differentiation, optimization, and an
-  optional MPS backend. Project code defines the architecture, data, initialization,
-  training, and evaluation.
+  optional MPS backend. I define the architecture, data, initialization, training, and
+  evaluation in this repository.
 - All scenarios, training/evaluation narratives, identifiers, state variables, fault
   rules, policies, and outputs are project-authored and synthetic.
 - No real event notifications, operator logs, procedures, plant manuals, setpoints,
@@ -42,7 +42,7 @@ source of engineering guidance.
 - Telemetry uses normalized values or explicitly fictional synthetic units.
 - Any eventual interface will accept only generated scenarios from the fictional world.
 
-## What this folder contains
+## What I keep in this folder
 
 - `RESEARCH_BLUEPRINT.md` — framing, system abstraction, model plan, experiments,
   compute plan, risks, and roadmap.
@@ -68,44 +68,47 @@ source of engineering guidance.
 - `DECISION_LOG.md` — settled and provisional decisions.
 - `PREBUILD_CHECKLIST.md` — completed and remaining phase gates.
 
-## Implemented checkpoint
+## What I have implemented
 
-The Phase 3 project-owner-approved local candidate contains 204 audit trajectories,
+The Phase 3 candidate I approved contains 204 audit trajectories,
 1,762 single-input projections, 14 counterfactual pairs, 553 rendered candidates,
 1,776 task examples, and 18 bounded corruption records. Its split, evidence, grouping,
 duplicate, shortcut, review, and typed-artifact gates passed. It is not a public
 release.
 
-Phase 4 trains a deterministic 2,048-token SentencePiece BPE only on the 195 approved
-`iid_train` documents and implements the decoder-only causal Transformer from PyTorch
-primitives. Exact model tiers are 675,328 smoke, 5,328,896 pilot, and 15,179,520 main
-parameters. The 300-step CPU smoke run passed causal masking, target shifting,
-padding, deterministic evaluation, tiny-shard overfit, and checksum-bound safetensors
-reload equality. The repository gate passed 677 tests with 85.37% branch coverage.
+In Phase 4, I trained a deterministic 2,048-token SentencePiece BPE only on the 195
+approved `iid_train` documents and implemented the decoder-only causal Transformer
+from PyTorch primitives. Exact model tiers are 675,328 smoke, 5,328,896 pilot, and
+15,179,520 main parameters. The 300-step CPU smoke run passed causal masking, target
+shifting, padding, deterministic evaluation, tiny-shard overfit, and checksum-bound
+safetensors reload equality. The repository gate passed 677 tests with 85.37% branch
+coverage.
 
-Phase 5 completed all preregistered baselines plus 300-step smaller and 500-step pilot
-Transformers. The pilot used MPS, selected validation target NLL 0.1593, and produced a
-checksum-bound 23,682,552-byte safetensors checkpoint. Only train/validation views were
-used. The 15,179,520-parameter Phase 6 main configuration and numerical gates are now
-frozen before test access.
+In Phase 5, I completed all preregistered baselines plus 300-step smaller and 500-step
+pilot Transformers. The pilot used MPS, selected validation target NLL 0.1593, and
+produced a checksum-bound 23,682,552-byte safetensors checkpoint. Only
+train/validation views were used. The 15,179,520-parameter Phase 6 main configuration
+and numerical gates were frozen before test access.
 
 Exact implementation state, measurements, limitations, and hashes are in
 `../docs/IMPLEMENTATION_STATUS.md`, `../docs/model/PHASE4_SMOKE.md`, and
 `../docs/model/PHASE5_PILOT.md`.
 
-## Hardware evidence
+## Hardware I used
 
-The target computer is an Apple M3 MacBook Air with 16 GB unified memory. Torch 2.13.0
-ran the Phase 5 pilot on MPS. The pilot measured 1,909.38 target tokens/second and
-3,401,547,776 peak driver-allocated bytes. Thermal throttling is not directly
-observable and remains an explicit limitation.
+I ran the local experiments on an Apple M3 MacBook Air with 16 GB unified memory.
+Torch 2.13.0 ran the Phase 5 pilot on MPS. The pilot measured 1,909.38 target
+tokens/second and 3,401,547,776 peak driver-allocated bytes. I cannot directly observe
+thermal throttling, so I keep it as an explicit limitation.
 
-## Immediate next step
+## What comes next
 
-Begin Phase 6 with a read-only freeze audit. Complete the human golden-suite review,
-freeze test manifests, implement the E0–E7 evaluator/calibration/ablation contracts,
-and verify the approved Phase 5 artifact before main training or any test access. Do
-not build inference or UI work yet.
+My immediate next step is to run the targeted-05 development experiment locally. It
+keeps the existing acceptance thresholds and uses the task-weighted training and
+checkpoint selection policy documented in
+`../docs/model/PHASE6_TARGETED05_PLAN.md`. I will not start Phase 7 until a candidate
+passes the frozen development gates and the separate final-evaluation prerequisites
+are ready.
 
-GitHub pushing and Vercel deployment remain reserved for Zachary. Code/data licensing
-must be resolved before distribution.
+I will handle GitHub pushes and Vercel deployment myself. I also need to choose the
+final code and data licenses before a public release.
