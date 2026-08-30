@@ -296,5 +296,11 @@ I am developing and testing this project locally. I will handle GitHub pushes an
 eventual Vercel deployment myself; none of the project scripts publish or deploy the
 repository automatically.
 
+I allow all crawler access in [`robots.txt`](robots.txt). The comments there welcome
+people to explore, share, learn from, and build on the project, with credit appreciated
+but not required. That file is a discovery policy, not a substitute for a software or
+data license. When I build the Phase 7 site, I will make sure the deployed application
+serves the same policy at `/robots.txt`.
+
 I have not selected the final code or data license yet. Until I do, the repository
 should not be treated as granting reuse rights.

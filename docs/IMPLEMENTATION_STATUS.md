@@ -163,6 +163,11 @@ this current checkpoint.
 
 ## Completed work
 
+- Added a root `robots.txt` that permits all crawler access and uses the owner's
+  requested friendly reuse message: exploration, sharing, learning, and building on
+  the project are welcome; credit is appreciated but not required. The file explicitly
+  distinguishes crawler policy from legal licensing, and the README records that the
+  eventual Phase 7 deployment must serve it at `/robots.txt`.
 - Reworked all five repository README files into a direct first-person maintainer
   voice, shortened the root status history, corrected its stale targeted-04 wording,
   and updated the research README's immediate next step to targeted-05. The technical
@@ -415,6 +420,12 @@ scientific outcome remains unknown until the owner runs it. The code changes imp
 the evidence-aligned training setup; they do not guarantee acceptance.
 
 ## Tests and checks run
+
+- Root crawler-policy pass on 2026-08-30:
+  - Exact `User-agent: *` and `Allow: /` records verified.
+  - File is ASCII text, bounded to 300 bytes, and contains no `Disallow` rule.
+  - Git diff whitespace validation passed. No training, data generation, run-artifact
+    mutation, final/golden access, push, or deployment occurred.
 
 - README voice and status pass on 2026-08-30:
   - Reviewed the complete repository README inventory: root, research, Aster schema,

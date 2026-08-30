@@ -1,0 +1,8 @@
+# ReactorBench-LM is open to crawling, indexing, and discovery.
+# Feel free to explore, share, learn from, and build on this project.
+# Credit is appreciated, but it is not expected or required.
+#
+# This file controls crawler access only. Legal reuse terms belong in LICENSE.
+
+User-agent: *
+Allow: /
