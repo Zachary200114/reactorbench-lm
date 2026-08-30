@@ -1,7 +1,7 @@
 # Phase 6 remediation local runbook
 
-Status: **targeted-03 training/evaluation preserved; no-training gate replay certified
-9 of 10 checks and a scientific block**
+Status: **targeted-04 fault-margin remediation implemented and awaiting its first
+owner-operated run**
 Scope: v0.2 output reliability, v0.3 semantic learning, and v0.4 development-only
 generalization gates
 
@@ -126,7 +126,7 @@ NLL continued improving through step 2,000. This is a valid negative scientific 
 not an implementation failure. Do not delete, rename, resume, or edit this blocked run.
 See `docs/model/PHASE6_TARGETED02_DIAGNOSIS.md` for the exact ten-check table.
 
-The current corrected default configuration is:
+The preserved targeted-03 configuration and source evidence are:
 
 ```text
 configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-03.toml
@@ -149,15 +149,30 @@ unchanged scientific gate passes nine of ten checks and misses only fault-compar
 margin (`-0.0344200`, required `>= 0.02`). Do not delete that identity to rerun it.
 See `docs/model/PHASE6_TARGETED03_GATE_REPLAY.md` for exact metrics and checksums.
 
+The current default is the new, non-overwriting targeted-04 identity:
+
+```text
+configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml
+configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml
+runs/phase6-remediation-v0.4.0-targeted-04/
+```
+
+Targeted-04 has not been trained. It preserves the exact six-task hierarchical anchor
+and adds one distinct diagnosed-fault row, producing a seven-row batch with two fault
+rows and one row for every other task. The extra row rotates uniformly across
+diagnosed labels. Training remains 2,500 steps with the same architecture,
+optimization, 48/56/427 validation partition, calibration policy, and ten unchanged
+thresholds. See `docs/model/PHASE6_TARGETED04_PLAN.md`.
+
 Checkpoint consumers now return the model's actual parameter device after verifying
 that its device type and any explicitly requested index match. A real CPU/MPS or
 explicit-index mismatch still fails closed. The exact preserved checkpoint operation
 that failed was repeated read-only after the fix and decoded one validation example
 on `mps:0` without changing the checkpoint.
 
-The ordinary wrappers below still select the now-preserved targeted-03 identity.
-Targeted-01, targeted-02, and targeted-03 remain historical evidence and are not valid
-restart targets. The
+The ordinary wrappers and local monitor now select targeted-04. Targeted-01,
+targeted-02, and targeted-03 remain historical evidence and are not valid restart
+targets. The
 original run is bound to source
 commit `2aafcd1661ec7c3640a385621db171041532e547`, rerun 01 is bound to
 `034b41cca07b999f701850986a67a692b40d8c30`, and rerun 02 is bound to
@@ -216,7 +231,7 @@ if necessary; an optional foreground form is:
 caffeinate -i ./scripts/run_phase6_pipeline.sh
 ```
 
-The runner retains the frozen 16-stage interface. For targeted-03, preflight and the
+The runner retains the frozen 16-stage interface. For targeted-04, preflight and the
 four v0.2 stages verify the preserved rerun-02 manifest, completion prefix, outcomes,
 and all referenced artifacts by canonical contract, size, SHA-256, source, config,
 path containment, and non-symlink checks. The targeted configuration externally pins
@@ -229,13 +244,13 @@ when v0.3 passes, it runs the permitted v0.4 pilot, candidate, shadow evaluation
 policy freeze, and review-bundle stages. A failed scientific gate stops later work
 cleanly instead of weakening a threshold.
 
-Hierarchical v0.3 trains exactly one candidate from random initialization. Each
-six-row batch contains one row from every task. Continuation and next-action labels
-rotate uniformly. Fault draws preserve a 50% unresolved, 10% no-fault, and 40%
-diagnosed hierarchy, with diagnosed families rotating uniformly. This restores the
-task exposure lost in targeted-02 without flattening the heterogeneous fault labels.
-Model size, teacher-forced exposure, and every acceptance threshold are unchanged;
-training increases from 2,000 to 2,500 steps. Checkpoint selection uses the same
+Fault-boosted hierarchical v0.3 trains exactly one candidate from random
+initialization. Each seven-row batch retains one row from every task, then adds one
+distinct diagnosed-fault row. Continuation and next-action labels rotate uniformly.
+The anchor fault draw preserves a 50% unresolved, 10% no-fault, and 40% diagnosed
+hierarchy; the extra fault draw rotates uniformly across diagnosed families. Model
+size, teacher-forced exposure, 2,500 training steps, and every acceptance threshold
+are unchanged from targeted-03. Checkpoint selection uses the same
 target-independent 48-example subset as an eligibility check: semantic composite must
 reach 0.75, then lower validation NLL and earlier step choose the checkpoint. A separate
 target-independent 56-example validation subset is decoded only after selection to
@@ -351,8 +366,8 @@ when those fields are available. The machine-readable heartbeat and append-only 
 log are:
 
 ```text
-runs/phase6-remediation-v0.4.0-targeted-03/status.json
-runs/phase6-remediation-v0.4.0-targeted-03/progress.jsonl
+runs/phase6-remediation-v0.4.0-targeted-04/status.json
+runs/phase6-remediation-v0.4.0-targeted-04/progress.jsonl
 ```
 
 ### Optional local progress window
@@ -365,11 +380,11 @@ cd /Users/zachary/Documents/Personal-Projects/AI-transformer
 ./scripts/open_phase6_progress_gui.sh
 ```
 
-Opening the monitor does not start training. It identifies the fixed, preserved
-`phase6-remediation-v0.4.0-targeted-03` run, refreshes through the existing
+Opening the monitor does not start training. It identifies the fixed
+`phase6-remediation-v0.4.0-targeted-04` run, refreshes through the existing
 strictly validated status command, and exposes only controls allowed by verified run
-state. Start and Resume remain disabled for this terminal failed source run. The
-activity log
+state. Before the run exists, Readiness and Start are available; after creation,
+controls follow its strictly verified state. The activity log
 is bounded and non-scientific; the monitor never reads `status.json` or
 `progress.jsonl` directly and never changes their artifact contracts.
 

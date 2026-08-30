@@ -241,6 +241,7 @@ class CandidatePolicy(StrictConfigModel):
         "task_class_balanced",
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
+        "fault_boosted_hierarchical",
     ]
     exposure: Literal["teacher_forced_only"]
     enabled: Literal[True]
@@ -330,6 +331,7 @@ class CalibrationPolicy(StrictConfigModel):
         "0.3.1-targeted",
         "0.3.2-focused",
         "0.3.3-hierarchical",
+        "0.3.4-fault-boosted",
     ]
     calibration_example_limit: Literal[56]
     grid_start: StrictFloat
@@ -352,6 +354,7 @@ class TargetedV03Policy(StrictConfigModel):
         "0.3.1-targeted",
         "0.3.2-focused",
         "0.3.3-hierarchical",
+        "0.3.4-fault-boosted",
     ]
     sampling_metadata_required: Literal[True]
     calibration: CalibrationPolicy
@@ -408,6 +411,7 @@ class V03Config(StrictConfigModel):
         targeted = ("task_balanced", "task_class_balanced")
         focused = ("fault_continuation_focused",)
         hierarchical = ("hierarchical_task_label_balanced",)
+        fault_boosted = ("fault_boosted_hierarchical",)
         sampling = tuple(item.sampling for item in self.candidates)
         if self.targeted_policy is None and sampling != historical:
             raise ValueError("historical v0.3 freezes the control and task-balanced candidates")
@@ -431,8 +435,17 @@ class V03Config(StrictConfigModel):
             and sampling != hierarchical
         ):
             raise ValueError("hierarchical v0.3 requires exactly one hierarchical candidate")
+        if (
+            self.targeted_policy is not None
+            and self.targeted_policy.policy_version == "0.3.4-fault-boosted"
+            and sampling != fault_boosted
+        ):
+            raise ValueError("fault-boosted v0.3 requires exactly one fault-boosted candidate")
         if self.targeted_policy is not None:
-            hierarchical_policy = self.targeted_policy.policy_version == "0.3.3-hierarchical"
+            hierarchical_policy = self.targeted_policy.policy_version in {
+                "0.3.3-hierarchical",
+                "0.3.4-fault-boosted",
+            }
             hierarchical_selection = self.selection.metric == "semantic_floor_then_validation_nll"
             if hierarchical_policy != hierarchical_selection:
                 raise ValueError(

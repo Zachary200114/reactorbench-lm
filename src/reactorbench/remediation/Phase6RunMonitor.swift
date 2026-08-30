@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 private let applicationTitle = "ReactorBench-LM — Phase 6 Run Monitor"
-private let expectedRunName = "phase6-remediation-v0.4.0-targeted-03"
+private let expectedRunName = "phase6-remediation-v0.4.0-targeted-04"
 private let maximumHelperOutputBytes = 32 * 1024
 private let maximumActivityEntries = 100
 private let maximumActivityCharacters = 32 * 1024

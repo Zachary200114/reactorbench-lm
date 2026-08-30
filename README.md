@@ -48,6 +48,15 @@ is `0.1695906`; all pass. No final or golden evaluation was opened. Targeted-03 
 therefore a development-only scientific block, not another integrity failure. Phase 7
 remains blocked until a behaviorally acceptable checkpoint passes every threshold.
 
+Targeted-04 is now preregistered and implemented but has not been trained. It preserves
+the full six-task targeted-03 hierarchical batch and adds one distinct,
+label-balanced diagnosed-fault row per update. This doubles fault-family exposure
+without reducing exposure for any of the nine already-passing behaviors. It uses a
+new non-overwriting run identity, the same 2,500 optimizer steps, the same model and
+data boundaries, and all ten unchanged thresholds. The local Phase 6 monitor now
+targets this not-yet-created run, so its readiness and Start controls no longer point
+at immutable targeted-03 evidence.
+
 - The developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
   closed outside its strict contracts.
@@ -116,6 +125,7 @@ Measured Phase 4 evidence and exact hashes are recorded in
 [the Phase 6 remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md) and
 [the targeted-02 diagnosis](docs/model/PHASE6_TARGETED02_DIAGNOSIS.md) and
 [the targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md) and
+[the targeted-04 preregistration](docs/model/PHASE6_TARGETED04_PLAN.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
 ## Research question

@@ -937,6 +937,27 @@ def test_hierarchical_training_candidate_executes_and_binds_its_sampler(tmp_path
     assert binding.sampling_strategy == "hierarchical_task_label_balanced"
 
 
+def test_fault_boosted_training_candidate_executes_and_binds_its_sampler(
+    tmp_path: Path,
+) -> None:
+    examples = _examples(18)
+    result = _run(
+        tmp_path / "fault-boosted",
+        sampling="fault_boosted_hierarchical",
+        train_examples=examples,
+        sampling_metadata=_hierarchical_sampling_metadata(examples),
+        training=_training().model_copy(update={"batch_size": 7}),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    assert result.sampling_strategy == "fault_boosted_hierarchical"
+    binding = TargetedSamplingBinding.model_validate_json(
+        (tmp_path / "fault-boosted" / "states" / TARGETED_SAMPLING_BINDING_FILENAME).read_bytes(),
+        strict=True,
+    )
+    assert binding.contract_version == "0.3.4-fault-boosted"
+    assert binding.sampling_strategy == "fault_boosted_hierarchical"
+
+
 def test_device_resolution_has_explicit_fallback_and_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

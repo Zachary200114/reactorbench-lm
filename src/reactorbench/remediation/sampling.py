@@ -680,6 +680,102 @@ def hierarchical_task_label_balanced_batch_indices[RecordT: SamplingRecord](
     return indices
 
 
+def fault_boosted_hierarchical_batch_indices[RecordT: SamplingRecord](
+    records: tuple[RecordT, ...],
+    *,
+    metadata: tuple[SamplingMetadataRecord, ...],
+    batch_size: int,
+    seed: int,
+    step: int,
+) -> tuple[int, ...]:
+    """Choose the six-task hierarchical anchor plus one diagnosed-fault row.
+
+    The first six records are exactly the frozen v0.3.3 hierarchical batch: one
+    record from every task, including its 50/10/40 fault-tier schedule. The seventh
+    record rotates uniformly across diagnosed fault labels and their examples. This
+    doubles fault-task exposure without removing exposure from any already-passing
+    task or using validation outcomes, target text, or hidden simulator state.
+    """
+
+    batch_size = _bounded_integer(
+        batch_size, field_name="batch_size", minimum=7, maximum=7
+    )
+    seed = _bounded_integer(seed, field_name="seed", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    step = _bounded_integer(step, field_name="step", minimum=0, maximum=MAX_SAMPLING_INTEGER)
+    anchor = hierarchical_task_label_balanced_batch_indices(
+        records,
+        metadata=metadata,
+        batch_size=6,
+        seed=seed,
+        step=step,
+    )
+    by_task = _validated_inventory(records)
+    rows = _validated_sampling_metadata(metadata)
+    position_by_id = {
+        getattr(record, "example_id", None): index for index, record in enumerate(records)
+    }
+    if None in position_by_id or len(position_by_id) != len(records):
+        raise ValueError("sampling records must expose unique example_id values")
+    if set(position_by_id) != {row.example_id for row in rows}:
+        raise ValueError("sampling metadata does not exactly cover the tokenized inventory")
+    metadata_by_position: dict[int, SamplingMetadataRecord] = {}
+    for row in rows:
+        position = position_by_id[row.example_id]
+        if records[position].task_name is not row.task_name:
+            raise ValueError("sampling metadata task differs from tokenized record")
+        metadata_by_position[position] = row
+
+    diagnosed: dict[str, list[_ValidatedRecord]] = defaultdict(list)
+    for record in by_task[TaskName.FAULT_FAMILY]:
+        label = metadata_by_position[record.position].classification_label
+        if label is not None and label.startswith("DIAGNOSED:"):
+            diagnosed[label].append(record)
+    ordered_labels = tuple(
+        sorted(
+            diagnosed,
+            key=lambda value: (_rank("fault-boost-label", seed, value), value),
+        )
+    )
+    if not ordered_labels:
+        raise TaskBalancedSamplingError("fault-boosted sampler lacks diagnosed fault labels")
+    label = ordered_labels[step % len(ordered_labels)]
+    ordered_rows = _ordered_task_records(
+        tuple(diagnosed[label]), seed=seed, task_name=TaskName.FAULT_FAMILY
+    )
+    start = (step // len(ordered_labels)) % len(ordered_rows)
+    extra = next(
+        (
+            ordered_rows[(start + offset) % len(ordered_rows)]
+            for offset in range(len(ordered_rows))
+            if ordered_rows[(start + offset) % len(ordered_rows)].position not in anchor
+        ),
+        None,
+    )
+    if extra is None:
+        raise TaskBalancedSamplingError(
+            "fault-boosted sampler cannot select a distinct diagnosed row"
+        )
+    selected = (*anchor, extra.position)
+    if len(selected) != 7 or len(set(selected)) != 7:
+        raise TaskBalancedSamplingError("fault-boosted sampler violated its batch invariant")
+    return tuple(
+        sorted(
+            selected,
+            key=lambda position: (
+                _rank(
+                    "fault-boosted-batch-record",
+                    seed,
+                    str(step),
+                    records[position].task_name.value,
+                    str(position),
+                ),
+                records[position].task_name.value,
+                position,
+            ),
+        )
+    )
+
+
 __all__ = [
     "MAX_BATCH_SIZE",
     "MAX_GROUP_ID_UTF8_BYTES",
@@ -688,6 +784,7 @@ __all__ = [
     "SamplingMetadataRecord",
     "SamplingRecord",
     "TaskBalancedSamplingError",
+    "fault_boosted_hierarchical_batch_indices",
     "fault_continuation_focused_batch_indices",
     "hierarchical_task_label_balanced_batch_indices",
     "sampling_metadata_inventory_sha256",

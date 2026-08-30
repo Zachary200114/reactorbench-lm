@@ -3213,6 +3213,7 @@ def _run_training(
         "task_class_balanced",
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
+        "fault_boosted_hierarchical",
     ],
     model_config: TransformerConfig,
     training: RemediationTraining,
@@ -3254,6 +3255,7 @@ def _run_training(
             "task_class_balanced",
             "fault_continuation_focused",
             "hierarchical_task_label_balanced",
+            "fault_boosted_hierarchical",
         }
         else None
     )
@@ -3273,6 +3275,7 @@ def _run_training(
                     "task_class_balanced",
                     "fault_continuation_focused",
                     "hierarchical_task_label_balanced",
+                    "fault_boosted_hierarchical",
                 ],
                 sampling_strategy,
             ),
@@ -3369,6 +3372,7 @@ def _load_training_result(attempt: Path, candidate_id: str) -> CompactTrainingRe
         "task_class_balanced",
         "fault_continuation_focused",
         "hierarchical_task_label_balanced",
+        "fault_boosted_hierarchical",
     }:
         binding = load_targeted_sampling_binding(binding_path.parent)
         if (

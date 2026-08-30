@@ -20,6 +20,7 @@ from reactorbench.remediation.sampling import (
     SamplingMetadataRecord,
     SamplingRecord,
     TaskBalancedSamplingError,
+    fault_boosted_hierarchical_batch_indices,
     fault_continuation_focused_batch_indices,
     hierarchical_task_label_balanced_batch_indices,
     sampling_metadata_inventory_sha256,
@@ -250,7 +251,6 @@ def test_hierarchical_sampler_preserves_every_task_and_frozen_label_mix() -> Non
         Counter(records[index].task_name for index in batch) == Counter(TaskName)
         for batch in batches
     )
-
     metadata_by_id = {row.example_id: row for row in metadata}
     selected_labels: dict[TaskName, Counter[str]] = {
         task: Counter(
@@ -271,6 +271,66 @@ def test_hierarchical_sampler_preserves_every_task_and_frozen_label_mix() -> Non
     action_counts = tuple(selected_labels[TaskName.NEXT_ACTION].values())
     assert sum(action_counts) == 100
     assert max(action_counts) - min(action_counts) <= 1
+
+
+def test_fault_boosted_sampler_preserves_every_task_and_adds_diagnosed_fault() -> None:
+    records, metadata = _hierarchical_inventory()
+    batches = tuple(
+        fault_boosted_hierarchical_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=7,
+            seed=103,
+            step=step,
+        )
+        for step in range(90)
+    )
+    assert batches == tuple(
+        fault_boosted_hierarchical_batch_indices(
+            records,
+            metadata=metadata,
+            batch_size=7,
+            seed=103,
+            step=step,
+        )
+        for step in range(90)
+    )
+    metadata_by_id = {row.example_id: row for row in metadata}
+    diagnosed_extra = Counter[str]()
+    for batch in batches:
+        counts = Counter(records[index].task_name for index in batch)
+        expected = Counter(dict.fromkeys(TaskName, 1))
+        expected[TaskName.FAULT_FAMILY] = 2
+        assert counts == expected
+        assert len(set(batch)) == 7
+        fault_labels = [
+            cast(str, metadata_by_id[records[index].example_id].classification_label)
+            for index in batch
+            if records[index].task_name is TaskName.FAULT_FAMILY
+        ]
+        diagnosed_extra.update(label for label in fault_labels if label.startswith("DIAGNOSED:"))
+    assert set(diagnosed_extra) == {f"DIAGNOSED:FAULT_{index}" for index in range(9)}
+    assert max(diagnosed_extra.values()) - min(diagnosed_extra.values()) <= 10
+
+
+def test_fault_boosted_sampler_rejects_wrong_shape_and_missing_diagnosed_labels() -> None:
+    records, metadata = _hierarchical_inventory()
+    with pytest.raises(ValueError, match="batch_size"):
+        fault_boosted_hierarchical_batch_indices(
+            records, metadata=metadata, batch_size=6, seed=1, step=0
+        )
+    no_diagnosed = tuple(
+        row._replace(classification_label="UNRESOLVED")
+        if row.task_name is TaskName.FAULT_FAMILY
+        else row
+        for row in metadata
+    )
+    with pytest.raises(
+        TaskBalancedSamplingError, match=r"unsupported label tier|lacks diagnosed"
+    ):
+        fault_boosted_hierarchical_batch_indices(
+            records, metadata=no_diagnosed, batch_size=7, seed=1, step=0
+        )
 
 
 def test_hierarchical_sampler_rejects_non_frozen_batch_shape() -> None:
