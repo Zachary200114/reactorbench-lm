@@ -287,6 +287,10 @@ the evidence-aligned training setup; they do not guarantee acceptance.
   - Source and wheel distributions built successfully in a temporary directory. The
     isolated no-network wheel install and distribution-resource verifier passed,
     including both new targeted-02 configuration resources. Nothing was published.
+  - Clean-source targeted-02 dry run passed at source commit
+    `bdc86e2f3f40d3ab64885f706ce9f3a851ab9164`: configuration checksum
+    `12c5dd4b43eaf90c459990f2bd1cfe2e79b17fb12e72b74ce691bed97c67daeb`,
+    16 frozen stages, and no run creation.
   - The targeted-02 run directory remained absent throughout verification; no
     training, dataset generation, fresh-final access, push, or deployment occurred.
 
@@ -565,25 +569,26 @@ successfully.
   366fb8208a780fcc67a4de14911639a85576595f
 - Targeted-remediation implementation commit:
   `0e38874c83ad20a9af41547a959bd959c595278a`.
+- Focused targeted-02 implementation commit:
+  `bdc86e2f3f40d3ab64885f706ce9f3a851ab9164`.
 - Final verification and independent re-review disposition: ship, with no required
   corrections for targeted-01 preparation.
-- Focused targeted-02 remediation is awaiting its final local checkpoint commit;
-  verify every changed path and the final clean state with `git status`.
-- All four failed run directories are preserved; the rerun-03 and targeted-02 directories do not
-  exist.
+- Focused targeted-02 remediation is locally checkpointed; verify the final clean
+  state with `git status` before pushing or starting it.
+- All four failed run directories are preserved; the rerun-03 and targeted-02
+  directories do not exist.
 - No fresh-final executor, ledger, or result was created or accessed. The protected
   historical test-boundary mistake is separately disclosed above.
 - No push or deployment was performed during this work.
 
 ## Immediate next step
 
-Create the final local checkpoint commit, run the clean-source dry run, and confirm
-the tree is clean and the targeted-02 directory remains absent. Then open the local
-monitor, confirm it reports `Not started` and
-`phase6-remediation-v0.4.0-targeted-02`, optionally run the non-mutating readiness
-check, and press `Start new rerun` when ready to measure the preregistered targeted
-candidate. Do not resume or modify any preserved failed run. Passing remains unknown
-until that owner-operated run completes.
+Confirm the tree is clean and the targeted-02 directory remains absent. Push the
+local commits when ready, then open the local monitor and confirm it reports
+`Not started` and `phase6-remediation-v0.4.0-targeted-02`, optionally run the
+non-mutating readiness check, and press `Start new rerun` when ready to measure the
+preregistered targeted candidate. Do not resume or modify any preserved failed run.
+Passing remains unknown until that owner-operated run completes.
 
 ## Exact recommended next command after final handoff
 
