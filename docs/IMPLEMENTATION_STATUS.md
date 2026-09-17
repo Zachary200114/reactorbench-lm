@@ -54,6 +54,10 @@ targeted-06 training, final/golden access, push, or deployment occurred.
 - Official and diagnostic monitor JSON snapshots both verified `Not started`, the new
   fixed identities, 16 stages, and no run directory.
 - `git diff --check` passed.
+- Public documentation refresh: the root README is now a concise portfolio-facing
+  overview, `research/README.md` is an authority-aware research index, and
+  `docs/README_TEMPLATE.md` records the reusable section order and update checklist.
+  All local README links resolve; the two README/license contract tests pass.
 - A distribution build could not be repeated because the restricted environment had
   no cached `hatchling` and could not reach PyPI. Source package-resource tests passed;
   no dependency was installed and no project artifact was written.
@@ -258,6 +262,11 @@ this current checkpoint.
 
 ## Completed work
 
+- Rebuilt the root README around the project claim, from-scratch implementation,
+  current measured evidence, reproducible entry points, scientific boundaries, and
+  roadmap. Reworked the research README into a navigable specification index and
+  added a reusable maintenance template so future status/results can be added or
+  removed without copying the full experiment history into the front page.
 - Added the D-093 diagnostic full-sweep development mode so one owner-operated run can
   collect both v0.3 and v0.4 model-quality failures. It uses a separate config/run
   identity, distinct `scientific_failed` and `diagnostic_completed` states, a two-gate
@@ -863,6 +872,8 @@ successfully.
   docs/model/PHASE6_V03_COUNTERFACTUAL_CAP.json
 - Owner instructions:
   docs/model/PHASE6_REMEDIATION_RUNBOOK.md
+- README maintenance template:
+  docs/README_TEMPLATE.md
 - Local GUI launcher:
   scripts/open_phase6_progress_gui.sh
 - Closed native-controller bridge:
