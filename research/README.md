@@ -103,10 +103,13 @@ thermal throttling, so I keep it as an explicit limitation.
 
 ## What comes next
 
-My immediate next step is to run the targeted-05 development experiment locally. It
-keeps the existing acceptance thresholds and uses the task-weighted training and
-checkpoint selection policy documented in
-`../docs/model/PHASE6_TARGETED05_PLAN.md`. I will not start Phase 7 until a candidate
+My immediate next step is to run the targeted-06 development experiment locally.
+Targeted-05 reached v0.4 and exposed both a remaining fault-margin miss and a
+shadow-target cap defect. Targeted-06 keeps every acceptance threshold, adds bounded
+fault emphasis, carries the weighted hierarchy into v0.4 with a six-row main batch and
+1/2/4/6 MPS pilot, uses validation-only calibration, and audits shadow-target
+reachability before training. The exact policy is documented in
+`../docs/model/PHASE6_TARGETED06_PLAN.md`. I will not start Phase 7 until a candidate
 passes the frozen development gates and the separate final-evaluation prerequisites
 are ready.
 

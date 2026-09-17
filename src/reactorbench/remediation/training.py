@@ -97,6 +97,7 @@ type SamplingStrategy = Literal[
     "hierarchical_task_label_balanced",
     "fault_boosted_hierarchical",
     "task_weighted_hierarchical",
+    "fault_emphasis_hierarchical",
 ]
 type EvaluationCallback = Callable[[TransformerLM, int, float], float]
 type ProgressCallback = Callable[["TrainingProgress"], None]
@@ -117,6 +118,7 @@ class TargetedSamplingBinding(ContractModel):
         "0.3.3-hierarchical",
         "0.3.4-fault-boosted",
         "0.3.5-task-weighted",
+        "0.3.6-fault-emphasis",
     ]
     sampling_strategy: Literal[
         "task_class_balanced",
@@ -124,6 +126,7 @@ class TargetedSamplingBinding(ContractModel):
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
         "task_weighted_hierarchical",
+        "fault_emphasis_hierarchical",
     ]
     candidate_id: CandidateId
     training_config_sha256: Sha256
@@ -140,6 +143,7 @@ class TargetedSamplingBinding(ContractModel):
             "hierarchical_task_label_balanced": "0.3.3-hierarchical",
             "fault_boosted_hierarchical": "0.3.4-fault-boosted",
             "task_weighted_hierarchical": "0.3.5-task-weighted",
+            "fault_emphasis_hierarchical": "0.3.6-fault-emphasis",
         }[self.sampling_strategy]
         if self.contract_version != expected_version:
             raise ValueError("targeted sampling binding version differs from its strategy")
@@ -164,6 +168,7 @@ def bind_targeted_sampling(
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
         "task_weighted_hierarchical",
+        "fault_emphasis_hierarchical",
     ] = "task_class_balanced",
 ) -> TargetedSamplingBinding:
     """Create the checksum-bound sidecar without altering legacy artifacts."""
@@ -175,6 +180,7 @@ def bind_targeted_sampling(
             "hierarchical_task_label_balanced": "0.3.3-hierarchical",
             "fault_boosted_hierarchical": "0.3.4-fault-boosted",
             "task_weighted_hierarchical": "0.3.5-task-weighted",
+            "fault_emphasis_hierarchical": "0.3.6-fault-emphasis",
         }[sampling_strategy],
         sampling_strategy=sampling_strategy,
         candidate_id=candidate_id,
@@ -598,6 +604,7 @@ def _validated_sampling_strategy(value: object) -> SamplingStrategy:
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
         "task_weighted_hierarchical",
+        "fault_emphasis_hierarchical",
     }:
         raise ValueError("sampling_strategy is not supported")
     return cast(SamplingStrategy, value)
@@ -609,13 +616,16 @@ def task_weighted_supervised_causal_loss(
     attention_mask: Tensor,
     target_mask: Tensor,
     task_names: tuple[TaskName, ...],
+    *,
+    fault_weight: float = 2.0,
+    continuation_weight: float = 2.0,
 ) -> Tensor:
     """Weight fault and continuation target tokens without changing class sampling.
 
-    The exact targeted-05 objective doubles only the two development tasks that
-    missed across targeted-03/04.  It preserves the hierarchical sampler's
-    unresolved/no-fault/diagnosed mix and normalizes by the active weighted-token
-    mass, so padding and prompt tokens never affect the objective.
+    Targeted-05 uses the default 2/2 weights. Targeted-06 freezes 3/2 for fault and
+    continuation. Both preserve the hierarchical sampler's unresolved/no-fault/
+    diagnosed mix and normalize by active weighted-token mass, so padding and prompt
+    tokens never affect the objective.
     """
 
     if type(model) is not TransformerLM:
@@ -638,9 +648,21 @@ def task_weighted_supervised_causal_loss(
         shifted.target_ids.reshape(-1),
         reduction="none",
     ).view_as(shifted.target_ids)
+    if (
+        type(fault_weight) is not float
+        or type(continuation_weight) is not float
+        or not math.isfinite(fault_weight)
+        or not math.isfinite(continuation_weight)
+        or not 1.0 <= continuation_weight <= fault_weight <= 4.0
+    ):
+        raise ValueError("weighted objective weights are outside the frozen safe range")
     row_weights = torch.tensor(
         [
-            2.0 if task_name in {TaskName.FAULT_FAMILY, TaskName.CONTINUE_LOG} else 1.0
+            fault_weight
+            if task_name is TaskName.FAULT_FAMILY
+            else continuation_weight
+            if task_name is TaskName.CONTINUE_LOG
+            else 1.0
             for task_name in task_names
         ],
         dtype=losses.dtype,
@@ -1523,6 +1545,7 @@ def train_compact_model(
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
         "task_weighted_hierarchical",
+        "fault_emphasis_hierarchical",
     }
     if sampling_strategy in metadata_aware_strategies:
         if type(sampling_metadata) is not tuple:
@@ -1610,6 +1633,7 @@ def train_compact_model(
                     "hierarchical_task_label_balanced",
                     "fault_boosted_hierarchical",
                     "task_weighted_hierarchical",
+                    "fault_emphasis_hierarchical",
                 ],
                 sampling_strategy,
             ),
@@ -1826,13 +1850,20 @@ def train_compact_model(
             )
             scored_target_tokens += int(target_mask[:, 1:].sum().item())
             optimizer.zero_grad(set_to_none=True)
-            if sampling_strategy == "task_weighted_hierarchical":
+            if sampling_strategy in {
+                "task_weighted_hierarchical",
+                "fault_emphasis_hierarchical",
+            }:
                 loss = task_weighted_supervised_causal_loss(
                     model,
                     input_ids.to(device),
                     attention_mask.to(device),
                     target_mask.to(device),
                     tuple(item.task_name for item in batch),
+                    fault_weight=(
+                        3.0 if sampling_strategy == "fault_emphasis_hierarchical" else 2.0
+                    ),
+                    continuation_weight=2.0,
                 )
             else:
                 loss = supervised_causal_loss(

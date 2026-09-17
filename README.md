@@ -34,11 +34,20 @@ Targeted-04 has now run and is preserved as another honest negative result. Its 
 diagnosed-fault sampling overcorrected the class balance: eight of ten checks passed,
 fault margin fell to `-0.072348`, and continuation macro-F1 fell to `0.893333`.
 
-The next run is targeted-05. I restored the balanced hierarchical sampler, added extra
-loss weight to fault-family and continuation targets, and made checkpoint selection
-require task-level development scores rather than relying only on an aggregate score.
-The implementation is verified and ready to run, but I have not trained targeted-05
-yet. All ten thresholds remain unchanged.
+Targeted-05 then reached v0.4 shadow evaluation in a diagnostic sweep. Its v0.3 model
+passed nine of ten unchanged checks and missed only fault-comparator margin
+(`-0.003280`, required `>= 0.02`). The partial v0.4 IID evaluation passed eight of
+ten, missing fault margin and calibration. The run later exposed an engineering
+boundary: six composition counterfactual targets needed up to 230 tokens but the old
+shadow cap was 108. I preserved that failed run unchanged.
+
+The next run is targeted-06. It increases only fault target weight, carries the
+hierarchical weighted objective into v0.4 with its required six-row batch, verifies
+that batch in a 1/2/4/6 MPS pilot, applies disjoint validation-only temperature scaling
+there, and audits a shadow-only 256-token counterfactual cap before training. The
+diagnostic option can also continue after an isolated shadow-view boundary failure so
+one run can reveal the remaining independent view failures. All ten scientific
+thresholds remain unchanged, and targeted-06 has not been trained.
 
 - My developmental Aster Station generator covers G01–G15 across immutable fictional
   Aster-A/B/C cards, separates latent truth from observations and events, and fails
@@ -92,8 +101,11 @@ yet. All ten thresholds remain unchanged.
   no-training gate replay passes nine of ten checks, missing only fault margin.
   Targeted-04's diagnosed-only oversampling regressed to eight of ten: fault margin
   fell to -0.072348 and continuation macro-F1 to 0.893333. The result is preserved;
-  targeted-05 now restores hierarchical class balance, applies a task-weighted
-  objective, and adds disjoint task-level checkpoint floors. It has not been trained.
+  Targeted-05 restored hierarchical class balance and reached v0.4, where its
+  diagnostic run exposed the shadow-cap defect after the v0.3 candidate passed 9/10
+  checks. Targeted-06 is now the unrun, non-overwriting remediation: fault-emphasis
+  weighting, the same policy in v0.4, validation-only calibration, and a pre-training
+  shadow-cap audit.
 
 This is a real test-generalization result, but it is a negative one. I found that low
 teacher-forced NLL did not translate into reliable free-running structured output. I
@@ -113,6 +125,7 @@ Measured Phase 4 evidence and exact hashes are recorded in
 [the targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md) and
 [the targeted-04 preregistration](docs/model/PHASE6_TARGETED04_PLAN.md) and
 [the targeted-05 diagnosis and preregistration](docs/model/PHASE6_TARGETED05_PLAN.md) and
+[the targeted-06 remediation plan](docs/model/PHASE6_TARGETED06_PLAN.md) and
 [the diagnostic full-sweep contract](docs/model/PHASE6_DIAGNOSTIC_SWEEP.md) and
 [the resumable implementation handoff](docs/IMPLEMENTATION_STATUS.md).
 
@@ -250,7 +263,7 @@ window:
 The window is an owner testing utility, not the Phase 7 public interface. Opening or
 closing it does not start or kill training; Start, cooperative safe stop, and Resume
 remain confirmation-gated and preserve existing run evidence. Its selector switches
-between the official fail-fast targeted-05 run and a separate diagnostic full sweep.
+between the official fail-fast targeted-06 run and a separate diagnostic full sweep.
 The diagnostic run continues only through the two allowlisted scientific gate misses,
 then produces a combined failure report; code, integrity, provenance, resource, and
 safety failures still stop it. It can never certify the model, unlock final evaluation,
@@ -285,6 +298,7 @@ The exact diagnostic boundary and commands are in
 - [Phase 6 main evaluation and negative result](docs/model/PHASE6_MAIN.md)
 - [Phase 6 three-iteration remediation plan](docs/model/PHASE6_REMEDIATION_PLAN.md)
 - [Phase 6 targeted-03 gate replay](docs/model/PHASE6_TARGETED03_GATE_REPLAY.md)
+- [Phase 6 targeted-06 remediation plan](docs/model/PHASE6_TARGETED06_PLAN.md)
 - [Phase 6 remediation local runbook](docs/model/PHASE6_REMEDIATION_RUNBOOK.md)
 - [Phase 6 diagnostic full sweep](docs/model/PHASE6_DIAGNOSTIC_SWEEP.md)
 - [Phase 3 dataset card](docs/data/DATASET_CARD.md)

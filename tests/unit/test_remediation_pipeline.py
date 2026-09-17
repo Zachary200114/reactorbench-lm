@@ -101,6 +101,66 @@ HASH_D = "d" * 64
 HASH_E = "e" * 64
 
 
+def test_shadow_generation_cap_audit_checks_every_target_before_training(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    examples = (
+        SimpleNamespace(
+            example_id="shadow-a",
+            view=RemediationView.SHADOW_COUNTERFACTUAL,
+            task_name=TaskName.COUNTERFACTUAL_COMPARE,
+            compact_target="short",
+        ),
+        SimpleNamespace(
+            example_id="shadow-b",
+            view=RemediationView.SHADOW_COUNTERFACTUAL,
+            task_name=TaskName.COUNTERFACTUAL_COMPARE,
+            compact_target="long-target",
+        ),
+    )
+    dataset = SimpleNamespace(
+        examples=examples,
+        manifest=SimpleNamespace(checksum_sha256=HASH_A),
+    )
+
+    class _Tokenizer:
+        manifest = SimpleNamespace(checksum_sha256=HASH_B)
+
+        @staticmethod
+        def encode(text: str, *, add_bos: bool, add_eos: bool) -> list[int]:
+            assert add_bos is False
+            assert add_eos is True
+            return list(range(len(text) + 1))
+
+    inputs = SimpleNamespace(
+        shadow_generation_caps={TaskName.COUNTERFACTUAL_COMPARE: 12},
+        tokenizer=_Tokenizer(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compact_serialized_parts",
+        lambda example: ("prompt", example.compact_target),
+    )
+
+    report = pipeline._audit_shadow_generation_caps(
+        cast(SafeDevelopmentDataset, dataset),
+        cast(pipeline._ExecutionInputs, inputs),
+    )
+
+    assert report.example_count == 2
+    assert report.measurements[0].maximum_target_tokens == 12
+    assert report.violating_example_ids == ()
+    assert report.passed is True
+
+    inputs.shadow_generation_caps[TaskName.COUNTERFACTUAL_COMPARE] = 11
+    failed = pipeline._audit_shadow_generation_caps(
+        cast(SafeDevelopmentDataset, dataset),
+        cast(pipeline._ExecutionInputs, inputs),
+    )
+    assert failed.violating_example_ids == ("shadow-b",)
+    assert failed.passed is False
+
+
 def test_semantic_checkpoint_selector_uses_floor_before_validation_nll() -> None:
     root = Path(__file__).resolve().parents[2]
     historical = load_v03_config(
@@ -778,6 +838,14 @@ def _pilot_report(
     return pipeline._bound_model(draft, pipeline.V04PilotReport)
 
 
+def test_v04_targeted_pilot_accepts_hierarchy_compatible_batch_matrix() -> None:
+    report = _pilot_report((1, 2, 4, 6))
+
+    assert report.passed is True
+    assert tuple(item.batch_size for item in report.measurements) == (1, 2, 4, 6)
+    assert report.mandatory_batch_resolved_device == "mps"
+
+
 def test_v04_candidate_training_refuses_incomplete_and_cpu_fallback_pilots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -849,7 +917,7 @@ def test_v04_candidate_training_refuses_incomplete_and_cpu_fallback_pilots(
     assert mixed_device_pilot.measurements[0].device.resolved == "cpu"
     assert mixed_device_pilot.measurements[-1].device.resolved == "mps"
     assert mixed_device_pilot.passed is False
-    with pytest.raises(ValidationError, match="batches 1, 2, and 4"):
+    with pytest.raises(ValidationError, match="unsupported batch matrix"):
         _pilot_report((1, 2))
 
     legacy_measurement = complete_pilot.measurements[0].model_dump(mode="python")
@@ -2479,6 +2547,79 @@ def test_v04_evaluation_compares_control_and_variant_on_full_iid_and_all_shadows
     assert len(index.candidates) == 2
     assert index.selected_candidate_id == "control"
 
+    diagnostic_config = config.model_copy(
+        update={"diagnostic_mode": "collect_scientific_failures"}
+    )
+    diagnostic_runtime = pipeline._PipelineRuntime(
+        project_root=tmp_path,
+        config=diagnostic_config,
+        source_commit=SOURCE_COMMIT,
+        inputs=cast(pipeline._ExecutionInputs, inputs),
+    )
+    monkeypatch.setattr(diagnostic_runtime, "_start", lambda _context: SOURCE_COMMIT)
+    monkeypatch.setattr(diagnostic_runtime, "_finish", lambda _context, outcome: outcome)
+    monkeypatch.setattr(diagnostic_runtime, "_v04_checkpoint", runtime._v04_checkpoint)
+    evaluation_calls.clear()
+    written.clear()
+
+    def evaluate_with_one_isolated_failure(
+        *_args: object,
+        **kwargs: object,
+    ) -> tuple[object, None, tuple[object], tuple[()]]:
+        model = cast(SimpleNamespace, kwargs["model"])
+        view = cast(RemediationView, kwargs["view"])
+        examples = cast(tuple[object, ...], kwargs["evaluation_examples"])
+        evaluation_calls.append((model.config.context_length, view, len(examples)))
+        if (
+            model.config.context_length == 512
+            and view is RemediationView.SHADOW_COMPONENT
+        ):
+            raise ValueError("sensitive internal detail must not be persisted")
+        score = 0.8 if model.config.context_length == 512 else 0.7
+        checksum = hashlib.sha256(repr(evaluation_calls[-1]).encode()).hexdigest()
+        return (
+            SimpleNamespace(
+                checksum_sha256=checksum,
+                view_metrics=SimpleNamespace(),
+                score=score,
+            ),
+            None,
+            (SimpleNamespace(score=score),),
+            (),
+        )
+
+    monkeypatch.setattr(
+        pipeline,
+        "_evaluate_candidate_view",
+        evaluate_with_one_isolated_failure,
+    )
+    progress_messages: list[str] = []
+    diagnostic_context = cast(
+        StageContext,
+        SimpleNamespace(
+            progress=SimpleNamespace(
+                report=lambda **kwargs: progress_messages.append(kwargs["message"])
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="collected isolated boundary failures"):
+        diagnostic_runtime.v04_shadow_evaluation(diagnostic_context)
+
+    control_views = tuple(
+        view for context_length, view, _count in evaluation_calls if context_length == 512
+    )
+    assert control_views == (RemediationView.IID_VALIDATION, *SHADOW_VIEWS)
+    failure_reports = tuple(
+        model for name, model in written if name == "v04-diagnostic-view-failures.json"
+    )
+    assert len(failure_reports) == 1
+    failure_report = cast(pipeline.DiagnosticViewFailureReport, failure_reports[0])
+    assert tuple(item.view for item in failure_report.failures) == (
+        RemediationView.SHADOW_COMPONENT,
+    )
+    assert "sensitive internal detail" not in failure_report.model_dump_json()
+    assert progress_messages
+
 
 def test_public_pipeline_contracts_are_explicitly_exported() -> None:
     required = {
@@ -3621,6 +3762,11 @@ def test_v04_gate_and_complete_review_publish_bound_development_evidence(
         pipeline,
         "_require_semantic_report_scope",
         lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_reconstruct_saved_semantic_evaluation",
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         pipeline,
@@ -5375,7 +5521,10 @@ def test_contract_validators_reject_semantic_and_checksum_drift(tmp_path: Path) 
     reject(pilot, pipeline.V04PilotReport, "D-073", prompt_truncation_rate=0.5)
     reject(pilot, pipeline.V04PilotReport, "activation", activated=False)
     reject(
-        pilot, pipeline.V04PilotReport, "batches 1, 2, and 4", measurements=pilot.measurements[:2]
+        pilot,
+        pipeline.V04PilotReport,
+        "unsupported batch matrix",
+        measurements=pilot.measurements[:2],
     )
     reject(pilot, pipeline.V04PilotReport, "checksum", checksum_sha256=HASH_A)
     inactive_pilot_draft = pipeline.V04PilotReport.model_construct(

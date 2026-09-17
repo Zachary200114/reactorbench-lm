@@ -181,6 +181,37 @@ def test_task_weighted_objective_doubles_only_fault_and_continuation_target_mass
     assert torch.allclose(observed, (2.0 * fault + action) / 3.0)
 
 
+def test_fault_emphasis_objective_uses_frozen_three_two_one_weights() -> None:
+    first, second, third = _examples(3)
+    batch = (
+        replace(first, task_name=TaskName.FAULT_FAMILY),
+        replace(second, task_name=TaskName.CONTINUE_LOG),
+        replace(third, task_name=TaskName.NEXT_ACTION),
+    )
+    input_ids, attention_mask, target_mask = compact_batch_tensors(batch, context_length=8)
+    model = initialized_model(_model_config(), vocab_size=512, seed=42)
+    model.eval()
+    observed = task_weighted_supervised_causal_loss(
+        model,
+        input_ids,
+        attention_mask,
+        target_mask,
+        tuple(item.task_name for item in batch),
+        fault_weight=3.0,
+        continuation_weight=2.0,
+    )
+    losses = tuple(
+        supervised_causal_loss(
+            model,
+            input_ids[index : index + 1],
+            attention_mask[index : index + 1],
+            target_mask[index : index + 1],
+        )
+        for index in range(3)
+    )
+    assert torch.allclose(observed, (3.0 * losses[0] + 2.0 * losses[1] + losses[2]) / 6.0)
+
+
 def test_task_weighted_objective_rejects_malformed_boundaries() -> None:
     batch = _examples(2)
     input_ids, attention_mask, target_mask = compact_batch_tensors(batch, context_length=8)
@@ -1059,6 +1090,31 @@ def test_task_weighted_training_candidate_executes_and_binds_its_objective(
     payload["checksum_sha256"] = "0" * 64
     with pytest.raises(ValidationError, match="checksum mismatch"):
         TargetedSamplingBinding.model_validate(payload)
+
+
+def test_fault_emphasis_training_candidate_executes_and_binds_its_objective(
+    tmp_path: Path,
+) -> None:
+    examples = _examples(18)
+    result = _run(
+        tmp_path / "fault-emphasis",
+        sampling="fault_emphasis_hierarchical",
+        train_examples=examples,
+        sampling_metadata=_hierarchical_sampling_metadata(examples),
+    )
+    assert isinstance(result, CompactTrainingResult)
+    assert result.sampling_strategy == "fault_emphasis_hierarchical"
+    binding = TargetedSamplingBinding.model_validate_json(
+        (
+            tmp_path
+            / "fault-emphasis"
+            / "states"
+            / TARGETED_SAMPLING_BINDING_FILENAME
+        ).read_bytes(),
+        strict=True,
+    )
+    assert binding.contract_version == "0.3.6-fault-emphasis"
+    assert binding.sampling_strategy == "fault_emphasis_hierarchical"
 
 
 def test_device_resolution_has_explicit_fallback_and_error(

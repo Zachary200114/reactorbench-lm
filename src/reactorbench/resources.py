@@ -129,11 +129,30 @@ def phase6_remediation_task_weighted_v03_config_resource() -> Traversable:
     )
 
 
+def phase6_remediation_fault_emphasis_v03_config_resource() -> Traversable:
+    """Return the reviewed fault-emphasis v0.3 remediation configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-v0.3.6-fault-emphasis.toml",
+        directory=False,
+    )
+
+
 def phase6_remediation_v04_config_resource() -> Traversable:
     """Return the reviewed Phase 6 v0.4 generalization configuration."""
 
     return _reviewed_resource(
         "configs", "experiments", "phase6-remediation-v0.4.0.toml", directory=False
+    )
+
+
+def phase6_remediation_targeted_v04_config_resource() -> Traversable:
+    """Return the reviewed calibrated/cap-audited v0.4 configuration."""
+
+    return _reviewed_resource(
+        "configs", "experiments", "phase6-remediation-v0.4.1.toml", directory=False
     )
 
 
@@ -210,6 +229,28 @@ def phase6_remediation_diagnostic_pipeline_config_resource() -> Traversable:
         "configs",
         "experiments",
         "phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml",
+        directory=False,
+    )
+
+
+def phase6_remediation_fault_emphasis_pipeline_config_resource() -> Traversable:
+    """Return the reviewed targeted-06 official pipeline configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-pipeline-v0.4.1-targeted-06.toml",
+        directory=False,
+    )
+
+
+def phase6_remediation_fault_emphasis_diagnostic_config_resource() -> Traversable:
+    """Return the reviewed targeted-06 diagnostic pipeline configuration."""
+
+    return _reviewed_resource(
+        "configs",
+        "experiments",
+        "phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml",
         directory=False,
     )
 
@@ -309,6 +350,9 @@ __all__ = [
     "phase6_remediation_diagnostic_pipeline_config_resource",
     "phase6_remediation_fault_boosted_pipeline_config_resource",
     "phase6_remediation_fault_boosted_v03_config_resource",
+    "phase6_remediation_fault_emphasis_diagnostic_config_resource",
+    "phase6_remediation_fault_emphasis_pipeline_config_resource",
+    "phase6_remediation_fault_emphasis_v03_config_resource",
     "phase6_remediation_final_dataset_config_resource",
     "phase6_remediation_focused_pipeline_config_resource",
     "phase6_remediation_focused_v03_config_resource",
@@ -319,6 +363,7 @@ __all__ = [
     "phase6_remediation_script_resource",
     "phase6_remediation_targeted_pipeline_config_resource",
     "phase6_remediation_targeted_v03_config_resource",
+    "phase6_remediation_targeted_v04_config_resource",
     "phase6_remediation_task_weighted_pipeline_config_resource",
     "phase6_remediation_task_weighted_v03_config_resource",
     "phase6_remediation_v02_config_resource",

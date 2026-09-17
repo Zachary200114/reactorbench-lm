@@ -37,6 +37,9 @@ FOCUSED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.2-focused
 HIERARCHICAL_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.3-hierarchical.toml"
 FAULT_BOOSTED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml"
 TASK_WEIGHTED_V03_PATH = ROOT / "configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml"
+FAULT_EMPHASIS_V03_PATH = (
+    ROOT / "configs/experiments/phase6-remediation-v0.3.6-fault-emphasis.toml"
+)
 TARGETED_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-01.toml"
 )
@@ -55,7 +58,15 @@ TASK_WEIGHTED_PIPELINE_PATH = (
 DIAGNOSTIC_PIPELINE_PATH = (
     ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml"
 )
+FAULT_EMPHASIS_PIPELINE_PATH = (
+    ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06.toml"
+)
+FAULT_EMPHASIS_DIAGNOSTIC_PIPELINE_PATH = (
+    ROOT
+    / "configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml"
+)
 V04_PATH = ROOT / "configs/experiments/phase6-remediation-v0.4.0.toml"
+V04_TARGETED_PATH = ROOT / "configs/experiments/phase6-remediation-v0.4.1.toml"
 
 
 def _raw(path: Path) -> dict[str, Any]:
@@ -327,6 +338,52 @@ def test_diagnostic_pipeline_has_a_separate_identity_and_preserves_official_hash
     changed["run_name"] = "unsafe-diagnostic-name"
     with pytest.raises(ValidationError, match="exact non-overwriting run identity"):
         PipelineConfig.model_validate(changed)
+
+
+def test_fault_emphasis_and_v04_remediation_are_versioned_without_lowering_thresholds() -> None:
+    v03 = load_v03_config(FAULT_EMPHASIS_V03_PATH)
+    v04 = load_v04_config(V04_TARGETED_PATH)
+    official = PipelineConfig.model_validate(_raw(FAULT_EMPHASIS_PIPELINE_PATH))
+    diagnostic = PipelineConfig.model_validate(_raw(FAULT_EMPHASIS_DIAGNOSTIC_PIPELINE_PATH))
+
+    assert tuple(item.sampling for item in v03.candidates) == (
+        "fault_emphasis_hierarchical",
+    )
+    assert v03.targeted_policy is not None
+    assert v03.targeted_policy.policy_version == "0.3.6-fault-emphasis"
+    assert v03.selection.minimum_fault_margin == 0.02
+    assert v03.selection.minimum_continuation_macro_f1 == 0.9
+    assert v03.selection.maximum_expected_calibration_error == 0.15
+    assert config_sha256(v03) == (
+        "f15c9f77450fb038c86243890d25a7eb426d35dd7fb47470cbfebeb911773e8b"
+    )
+    assert v04.iteration_version == "0.4.1"
+    assert v04.targeted_remediation_policy == "0.4.1-calibrated-cap-audited"
+    assert v04.shadow_counterfactual_generation_cap == 256
+    assert v04.training.batch_size == 6
+    assert v04.pilot.pilot_version == "0.4.1"
+    assert v04.pilot.batch_sizes == (1, 2, 4, 6)
+    assert official.run_name == "phase6-remediation-v0.4.1-targeted-06"
+    assert official.v03_config_sha256 == config_sha256(v03)
+    assert official.v04_config_sha256 == config_sha256(v04)
+    assert diagnostic.run_name == "phase6-remediation-v0.4.1-targeted-06-diagnostic-02"
+    assert diagnostic.diagnostic_mode == "collect_scientific_failures"
+    assert diagnostic.reuse_v02_prefix == official.reuse_v02_prefix
+
+    changed = _raw(V04_TARGETED_PATH)
+    changed["shadow_counterfactual_generation_cap"] = 255
+    with pytest.raises(ValidationError, match="frozen cap and six-row MPS policy"):
+        V04Config.model_validate(changed)
+
+    changed = _raw(V04_TARGETED_PATH)
+    changed["training"]["batch_size"] = 4
+    with pytest.raises(ValidationError, match="frozen cap and six-row MPS policy"):
+        V04Config.model_validate(changed)
+
+    changed = _raw(V04_TARGETED_PATH)
+    changed["pilot"]["batch_sizes"] = [1, 2, 4]
+    with pytest.raises(ValidationError, match="batch-size matrix"):
+        V04Config.model_validate(changed)
 
 
 def test_task_weighted_objective_and_selection_cannot_be_decoupled() -> None:

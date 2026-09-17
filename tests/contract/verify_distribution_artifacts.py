@@ -69,8 +69,15 @@ def _expected_resource_files() -> dict[str, bytes]:
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml": (
             ROOT / "configs" / "experiments" / "phase6-remediation-v0.3.5-task-weighted.toml"
         ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/"
+        "phase6-remediation-v0.3.6-fault-emphasis.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-v0.3.6-fault-emphasis.toml"
+        ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-v0.4.0.toml": (
             ROOT / "configs" / "experiments" / "phase6-remediation-v0.4.0.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-v0.4.1.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-v0.4.1.toml"
         ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/phase6-remediation-pipeline-v0.4.0.toml": (
             ROOT / "configs" / "experiments" / "phase6-remediation-pipeline-v0.4.0.toml"
@@ -106,6 +113,17 @@ def _expected_resource_files() -> dict[str, bytes]:
         f"{PACKAGE_DATA_PREFIX}/configs/experiments/"
         "phase6-remediation-pipeline-v0.4.0-targeted-05.toml": (
             ROOT / "configs" / "experiments" / "phase6-remediation-pipeline-v0.4.0-targeted-05.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/"
+        "phase6-remediation-pipeline-v0.4.1-targeted-06.toml": (
+            ROOT / "configs" / "experiments" / "phase6-remediation-pipeline-v0.4.1-targeted-06.toml"
+        ).read_bytes(),
+        f"{PACKAGE_DATA_PREFIX}/configs/experiments/"
+        "phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml": (
+            ROOT
+            / "configs"
+            / "experiments"
+            / "phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml"
         ).read_bytes(),
         f"{PACKAGE_DATA_PREFIX}/docs/model/PHASE6_REMEDIATION_RUNBOOK.md": (
             ROOT / "docs" / "model" / "PHASE6_REMEDIATION_RUNBOOK.md"

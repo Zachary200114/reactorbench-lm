@@ -1,30 +1,68 @@
 # ReactorBench-LM implementation status
 
-Last updated: 2026-08-30 America/New_York
+Last updated: 2026-09-17 America/Chicago
 
-Current phase: **Phase 6 targeted-05 diagnostic full-sweep workflow implemented,
-verified, and ready for its first owner-operated run**
+Current phase: **Phase 6 targeted-06 threshold remediation and diagnostic continuation
+implemented and source-verified; no targeted-06 run started**
 
-Current objective: let the owner select the verified, non-overwriting diagnostic full
-sweep in the local monitor and collect all model-quality misses without rerunning after
-each scientific gate. Keep the official targeted-05 path fail-fast. Do not resume or
-overwrite targeted-04, lower any threshold, open final/golden evaluation, or begin
-Phase 7.
+Current objective: hand off the new non-overwriting targeted-06 official and diagnostic
+paths for an owner-created commit and later diagnostic run. Keep every scientific
+threshold unchanged, preserve targeted-05 diagnostic evidence, avoid final/golden
+access, and do not begin Phase 7.
 
-Checkpoint reason: targeted-04 was a genuine scientific block, not an engineering
-crash. It passed eight of ten unchanged checks. Fault-comparator margin regressed to
-`-0.0723480193` (required at least `0.02`) and continuation macro-F1 regressed to
-`0.8933333333` (required at least `0.90`). Its extra diagnosed fault row shifted the
-effective fault-task mix from 50% unresolved / 10% no-fault / 40% diagnosed to 25% /
-5% / 70%, causing overdiagnosis and label confusion. Its aggregate checkpoint floor
-also admitted a checkpoint whose separate 48-row fault macro-F1 was only `0.6875`.
-Targeted-05 restores the complete six-task hierarchical sampler, adds fault/continuation
-target-token weighting, and requires task-specific checkpoint floors before the
-existing validation-NLL tie-break. Model size, 2,500 optimizer updates, every
-validation partition, and all ten acceptance thresholds remain unchanged. No
-targeted-05 run directory, training, generated data, final/golden access, deployment,
-or push occurred. The diagnostic sweep has not been started and its run directory is
-absent.
+Checkpoint reason: the targeted-05 diagnostic run completed both 2,500-step training
+stages and reached v0.4 shadow evaluation. Its v0.3 result passed nine of ten checks;
+only fault-comparator margin missed at `-0.0032795487` (`>= 0.02` required). Partial
+v0.4 IID evidence passed eight of ten and missed fault margin (`0.004935`) and ECE
+(`0.173229`). The run then failed on an engineering boundary: six composition
+counterfactual targets required 122–230 tokens while the old cap was 108. Targeted-06
+adds bounded fault emphasis, carries the hierarchy into v0.4, applies validation-only
+v0.4 temperature scaling, freezes a shadow-only 256-token counterfactual cap, audits
+all shadow targets before training, and lets the diagnostic sweep collect isolated
+shadow-view boundary failures before stopping safely. No threshold was lowered. No
+targeted-06 training, final/golden access, push, or deployment occurred.
+
+## Current targeted-06 checkpoint
+
+- Official run: `phase6-remediation-v0.4.1-targeted-06`.
+- Diagnostic run: `phase6-remediation-v0.4.1-targeted-06-diagnostic-02`.
+- Both run directories are absent; no new training/data/evaluation started.
+- v0.3 config SHA-256:
+  `f15c9f77450fb038c86243890d25a7eb426d35dd7fb47470cbfebeb911773e8b`.
+- v0.4 config SHA-256:
+  `db3501a4d533b912a669cc6d7cefc6ef76a455a6fb8c1d24f3866b38671de84f`.
+- Official pipeline SHA-256:
+  `e7539a66c4df658807fa6d0c0fa0a8d12bf0b47939a5931d69c84befff35dc48`.
+- Diagnostic pipeline SHA-256:
+  `3c81b6197c6b971a9d8e57e63e5fb18db5b73f71557a1c845dbb1dbfa75e6bab`.
+- v0.4.1 main training uses the hierarchy-compatible six-row batch; the native-MPS
+  pilot is fixed to batches 1, 2, 4, and 6, with batch 6 mandatory.
+- Preserved failed source run:
+  `runs/phase6-remediation-v0.4.0-targeted-05-diagnostic-01/`.
+- Exact plan: `docs/model/PHASE6_TARGETED06_PLAN.md`.
+- Final usage check: the exposed primary window reported 5% used (about 95%
+  remaining), safely above the checkpoint threshold.
+- Focused configuration, training, pipeline, CLI, monitor, and package-resource
+  verification: **186 passed** in 3.27 seconds.
+- Ruff passed across the changed source and test surfaces.
+- Strict mypy passed across all 21 remediation/resource source modules.
+- All Phase 6 shell wrappers passed `bash -n`; the AppKit monitor passed Swift
+  type-checking with a private temporary module cache.
+- The actual deterministic 963-example shadow inventory passed the new cap audit with
+  zero violations. `shadow_composition` counterfactual maximum was 230/256 tokens;
+  `shadow_counterfactual` maximum was 100/256.
+- Official and diagnostic monitor JSON snapshots both verified `Not started`, the new
+  fixed identities, 16 stages, and no run directory.
+- `git diff --check` passed.
+- A distribution build could not be repeated because the restricted environment had
+  no cached `hatchling` and could not reach PyPI. Source package-resource tests passed;
+  no dependency was installed and no project artifact was written.
+- Last known Git commit: `3ff5ce076b71aa0ca9ba3e680e661381b1c10771`.
+- Worktree contains only the understood targeted-06 implementation/documentation/test
+  changes listed by `git status`; no commit or push was made.
+
+The older sections below are cumulative history. Any statement that targeted-05 is
+not started or is the current default is superseded by this checkpoint.
 
 ## Diagnostic full-sweep checkpoint
 
@@ -83,10 +121,10 @@ absent.
 Project path:
 /Users/zachary/Documents/Personal-Projects/AI-transformer
 
-Exact account usage is not observable in this environment. No account-level
-percentage was measured.
+The final account-level usage check reported 5% used (about 95% remaining) in the
+exposed primary window.
 
-## Current targeted-05 checkpoint
+## Historical targeted-05 preparation checkpoint
 
 - Run identity:
   `phase6-remediation-v0.4.0-targeted-05`.
@@ -723,6 +761,14 @@ successfully.
   restore the six-task hierarchical sampler; weight fault-family and continuation
   target tokens 2.0; require 0.90 task-specific macro-F1 checkpoint floors alongside
   the 0.75 semantic-composite floor; retain all ten downstream thresholds unchanged.
+- D-092 applies 0BSD to original repository material; credit is appreciated but not
+  required.
+- D-093 preserves the official fail-fast path and defines the separate diagnostic
+  full sweep without allowing a diagnostic result to certify the model.
+- D-094 preserves targeted-05 evidence and defines targeted-06: 3/2/1 target weights,
+  hierarchy-compatible six-row v0.4 training, a 1/2/4/6 MPS pilot, validation-only
+  v0.4 calibration, a pre-training 256-token shadow cap audit, and bounded isolated
+  shadow-view diagnostic continuation. All ten thresholds remain unchanged.
 - The project owner controls GitHub pushes, external publication, credentials, and
   deployment. Local checkpoint commits are permitted.
 
@@ -746,18 +792,17 @@ successfully.
   The focused sampler does not promise acceptance or guarantee a large metric gain.
 - Targeted-04 is terminal scientific evidence and must not be resumed or edited. Its
   diagnosed-heavy sampler improved action/evidence behavior but caused fault-family
-  overdiagnosis and a small continuation regression. Targeted-05 addresses those
-  mechanisms, but its scientific outcome remains unknown until the owner runs it.
+  overdiagnosis and a small continuation regression. The preserved targeted-05
+  diagnostic later passed nine of ten v0.3 checks, missed fault margin, and exposed
+  the corrected v0.4 shadow-cap defect.
 - During final verification, one unrestricted coverage command mistakenly omitted
   the two recorded deselections and executed both protected historical tests. It
   passed 1,125 tests and did not start training, generate data, run the fresh-final
   executor, create a final-access ledger/result, or mutate run artifacts. The boundary
   mistake is retained here rather than hidden; the final release gate was rerun with
   the exact deselections and passed 1,123 tests at 85.29% coverage.
-- Full Swift typechecking cannot currently be repeated because the installed Apple
-  Swift 6.3.3 compiler rejects the installed 6.3.2 SDK. Swift syntax parsing succeeds;
-  plist and wrapper validation succeed. Reinstalling a matched Apple toolchain is an
-  environment maintenance task, not a reason to alter the monitor source.
+- Native Swift/AppKit typechecking now passes with a private temporary module cache;
+  plist and wrapper validation also pass.
 - The monitor is a macOS owner utility, not a cross-platform product surface. It
   compiles a temporary AppKit bundle on each open, so the window can take roughly 20
   to 30 seconds to appear on this Mac.
@@ -778,21 +823,23 @@ successfully.
   approval markers by hand.
 - 0BSD now covers original repository material unless a file explicitly says
   otherwise. Third-party dependencies and referenced material retain their own terms.
-- Exact account usage cannot be monitored here; the user must supply the visible
-  percentage for a precise account-level cutoff.
+- Account usage is checked when the host exposes it; the final targeted-06 checkpoint
+  reported about 95% remaining in the primary window.
 
 ## Files and artifact paths
 
 - Pipeline configuration:
-  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05.toml
+  configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06.toml
 - Diagnostic pipeline configuration:
-  configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml
+  configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml
 - Diagnostic workflow specification:
   docs/model/PHASE6_DIAGNOSTIC_SWEEP.md
 - Current v0.3 configuration:
-  configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml
+  configs/experiments/phase6-remediation-v0.3.6-fault-emphasis.toml
+- Current v0.4 configuration:
+  configs/experiments/phase6-remediation-v0.4.1.toml
 - Current preregistration:
-  docs/model/PHASE6_TARGETED05_PLAN.md
+  docs/model/PHASE6_TARGETED06_PLAN.md
 - Preserved targeted-04 configurations:
   configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-04.toml,
   configs/experiments/phase6-remediation-v0.3.4-fault-boosted.toml
@@ -834,14 +881,14 @@ successfully.
   runs/phase6-remediation-v0.4.0-local-rerun-02/
 - Preserved failed targeted-01:
   runs/phase6-remediation-v0.4.0-targeted-01/
-- Current targeted-05 run root (currently absent):
-  runs/phase6-remediation-v0.4.0-targeted-05/
+- Current targeted-06 run root (currently absent):
+  runs/phase6-remediation-v0.4.1-targeted-06/
 - Diagnostic full-sweep run root (currently absent):
-  runs/phase6-remediation-v0.4.0-targeted-05-diagnostic-01/
+  runs/phase6-remediation-v0.4.1-targeted-06-diagnostic-02/
 - Canonical live status after start:
-  runs/phase6-remediation-v0.4.0-targeted-05/status.json
+  runs/phase6-remediation-v0.4.1-targeted-06/status.json
 
-### Targeted-05 preparation (Not started)
+### Historical targeted-05 preparation (superseded)
 
 - Default identity: `phase6-remediation-v0.4.0-targeted-05`.
 - The new v0.3 config trains exactly one task-weighted hierarchical candidate. It
@@ -912,11 +959,11 @@ successfully.
 
 ## Immediate next step
 
-After the verification commit leaves a clean worktree, open the local Phase 6 monitor,
-select **Diagnostic full sweep**, confirm it shows `Not started`, run **Readiness
-check**, then press **Start diagnostic full sweep**. Use **Official fail-fast** only
-when an official acceptance attempt is intended. Preserve either run exactly as
-produced.
+After creating a clean owner commit, open the local Phase 6 monitor, select
+**Diagnostic full sweep**, and confirm the fixed run name is
+`phase6-remediation-v0.4.1-targeted-06-diagnostic-02`. Run **Readiness check**, then
+press **Start diagnostic full sweep**. Use **Official fail-fast** only when an official
+acceptance attempt is intended. Preserve either run exactly as produced.
 
 ## Exact recommended next command after final handoff
 
@@ -924,7 +971,8 @@ produced.
     git status
     ./scripts/open_phase6_progress_gui.sh
 
-The user may push the resulting local commits later. Do not run targeted-04 again.
+The user may push the resulting local commits later. Do not resume any targeted-01
+through targeted-05 run.
 Opening the monitor alone does not start training. Run Readiness before Start. The
 locked evaluation wrapper is not a research command in this release.
 

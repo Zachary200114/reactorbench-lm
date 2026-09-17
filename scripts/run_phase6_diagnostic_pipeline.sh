@@ -18,7 +18,7 @@ fi
 script_dir=$(CDPATH= cd -- "$(dirname -- "$script_source")" && pwd -P)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
 python_executable="$project_root/.venv/bin/python"
-config="configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml"
+config="configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml"
 
 if [[ ! -x "$python_executable" ]]; then
   echo "Project .venv Python is not executable." >&2

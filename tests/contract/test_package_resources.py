@@ -22,6 +22,9 @@ from reactorbench.resources import (
     phase6_remediation_diagnostic_pipeline_config_resource,
     phase6_remediation_fault_boosted_pipeline_config_resource,
     phase6_remediation_fault_boosted_v03_config_resource,
+    phase6_remediation_fault_emphasis_diagnostic_config_resource,
+    phase6_remediation_fault_emphasis_pipeline_config_resource,
+    phase6_remediation_fault_emphasis_v03_config_resource,
     phase6_remediation_final_dataset_config_resource,
     phase6_remediation_focused_pipeline_config_resource,
     phase6_remediation_focused_v03_config_resource,
@@ -32,6 +35,7 @@ from reactorbench.resources import (
     phase6_remediation_script_resource,
     phase6_remediation_targeted_pipeline_config_resource,
     phase6_remediation_targeted_v03_config_resource,
+    phase6_remediation_targeted_v04_config_resource,
     phase6_remediation_task_weighted_pipeline_config_resource,
     phase6_remediation_task_weighted_v03_config_resource,
     phase6_remediation_v02_config_resource,
@@ -175,6 +179,28 @@ def test_resource_api_reads_the_root_reviewed_assets_without_drift() -> None:
         ).read_bytes()
     )
     assert (
+        phase6_remediation_fault_emphasis_v03_config_resource().read_bytes()
+        == (ROOT / "configs/experiments/phase6-remediation-v0.3.6-fault-emphasis.toml").read_bytes()
+    )
+    assert (
+        phase6_remediation_targeted_v04_config_resource().read_bytes()
+        == (ROOT / "configs/experiments/phase6-remediation-v0.4.1.toml").read_bytes()
+    )
+    assert (
+        phase6_remediation_fault_emphasis_pipeline_config_resource().read_bytes()
+        == (
+            ROOT / "configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06.toml"
+        ).read_bytes()
+    )
+    assert (
+        phase6_remediation_fault_emphasis_diagnostic_config_resource().read_bytes()
+        == ROOT.joinpath(
+            "configs",
+            "experiments",
+            "phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml",
+        ).read_bytes()
+    )
+    assert (
         phase6_v02_inventory_report_resource().read_bytes()
         == (ROOT / "docs/model/PHASE6_V02_INVENTORY.json").read_bytes()
     )
@@ -264,7 +290,7 @@ def test_remediation_runbook_freezes_the_user_operated_safety_workflow() -> None
     assert "G15 packet is prohibited" in runbook
     assert "engineering evidence, not proof" in runbook
     assert "Do not remove `STOP_REQUESTED` yourself" in runbook
-    assert "batch sizes **1, 2, and 4**" in runbook
+    assert "batch sizes **1, 2, 4, and 6**" in runbook
     assert "requires it to equal" in runbook
     assert "final complete event in `progress.jsonl`" in runbook
     assert "`8` a managed stage stop or interrupt" in runbook
@@ -332,8 +358,14 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.5-task-weighted.toml"
         ),
+        "configs/experiments/phase6-remediation-v0.3.6-fault-emphasis.toml": (
+            "reactorbench/_data/configs/experiments/phase6-remediation-v0.3.6-fault-emphasis.toml"
+        ),
         "configs/experiments/phase6-remediation-v0.4.0.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-v0.4.0.toml"
+        ),
+        "configs/experiments/phase6-remediation-v0.4.1.toml": (
+            "reactorbench/_data/configs/experiments/phase6-remediation-v0.4.1.toml"
         ),
         "configs/experiments/phase6-remediation-pipeline-v0.4.0.toml": (
             "reactorbench/_data/configs/experiments/phase6-remediation-pipeline-v0.4.0.toml"
@@ -373,6 +405,14 @@ def test_distribution_configuration_packages_canonical_root_assets() -> None:
         "configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml": (
             "reactorbench/_data/configs/experiments/"
             "phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml"
+        ),
+        "configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06.toml": (
+            "reactorbench/_data/configs/experiments/"
+            "phase6-remediation-pipeline-v0.4.1-targeted-06.toml"
+        ),
+        "configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml": (
+            "reactorbench/_data/configs/experiments/"
+            "phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml"
         ),
         "docs/model/PHASE6_DIAGNOSTIC_SWEEP.md": (
             "reactorbench/_data/docs/model/PHASE6_DIAGNOSTIC_SWEEP.md"

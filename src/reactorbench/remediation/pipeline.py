@@ -136,7 +136,11 @@ from .selection import (
     resolve_calibration_selection_examples,
     resolve_semantic_selection_examples,
 )
-from .serialization import CompactTokenizedExample, tokenize_compact_example
+from .serialization import (
+    CompactTokenizedExample,
+    compact_serialized_parts,
+    tokenize_compact_example,
+)
 from .training import (
     TARGETED_SAMPLING_BINDING_FILENAME,
     CompactTrainingOutcome,
@@ -804,7 +808,7 @@ class V04PilotReport(ContractModel):
     v03_train_prompt_truncation_rate: Probability
     material_truncation_threshold: Probability
     activated: StrictBool
-    measurements: tuple[V04PilotMeasurement, ...] = Field(max_length=3)
+    measurements: tuple[V04PilotMeasurement, ...] = Field(max_length=4)
     passed: StrictBool
     checksum_sha256: Sha256
 
@@ -820,8 +824,9 @@ class V04PilotReport(ContractModel):
         if self.activated is not expected_activation:
             raise ValueError("v0.4 pilot activation differs from its two measured conditions")
         if self.activated:
-            if tuple(item.batch_size for item in self.measurements) != (1, 2, 4):
-                raise ValueError("activated v0.4 pilot must cover batches 1, 2, and 4")
+            batch_sizes = tuple(item.batch_size for item in self.measurements)
+            if batch_sizes not in {(1, 2, 4), (1, 2, 4, 6)}:
+                raise ValueError("activated v0.4 pilot uses an unsupported batch matrix")
             if any(item.device.requested != self.requested_device for item in self.measurements):
                 raise ValueError("activated v0.4 pilot requested-device evidence differs")
             profile = self.measurements[0]
@@ -859,7 +864,7 @@ class V04PilotReport(ContractModel):
                     and item.maximum_train_sequence_exercised
                     for item in self.measurements
                 )
-                and mandatory_measurement.batch_size == 4
+                and mandatory_measurement.batch_size in {4, 6}
                 and mandatory_measurement.device.resolved == self.required_resolved_device
                 and not mandatory_measurement.device.fallback_used
             )
@@ -902,10 +907,92 @@ class V04CandidateTrainingReport(ContractModel):
         return self
 
 
+class ShadowGenerationCapMeasurement(ContractModel):
+    """Measured target reachability for one shadow view/task partition."""
+
+    view: RemediationView
+    task_name: TaskName
+    example_count: StrictInt = Field(ge=1)
+    maximum_target_tokens: StrictInt = Field(ge=1, le=512)
+    generation_cap: StrictInt = Field(ge=1, le=512)
+    passed: StrictBool
+
+    @model_validator(mode="after")
+    def pass_state_matches_measurement(self) -> ShadowGenerationCapMeasurement:
+        if self.passed is not (self.maximum_target_tokens <= self.generation_cap):
+            raise ValueError("shadow generation-cap measurement pass state differs")
+        return self
+
+
+class ShadowGenerationCapAudit(ContractModel):
+    """Checksum-bound pre-training proof that every shadow target fits its cap."""
+
+    report_version: Literal["0.4.1"] = "0.4.1"
+    dataset_manifest_sha256: Sha256
+    tokenizer_manifest_sha256: Sha256
+    generation_caps_sha256: Sha256
+    example_count: StrictInt = Field(ge=1)
+    measurements: tuple[ShadowGenerationCapMeasurement, ...] = Field(min_length=1)
+    violating_example_ids: tuple[ContractId, ...]
+    passed: StrictBool
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def inventory_and_checksum_match(self) -> ShadowGenerationCapAudit:
+        identities = tuple((item.view.value, item.task_name.value) for item in self.measurements)
+        if identities != tuple(sorted(identities)) or len(identities) != len(set(identities)):
+            raise ValueError("shadow generation-cap measurements are not unique and sorted")
+        if sum(item.example_count for item in self.measurements) != self.example_count:
+            raise ValueError("shadow generation-cap example inventory differs")
+        if self.violating_example_ids != tuple(sorted(self.violating_example_ids)):
+            raise ValueError("shadow generation-cap violations are not sorted")
+        expected_pass = not self.violating_example_ids and all(
+            item.passed for item in self.measurements
+        )
+        if self.passed is not expected_pass:
+            raise ValueError("shadow generation-cap audit pass state differs")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("shadow generation-cap audit checksum mismatch")
+        return self
+
+
+class DiagnosticViewFailure(ContractModel):
+    """Safe diagnostic identity for one isolated shadow-view failure."""
+
+    candidate_id: StrictStr = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+    view: RemediationView
+    reason_code: Literal["contract_or_boundary_validation"]
+    exception_type: Literal["ValueError"]
+
+
+class DiagnosticViewFailureReport(ContractModel):
+    """Failures collected after continuing other independent shadow views."""
+
+    report_version: Literal["0.4.1"] = "0.4.1"
+    failures: tuple[DiagnosticViewFailure, ...] = Field(min_length=1)
+    checksum_sha256: Sha256
+
+    @model_validator(mode="after")
+    def inventory_and_checksum_match(self) -> DiagnosticViewFailureReport:
+        identities = tuple((item.candidate_id, item.view.value) for item in self.failures)
+        if identities != tuple(sorted(identities)) or len(identities) != len(set(identities)):
+            raise ValueError("diagnostic view failures are not unique and sorted")
+        expected = canonical_sha256(
+            self.model_dump(mode="json", round_trip=True, exclude={"checksum_sha256"})
+        )
+        if self.checksum_sha256 != expected:
+            raise ValueError("diagnostic view failure report checksum mismatch")
+        return self
+
+
 class V04CandidateEvaluation(ContractModel):
     candidate_id: StrictStr = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
     context_length: StrictInt = Field(ge=512, le=1024)
     checkpoint_manifest_sha256: Sha256
+    temperature_calibration_sha256: Sha256 | None = None
     iid_report_sha256: Sha256
     iid_acceptance_sha256: Sha256
     shadow_reports: tuple[tuple[RemediationView, Sha256], ...]
@@ -1936,6 +2023,70 @@ class _ExecutionInputs:
             self.frozen_v03_counterfactual_cap.frozen_generation_cap
         )
         return caps
+
+    @property
+    def shadow_generation_caps(self) -> dict[TaskName, int]:
+        """Return the versioned shadow-only cap extension without changing IID training."""
+
+        caps = self.generation_caps
+        override = self.v04.shadow_counterfactual_generation_cap
+        if override is not None:
+            caps[TaskName.COUNTERFACTUAL_COMPARE] = override
+        return caps
+
+
+def _targeted_v04_policy_active(inputs: _ExecutionInputs) -> bool:
+    """Keep historical test/config doubles on the original v0.4 behavior."""
+
+    return getattr(inputs.v04, "targeted_remediation_policy", None) is not None
+
+
+def _audit_shadow_generation_caps(
+    dataset: SafeDevelopmentDataset,
+    inputs: _ExecutionInputs,
+) -> ShadowGenerationCapAudit:
+    """Measure every shadow target before any v0.4 pilot or training work starts."""
+
+    caps = inputs.shadow_generation_caps
+    grouped: dict[tuple[RemediationView, TaskName], list[int]] = {}
+    violations: list[str] = []
+    for example in dataset.examples:
+        if example.view not in SHADOW_VIEWS:
+            raise ValueError("shadow cap audit received a non-shadow example")
+        cap = caps.get(example.task_name)
+        if type(cap) is not int:
+            raise ValueError("shadow cap audit lacks one task generation cap")
+        _prompt, target = compact_serialized_parts(example)
+        target_tokens = len(inputs.tokenizer.encode(target, add_bos=False, add_eos=True))
+        grouped.setdefault((example.view, example.task_name), []).append(target_tokens)
+        if target_tokens > cap:
+            violations.append(example.example_id)
+    measurements = tuple(
+        ShadowGenerationCapMeasurement(
+            view=view,
+            task_name=task_name,
+            example_count=len(lengths),
+            maximum_target_tokens=max(lengths),
+            generation_cap=caps[task_name],
+            passed=max(lengths) <= caps[task_name],
+        )
+        for (view, task_name), lengths in sorted(
+            grouped.items(), key=lambda item: (item[0][0].value, item[0][1].value)
+        )
+    )
+    draft = ShadowGenerationCapAudit.model_construct(
+        dataset_manifest_sha256=dataset.manifest.checksum_sha256,
+        tokenizer_manifest_sha256=inputs.tokenizer.manifest.checksum_sha256,
+        generation_caps_sha256=canonical_sha256(
+            tuple(sorted((task.value, cap) for task, cap in caps.items()))
+        ),
+        example_count=len(dataset.examples),
+        measurements=measurements,
+        violating_example_ids=tuple(sorted(violations)),
+        passed=not violations,
+        checksum_sha256="0" * 64,
+    )
+    return _bound_model(draft, ShadowGenerationCapAudit)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3323,6 +3474,7 @@ def _run_training(
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
         "task_weighted_hierarchical",
+        "fault_emphasis_hierarchical",
     ],
     model_config: TransformerConfig,
     training: RemediationTraining,
@@ -3366,6 +3518,7 @@ def _run_training(
             "hierarchical_task_label_balanced",
             "fault_boosted_hierarchical",
             "task_weighted_hierarchical",
+            "fault_emphasis_hierarchical",
         }
         else None
     )
@@ -3387,6 +3540,7 @@ def _run_training(
                     "hierarchical_task_label_balanced",
                     "fault_boosted_hierarchical",
                     "task_weighted_hierarchical",
+                    "fault_emphasis_hierarchical",
                 ],
                 sampling_strategy,
             ),
@@ -3773,12 +3927,18 @@ def _evaluate_candidate_view(
     device: torch.device,
     stem: str,
     confidence_transform: Callable[[float], float] | None = None,
+    evaluation_generation_caps: Mapping[TaskName, int] | None = None,
 ) -> tuple[
     SemanticEvaluationReport,
     RemediationBaselineReport,
     tuple[DualPathCompactPrediction, ...],
     tuple[ArtifactReference, ...],
 ]:
+    evaluation_caps = (
+        inputs.generation_caps
+        if evaluation_generation_caps is None
+        else evaluation_generation_caps
+    )
     scoped = _subset_dataset(
         dataset,
         (*train_examples, *evaluation_examples),
@@ -3794,7 +3954,7 @@ def _evaluate_candidate_view(
         evaluation_examples,
         inputs.tokenizer,
         context_length=model.config.context_length,
-        generation_caps=inputs.generation_caps,
+        generation_caps=evaluation_caps,
     )
     _raise_if_stop(context, guard)
     context.progress.report(
@@ -3823,7 +3983,7 @@ def _evaluate_candidate_view(
         model=model,
         tokenizer=inputs.tokenizer,
         examples=evaluation_examples,
-        generation_caps=inputs.generation_caps,
+        generation_caps=evaluation_caps,
         device=device,
         progress_message="Model evaluation decoding in progress.",
     )
@@ -3867,6 +4027,60 @@ def _evaluate_candidate_view(
         predictions,
         (baseline_artifact, *prediction_artifacts, evaluation_artifact),
     )
+
+
+def _reconstruct_saved_semantic_evaluation(
+    *,
+    attempt: Path,
+    stem: str,
+    dataset: SafeDevelopmentDataset,
+    train_examples: tuple[RemediationExample, ...],
+    evaluation_examples: tuple[RemediationExample, ...],
+    view: RemediationView,
+    source_commit: str,
+    config_sha256_value: str,
+    tokenizer_manifest_sha256: str,
+    output_contract_sha256: str,
+    checkpoint_manifest_sha256: str,
+    saved: SemanticEvaluationReport,
+    confidence_transform: Callable[[float], float] | None,
+) -> None:
+    """Reopen raw predictions/baselines and reconstruct one saved semantic report."""
+
+    baseline = _read_contract(attempt / f"{stem}-baselines.json", RemediationBaselineReport)
+    prediction_manifest, predictions = _read_predictions(
+        manifest_path=attempt / f"{stem}-predictions-manifest.json",
+        predictions_path=attempt / f"{stem}-predictions.jsonl",
+        view=view,
+        examples=evaluation_examples,
+    )
+    scoped = _subset_dataset(
+        dataset,
+        (*train_examples, *evaluation_examples),
+        dataset_version=dataset.manifest.dataset_version,
+    )
+    binding = DevelopmentArtifactBinding(
+        source_commit=source_commit,
+        config_sha256=config_sha256_value,
+        dataset_manifest_sha256=scoped.manifest.checksum_sha256,
+        tokenizer_manifest_sha256=tokenizer_manifest_sha256,
+        output_contract_sha256=output_contract_sha256,
+        checkpoint_sha256=checkpoint_manifest_sha256,
+        prediction_artifact_sha256=prediction_manifest.predictions_sha256,
+        comparator_artifact_sha256=baseline.checksum_sha256,
+    )
+    reconstructed = evaluate_semantic_predictions(
+        view=view,
+        examples=evaluation_examples,
+        predictions=predictions,
+        baseline_report=baseline,
+        artifacts=binding,
+        confidence_transform=confidence_transform,
+    )
+    if reconstructed != saved:
+        raise PipelineExecutionError(
+            "v0.4 semantic report differs from independently reopened evidence"
+        )
 
 
 def _stage_completion_outcome(
@@ -4981,6 +5195,11 @@ class _PipelineRuntime:
                 views=SHADOW_VIEWS,
             )
         )
+        cap_audit = (
+            _audit_shadow_generation_caps(shadow, self.inputs)
+            if _targeted_v04_policy_active(self.inputs)
+            else None
+        )
         shadow_directory = context.attempt_directory / "dataset-v04-shadow"
         write_safe_development_artifact(shadow, shadow_directory)
         shadow_audit = audit_safe_development_dataset(shadow)
@@ -4991,12 +5210,21 @@ class _PipelineRuntime:
             views=tuple(RemediationView),
         )
         separation = _development_separation_report(iid, shadow, structured_separation)
-        artifacts = (
+        artifacts: tuple[ArtifactReference, ...] = (
             *_directory_artifacts(shadow_directory, run_directory=context.run_directory),
             _contract_artifact(context, "v04-shadow-audit.json", shadow_audit),
             _contract_artifact(context, "v04-development-separation.json", separation),
         )
-        passed = bool(shadow_audit.passed and separation.passed)
+        if cap_audit is not None:
+            artifacts = (
+                *artifacts,
+                _contract_artifact(context, "v04-shadow-generation-cap-audit.json", cap_audit),
+            )
+        passed = bool(
+            shadow_audit.passed
+            and separation.passed
+            and (cap_audit is None or cap_audit.passed)
+        )
         return self._finish(
             context,
             _stage_outcome(
@@ -5174,7 +5402,7 @@ class _PipelineRuntime:
                 not activated
                 or (
                     measurements
-                    and measurements[-1].batch_size == 4
+                    and measurements[-1].batch_size == self.inputs.v04.training.batch_size
                     and all(
                         item.device.requested == "mps"
                         and item.device.resolved == "mps"
@@ -5299,14 +5527,36 @@ class _PipelineRuntime:
                 device=device,
                 progress_message="v0.4 checkpoint-selection decoding in progress.",
             )
-            return 1.0 - semantic_composite_score(iid_selection, predictions)
+            composite = semantic_composite_score(iid_selection, predictions)
+            if not _targeted_v04_policy_active(self.inputs):
+                return 1.0 - composite
+            return _semantic_checkpoint_selection_score(
+                self.inputs.v03.selection,
+                composite=composite,
+                fault_macro_f1=classification_macro_f1_score(
+                    iid_selection,
+                    predictions,
+                    task_name=TaskName.FAULT_FAMILY,
+                ),
+                continuation_macro_f1=classification_macro_f1_score(
+                    iid_selection,
+                    predictions,
+                    task_name=TaskName.CONTINUE_LOG,
+                ),
+            )
+
+        sampling_strategy: Literal["fault_emphasis_hierarchical", "task_balanced"] = (
+            "fault_emphasis_hierarchical"
+            if _targeted_v04_policy_active(self.inputs)
+            else "task_balanced"
+        )
 
         result, artifacts = _run_training(
             context,
             guard=self.guard,
             inputs=self.inputs,
             candidate_id=self.inputs.v04.pilot.candidate_id,
-            sampling_strategy="task_balanced",
+            sampling_strategy=sampling_strategy,
             model_config=self.inputs.v04.longer_context_model,
             training=self.inputs.v04.training,
             train_examples=train_examples,
@@ -5432,7 +5682,12 @@ class _PipelineRuntime:
             or report.candidate_id != self.inputs.v04.pilot.candidate_id
             or result.candidate_id != report.candidate_id
             or result.checksum_sha256 != report.training_result_sha256
-            or result.sampling_strategy != "task_balanced"
+            or result.sampling_strategy
+            != (
+                "fault_emphasis_hierarchical"
+                if _targeted_v04_policy_active(self.inputs)
+                else "task_balanced"
+            )
             or result.train_example_count != len(train_examples)
             or result.validation_example_count != len(validation_examples)
             or result.train_inventory_sha256 != expected_train_inventory_sha256
@@ -5557,6 +5812,38 @@ class _PipelineRuntime:
         )
         if not train_examples or not full_iid_validation:
             raise PipelineExecutionError("v0.4 requires non-empty train and full IID views")
+        iid_gate_examples = full_iid_validation
+        calibration_manifest: CalibrationSelectionManifest | None = None
+        calibration_examples: tuple[RemediationExample, ...] = ()
+        if _targeted_v04_policy_active(self.inputs):
+            audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+            semantic_manifest = _read_contract(
+                audit_attempt / "v03-semantic-selection.json",
+                SemanticSelectionManifest,
+            )
+            semantic_examples = resolve_semantic_selection_examples(
+                iid,
+                semantic_manifest,
+                self.inputs.v03,
+            )
+            calibration_manifest = _read_contract(
+                audit_attempt / "v03-calibration-selection.json",
+                CalibrationSelectionManifest,
+            )
+            calibration_examples = resolve_calibration_selection_examples(
+                iid,
+                self.inputs.v03,
+                semantic_manifest,
+                calibration_manifest,
+            )
+            excluded = {
+                item.example_id for item in (*semantic_examples, *calibration_examples)
+            }
+            iid_gate_examples = tuple(
+                item for item in full_iid_validation if item.example_id not in excluded
+            )
+            if len(iid_gate_examples) != 427:
+                raise PipelineExecutionError("v0.4 calibrated IID partition is not 48+56+427")
 
         selection_attempt = _upstream_attempt(
             context,
@@ -5620,8 +5907,62 @@ class _PipelineRuntime:
         artifacts: list[ArtifactReference] = []
         candidate_evidence: list[V04CandidateEvaluation] = []
         candidate_acceptance: dict[str, V04AcceptanceResult] = {}
+        diagnostic_failures: list[DiagnosticViewFailure] = []
         for candidate_index, candidate in enumerate(ordered_candidates):
             stem = f"v04-candidate-{candidate_index:02d}"
+            calibration_report: TemperatureCalibrationReport | None = None
+            confidence_transform: Callable[[float], float] | None = None
+            if calibration_manifest is not None:
+                calibration_predictions = _guarded_decode_examples(
+                    context,
+                    guard=self.guard,
+                    model=candidate.model,
+                    tokenizer=self.inputs.tokenizer,
+                    examples=calibration_examples,
+                    generation_caps=self.inputs.generation_caps,
+                    device=candidate.device,
+                    progress_message="v0.4 calibration decoding in progress.",
+                )
+                calibration_prediction_manifest, calibration_artifacts = _write_predictions(
+                    context,
+                    stem=f"{stem}-calibration-predictions",
+                    view=RemediationView.IID_VALIDATION,
+                    examples=calibration_examples,
+                    predictions=calibration_predictions,
+                )
+                artifacts.extend(calibration_artifacts)
+                calibration_report = fit_temperature(
+                    _calibration_observations_by_identity(
+                        calibration_examples,
+                        calibration_predictions,
+                    ),
+                    calibration_selection_manifest_sha256=calibration_manifest.checksum_sha256,
+                    calibration_prediction_manifest_sha256=(
+                        calibration_prediction_manifest.checksum_sha256
+                    ),
+                    calibration_predictions_sha256=(
+                        calibration_prediction_manifest.predictions_sha256
+                    ),
+                    selected_checkpoint_manifest_sha256=(
+                        candidate.checkpoint.checksum_sha256
+                    ),
+                )
+                artifacts.append(
+                    _contract_artifact(
+                        context,
+                        f"{stem}-temperature-calibration.json",
+                        calibration_report,
+                    )
+                )
+                selected_temperature = calibration_report.selected_temperature
+
+                def gate_calibrated_confidence(
+                    value: float,
+                    temperature: float = selected_temperature,
+                ) -> float:
+                    return apply_temperature(value, temperature)
+
+                confidence_transform = gate_calibrated_confidence
             iid_evaluation, _iid_baseline, _iid_predictions, iid_artifacts = (
                 _evaluate_candidate_view(
                     context,
@@ -5630,12 +5971,13 @@ class _PipelineRuntime:
                     config_sha256_value=config_sha256(self.inputs.v04),
                     dataset=iid,
                     train_examples=train_examples,
-                    evaluation_examples=full_iid_validation,
+                    evaluation_examples=iid_gate_examples,
                     view=RemediationView.IID_VALIDATION,
                     model=candidate.model,
                     checkpoint_manifest=candidate.checkpoint,
                     device=candidate.device,
                     stem=f"{stem}-iid",
+                    confidence_transform=confidence_transform,
                 )
             )
             artifacts.extend(iid_artifacts)
@@ -5652,26 +5994,57 @@ class _PipelineRuntime:
             shadow_evaluations: list[SemanticEvaluationReport] = []
             shadow_index: list[tuple[RemediationView, str]] = []
             view_composites = [iid_composite]
+            candidate_had_diagnostic_failure = False
             for view in SHADOW_VIEWS:
                 examples = tuple(item for item in shadow.examples if item.view is view)
-                evaluation, _baseline, _predictions, view_artifacts = _evaluate_candidate_view(
-                    context,
-                    guard=self.guard,
-                    inputs=self.inputs,
-                    config_sha256_value=config_sha256(self.inputs.v04),
-                    dataset=shadow,
-                    train_examples=train_examples,
-                    evaluation_examples=examples,
-                    view=view,
-                    model=candidate.model,
-                    checkpoint_manifest=candidate.checkpoint,
-                    device=candidate.device,
-                    stem=f"{stem}-{view.value}",
-                )
+                try:
+                    evaluation, _baseline, _predictions, view_artifacts = (
+                        _evaluate_candidate_view(
+                            context,
+                            guard=self.guard,
+                            inputs=self.inputs,
+                            config_sha256_value=config_sha256(self.inputs.v04),
+                            dataset=shadow,
+                            train_examples=train_examples,
+                            evaluation_examples=examples,
+                            view=view,
+                            model=candidate.model,
+                            checkpoint_manifest=candidate.checkpoint,
+                            device=candidate.device,
+                            stem=f"{stem}-{view.value}",
+                            confidence_transform=confidence_transform,
+                            evaluation_generation_caps=(
+                                self.inputs.shadow_generation_caps
+                                if _targeted_v04_policy_active(self.inputs)
+                                else None
+                            ),
+                        )
+                    )
+                except ValueError:
+                    if self.config.diagnostic_mode is None:
+                        raise
+                    diagnostic_failures.append(
+                        DiagnosticViewFailure(
+                            candidate_id=candidate.candidate_id,
+                            view=view,
+                            reason_code="contract_or_boundary_validation",
+                            exception_type="ValueError",
+                        )
+                    )
+                    candidate_had_diagnostic_failure = True
+                    context.progress.report(
+                        message=(
+                            "An isolated shadow view failed boundary validation; "
+                            "the diagnostic sweep is continuing with the next view."
+                        )
+                    )
+                    continue
                 shadow_evaluations.append(evaluation)
                 shadow_index.append((view, evaluation.checksum_sha256))
                 artifacts.extend(view_artifacts)
                 view_composites.append(_semantic_report_composite(evaluation))
+            if candidate_had_diagnostic_failure:
+                continue
             acceptance = evaluate_v04_acceptance(
                 iid_acceptance,
                 tuple(item.view_metrics for item in shadow_evaluations),
@@ -5689,6 +6062,11 @@ class _PipelineRuntime:
                     candidate_id=candidate.candidate_id,
                     context_length=candidate.model.config.context_length,
                     checkpoint_manifest_sha256=candidate.checkpoint.checksum_sha256,
+                    temperature_calibration_sha256=(
+                        calibration_report.checksum_sha256
+                        if calibration_report is not None
+                        else None
+                    ),
                     iid_report_sha256=iid_evaluation.checksum_sha256,
                     iid_acceptance_sha256=iid_acceptance.checksum_sha256,
                     shadow_reports=tuple(shadow_index),
@@ -5697,6 +6075,27 @@ class _PipelineRuntime:
                     worst_view_semantic_composite=min(view_composites),
                     iid_semantic_composite=iid_composite,
                 )
+            )
+
+        if diagnostic_failures:
+            ordered_failures = tuple(
+                sorted(
+                    diagnostic_failures,
+                    key=lambda item: (item.candidate_id, item.view.value),
+                )
+            )
+            failure_draft = DiagnosticViewFailureReport.model_construct(
+                failures=ordered_failures,
+                checksum_sha256="0" * 64,
+            )
+            failure_report = _bound_model(failure_draft, DiagnosticViewFailureReport)
+            _contract_artifact(
+                context,
+                "v04-diagnostic-view-failures.json",
+                failure_report,
+            )
+            raise ValueError(
+                "diagnostic shadow evaluation collected isolated boundary failures"
             )
 
         ordered_evidence = tuple(sorted(candidate_evidence, key=lambda item: item.candidate_id))
@@ -5758,12 +6157,50 @@ class _PipelineRuntime:
         train_examples = tuple(
             item for item in iid_dataset.examples if item.view is RemediationView.IID_TRAIN
         )
+        iid_evaluation_examples = tuple(
+            item for item in iid_dataset.examples if item.view is RemediationView.IID_VALIDATION
+        )
+        calibration_manifest: CalibrationSelectionManifest | None = None
+        calibration_examples: tuple[RemediationExample, ...] = ()
+        if _targeted_v04_policy_active(self.inputs):
+            audit_attempt = _upstream_attempt(context, self.config, "v03_data_audit")
+            semantic_manifest = _read_contract(
+                audit_attempt / "v03-semantic-selection.json",
+                SemanticSelectionManifest,
+            )
+            semantic_examples = resolve_semantic_selection_examples(
+                iid_dataset,
+                semantic_manifest,
+                self.inputs.v03,
+            )
+            calibration_manifest = _read_contract(
+                audit_attempt / "v03-calibration-selection.json",
+                CalibrationSelectionManifest,
+            )
+            calibration_examples = resolve_calibration_selection_examples(
+                iid_dataset,
+                self.inputs.v03,
+                semantic_manifest,
+                calibration_manifest,
+            )
+            excluded = {
+                item.example_id for item in (*semantic_examples, *calibration_examples)
+            }
+            iid_evaluation_examples = tuple(
+                item for item in iid_evaluation_examples if item.example_id not in excluded
+            )
+            if len(iid_evaluation_examples) != 427:
+                raise PipelineExecutionError("v0.4 reconstructed IID partition is not 427")
         expected_scopes: dict[RemediationView, tuple[int, str]] = {}
         for view in (RemediationView.IID_VALIDATION, *SHADOW_VIEWS):
             source_dataset = (
                 iid_dataset if view is RemediationView.IID_VALIDATION else shadow_dataset
             )
-            examples = tuple(item for item in source_dataset.examples if item.view is view)
+            examples = (
+                iid_evaluation_examples
+                if view is RemediationView.IID_VALIDATION
+                else tuple(item for item in source_dataset.examples if item.view is view)
+            )
             if not train_examples or not examples:
                 raise PipelineExecutionError("v0.4 exact evaluation view inventory is empty")
             scoped = _subset_dataset(
@@ -5809,6 +6246,62 @@ class _PipelineRuntime:
                 evaluation_attempt / f"{stem}-acceptance.json",
                 V04AcceptanceResult,
             )
+            confidence_transform: Callable[[float], float] | None = None
+            if calibration_manifest is not None:
+                calibration = _read_contract(
+                    evaluation_attempt / f"{stem}-temperature-calibration.json",
+                    TemperatureCalibrationReport,
+                )
+                calibration_prediction_manifest, calibration_predictions = _read_predictions(
+                    manifest_path=(
+                        evaluation_attempt
+                        / f"{stem}-calibration-predictions-manifest.json"
+                    ),
+                    predictions_path=(
+                        evaluation_attempt / f"{stem}-calibration-predictions.jsonl"
+                    ),
+                    view=RemediationView.IID_VALIDATION,
+                    examples=calibration_examples,
+                )
+                reconstructed_calibration = fit_temperature(
+                    _calibration_observations_by_identity(
+                        calibration_examples,
+                        calibration_predictions,
+                    ),
+                    calibration_selection_manifest_sha256=(
+                        calibration_manifest.checksum_sha256
+                    ),
+                    calibration_prediction_manifest_sha256=(
+                        calibration_prediction_manifest.checksum_sha256
+                    ),
+                    calibration_predictions_sha256=(
+                        calibration_prediction_manifest.predictions_sha256
+                    ),
+                    selected_checkpoint_manifest_sha256=(
+                        candidate.checkpoint_manifest_sha256
+                    ),
+                )
+                if (
+                    calibration != reconstructed_calibration
+                    or candidate.temperature_calibration_sha256
+                    != calibration.checksum_sha256
+                ):
+                    raise PipelineExecutionError(
+                        "v0.4 calibration differs from independently reopened evidence"
+                )
+                selected_temperature = calibration.selected_temperature
+
+                def calibrated_confidence(
+                    value: float,
+                    temperature: float = selected_temperature,
+                ) -> float:
+                    return apply_temperature(value, temperature)
+
+                confidence_transform = calibrated_confidence
+            elif candidate.temperature_calibration_sha256 is not None:
+                raise PipelineExecutionError(
+                    "historical v0.4 candidate unexpectedly has calibration"
+                )
             iid_count, iid_dataset_sha256 = expected_scopes[RemediationView.IID_VALIDATION]
             _require_semantic_report_scope(
                 iid_report,
@@ -5820,6 +6313,23 @@ class _PipelineRuntime:
                 tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
                 output_contract_sha256=self.inputs.compact_contract_sha256,
                 checkpoint_manifest_sha256=candidate.checkpoint_manifest_sha256,
+            )
+            _reconstruct_saved_semantic_evaluation(
+                attempt=evaluation_attempt,
+                stem=f"{stem}-iid",
+                dataset=iid_dataset,
+                train_examples=train_examples,
+                evaluation_examples=iid_evaluation_examples,
+                view=RemediationView.IID_VALIDATION,
+                source_commit=context.source_commit,
+                config_sha256_value=expected_config_sha256,
+                tokenizer_manifest_sha256=(
+                    self.inputs.tokenizer.manifest.checksum_sha256
+                ),
+                output_contract_sha256=self.inputs.compact_contract_sha256,
+                checkpoint_manifest_sha256=candidate.checkpoint_manifest_sha256,
+                saved=iid_report,
+                confidence_transform=confidence_transform,
             )
             for view, report in zip(SHADOW_VIEWS, shadow_reports, strict=True):
                 view_count, view_dataset_sha256 = expected_scopes[view]
@@ -5833,6 +6343,26 @@ class _PipelineRuntime:
                     tokenizer_manifest_sha256=self.inputs.tokenizer.manifest.checksum_sha256,
                     output_contract_sha256=self.inputs.compact_contract_sha256,
                     checkpoint_manifest_sha256=candidate.checkpoint_manifest_sha256,
+                )
+                view_examples = tuple(
+                    item for item in shadow_dataset.examples if item.view is view
+                )
+                _reconstruct_saved_semantic_evaluation(
+                    attempt=evaluation_attempt,
+                    stem=f"{stem}-{view.value}",
+                    dataset=shadow_dataset,
+                    train_examples=train_examples,
+                    evaluation_examples=view_examples,
+                    view=view,
+                    source_commit=context.source_commit,
+                    config_sha256_value=expected_config_sha256,
+                    tokenizer_manifest_sha256=(
+                        self.inputs.tokenizer.manifest.checksum_sha256
+                    ),
+                    output_contract_sha256=self.inputs.compact_contract_sha256,
+                    checkpoint_manifest_sha256=candidate.checkpoint_manifest_sha256,
+                    saved=report,
+                    confidence_transform=confidence_transform,
                 )
             expected_iid_acceptance = evaluate_v03_acceptance(iid_report.view_metrics)
             expected_candidate_acceptance = evaluate_v04_acceptance(

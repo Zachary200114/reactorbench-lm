@@ -1,6 +1,7 @@
 # Phase 6 diagnostic full sweep
 
-Status: **implemented as a separate non-certifying development workflow; not started**
+Status: **targeted-05 diagnostic preserved as failed engineering evidence; targeted-06
+diagnostic implemented and not started**
 
 ## Why I added it
 
@@ -10,21 +11,25 @@ but it made development unnecessarily slow because I had to spend another full r
 discover the next model-quality miss.
 
 The diagnostic full sweep solves that workflow problem without weakening an acceptance
-threshold. It uses the same targeted-05 data, model, training, evaluation, and frozen
-ten-check policy, but it records allowlisted scientific gate misses and continues far
-enough to collect the remaining development evidence in one run.
+threshold. The first diagnostic run used targeted-05 data, model, training,
+evaluation, and the frozen ten-check policy. It reached v0.4 shadow evaluation and
+proved the workflow useful, but an undersized historical counterfactual cap stopped
+the stage after three shadow views. That run remains unchanged. The new targeted-06
+diagnostic adds a pre-training cap audit and can collect isolated shadow-view boundary
+failures before stopping the stage safely.
 
 ## Exact identity
 
-- Run: `phase6-remediation-v0.4.0-targeted-05-diagnostic-01`
+- Run: `phase6-remediation-v0.4.1-targeted-06-diagnostic-02`
 - Config:
-  `configs/experiments/phase6-remediation-pipeline-v0.4.0-targeted-05-diagnostic-01.toml`
+  `configs/experiments/phase6-remediation-pipeline-v0.4.1-targeted-06-diagnostic-02.toml`
 - Config SHA-256:
-  `f3eaeb84ee20834571d9b20caf8a0c946622327125f77b5e691c67db9c4c5137`
+  `3c81b6197c6b971a9d8e57e63e5fb18db5b73f71557a1c845dbb1dbfa75e6bab`
 - Mode: `collect_scientific_failures`
-- Existing targeted-05 model/data/config hashes: unchanged
-- Existing official targeted-05 config SHA-256: unchanged at
-  `bfdb3833fce80fd31e018126b1ae225e04cf85d7fcbd9ef0fcada69a69f4a354`
+- Official targeted-06 pipeline SHA-256:
+  `e7539a66c4df658807fa6d0c0fa0a8d12bf0b47939a5931d69c84befff35dc48`
+- Preserved failed diagnostic:
+  `runs/phase6-remediation-v0.4.0-targeted-05-diagnostic-01/`
 
 ## What may continue
 
@@ -35,9 +40,12 @@ Only these two completed scientific outcomes may be recorded as
 2. `v04_gate_and_final_policy_freeze`
 
 This is a code-level allowlist, not a configurable list. Missing thresholds, changed
-thresholds, malformed results, exceptions, bad checksums, unsafe paths, provenance
-drift, resource-limit failures, pilot infeasibility, stop requests, and any other
-non-allowlisted denial still stop the run.
+thresholds, malformed results, bad checksums, unsafe paths, provenance drift,
+resource-limit failures, pilot infeasibility, stop requests, and other non-allowlisted
+denials still stop the run. During v0.4 shadow evaluation, an isolated
+contract/boundary `ValueError` is recorded without its raw message while the remaining
+independent views run. The stage still ends failed and cannot advance; this exists
+only to collect more diagnostic evidence in one attempt.
 
 ## What it can never do
 

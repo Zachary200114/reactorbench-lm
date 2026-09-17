@@ -243,6 +243,7 @@ class CandidatePolicy(StrictConfigModel):
         "hierarchical_task_label_balanced",
         "fault_boosted_hierarchical",
         "task_weighted_hierarchical",
+        "fault_emphasis_hierarchical",
     ]
     exposure: Literal["teacher_forced_only"]
     enabled: Literal[True]
@@ -360,6 +361,7 @@ class CalibrationPolicy(StrictConfigModel):
         "0.3.3-hierarchical",
         "0.3.4-fault-boosted",
         "0.3.5-task-weighted",
+        "0.3.6-fault-emphasis",
     ]
     calibration_example_limit: Literal[56]
     grid_start: StrictFloat
@@ -384,6 +386,7 @@ class TargetedV03Policy(StrictConfigModel):
         "0.3.3-hierarchical",
         "0.3.4-fault-boosted",
         "0.3.5-task-weighted",
+        "0.3.6-fault-emphasis",
     ]
     sampling_metadata_required: Literal[True]
     calibration: CalibrationPolicy
@@ -442,6 +445,7 @@ class V03Config(StrictConfigModel):
         hierarchical = ("hierarchical_task_label_balanced",)
         fault_boosted = ("fault_boosted_hierarchical",)
         task_weighted = ("task_weighted_hierarchical",)
+        fault_emphasis = ("fault_emphasis_hierarchical",)
         sampling = tuple(item.sampling for item in self.candidates)
         if self.targeted_policy is None and sampling != historical:
             raise ValueError("historical v0.3 freezes the control and task-balanced candidates")
@@ -477,11 +481,18 @@ class V03Config(StrictConfigModel):
             and sampling != task_weighted
         ):
             raise ValueError("task-weighted v0.3 requires exactly one task-weighted candidate")
+        if (
+            self.targeted_policy is not None
+            and self.targeted_policy.policy_version == "0.3.6-fault-emphasis"
+            and sampling != fault_emphasis
+        ):
+            raise ValueError("fault-emphasis v0.3 requires exactly one fault-emphasis candidate")
         if self.targeted_policy is not None:
             hierarchical_policy = self.targeted_policy.policy_version in {
                 "0.3.3-hierarchical",
                 "0.3.4-fault-boosted",
                 "0.3.5-task-weighted",
+                "0.3.6-fault-emphasis",
             }
             hierarchical_selection = self.selection.metric in {
                 "semantic_floor_then_validation_nll",
@@ -491,7 +502,10 @@ class V03Config(StrictConfigModel):
                 raise ValueError(
                     "hierarchical sampling and checkpoint selection must be enabled together"
                 )
-            if (self.targeted_policy.policy_version == "0.3.5-task-weighted") != (
+            if (self.targeted_policy.policy_version in {
+                "0.3.5-task-weighted",
+                "0.3.6-fault-emphasis",
+            }) != (
                 self.selection.metric == "task_floor_then_validation_nll"
             ):
                 raise ValueError("task-weighted objective and task-aware selection must match")
@@ -563,10 +577,10 @@ class ConditionalVariantPolicy(StrictConfigModel):
 
 
 class MpsPilotPolicy(StrictConfigModel):
-    pilot_version: Literal["0.4.0"]
+    pilot_version: Literal["0.4.0", "0.4.1"]
     candidate_id: Literal["v04-context-1024"]
     steps: Literal[10]
-    batch_sizes: tuple[Literal[1], Literal[2], Literal[4]]
+    batch_sizes: tuple[Literal[1, 2, 4, 6], ...] = Field(min_length=3, max_length=4)
     require_finite_loss: Literal[True]
     require_checkpoint_reload: Literal[True]
 
@@ -586,8 +600,9 @@ class MpsPilotPolicy(StrictConfigModel):
 
     @model_validator(mode="after")
     def pilot_matrix_is_exact(self) -> MpsPilotPolicy:
-        if self.batch_sizes != (1, 2, 4):
-            raise ValueError("v0.4 MPS pilot batch-size matrix must remain [1,2,4]")
+        expected = (1, 2, 4) if self.pilot_version == "0.4.0" else (1, 2, 4, 6)
+        if self.batch_sizes != expected:
+            raise ValueError("v0.4 MPS pilot batch-size matrix differs from its version")
         return self
 
 
@@ -616,7 +631,7 @@ class FinalAccessPolicy(StrictConfigModel):
 
 
 class V04Config(StrictConfigModel):
-    iteration_version: Literal["0.4.0"]
+    iteration_version: Literal["0.4.0", "0.4.1"]
     requires_v03_gate: Literal[True]
     development_dataset_config_path: str
     final_dataset_config_path: str
@@ -628,6 +643,8 @@ class V04Config(StrictConfigModel):
     training: RemediationTraining
     pilot: MpsPilotPolicy
     final_access: FinalAccessPolicy
+    targeted_remediation_policy: Literal["0.4.1-calibrated-cap-audited"] | None = None
+    shadow_counterfactual_generation_cap: Annotated[StrictInt, Field(ge=1, le=512)] | None = None
 
     @field_validator("requires_v03_gate", mode="before")
     @classmethod
@@ -663,6 +680,21 @@ class V04Config(StrictConfigModel):
             "bias": True,
         }:
             raise ValueError("v0.4 longer-context candidate differs from its frozen architecture")
+        if self.targeted_remediation_policy is None:
+            if (
+                self.iteration_version != "0.4.0"
+                or self.shadow_counterfactual_generation_cap is not None
+            ):
+                raise ValueError("historical v0.4 config cannot enable targeted remediation")
+        elif (
+            self.iteration_version != "0.4.1"
+            or self.shadow_counterfactual_generation_cap != 256
+            or self.training.batch_size != 6
+            or self.pilot.pilot_version != "0.4.1"
+        ):
+            raise ValueError(
+                "v0.4.1 remediation requires the frozen cap and six-row MPS policy"
+            )
         return self
 
 
@@ -802,9 +834,11 @@ class PipelineConfig(StrictConfigModel):
     def stage_graph_is_exact(self) -> PipelineConfig:
         if self.stage_order != PIPELINE_STAGES:
             raise ValueError("pipeline stage order differs from the preregistered graph")
-        if self.diagnostic_mode is not None and self.run_name != (
-            "phase6-remediation-v0.4.0-targeted-05-diagnostic-01"
-        ):
+        diagnostic_run_names = {
+            "phase6-remediation-v0.4.0-targeted-05-diagnostic-01",
+            "phase6-remediation-v0.4.1-targeted-06-diagnostic-02",
+        }
+        if self.diagnostic_mode is not None and self.run_name not in diagnostic_run_names:
             raise ValueError("diagnostic mode requires its exact non-overwriting run identity")
         return self
 
